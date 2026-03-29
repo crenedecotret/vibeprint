@@ -3,7 +3,7 @@ use std::{fs::File, io::BufReader, path::PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use image::GenericImageView;
-use vibeprint::processor;
+use vibeprint::{printer_discovery, processor};
 
 #[derive(Parser, Debug)]
 #[command(name = "vibeprint", version, about = "Image layout + color-managed printing (prototype)")]
@@ -54,6 +54,13 @@ enum Command {
         input: PathBuf,
     },
 
+    /// List available CUPS printers and dump their capabilities
+    Printers {
+        /// Query capabilities for a specific printer (default: list all)
+        #[arg(long)]
+        name: Option<String>,
+    },
+
     /// Resample image to a target DPI and apply ICC color transform, output 16-bit TIFF
     Process {
         #[arg(long)]
@@ -93,6 +100,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Meta { input } => print_metadata(&input),
+        Command::Printers { name } => print_printers(name.as_deref()),
         Command::Process {
             input,
             output,
@@ -281,6 +289,50 @@ fn rational_to_f64(r: (u32, u32)) -> f64 {
         return f64::NAN;
     }
     (r.0 as f64) / (r.1 as f64)
+}
+
+fn print_printers(name: Option<&str>) -> Result<()> {
+    match name {
+        Some(n) => {
+            // Dump caps for a single named printer
+            let caps = printer_discovery::query_printer_caps(n)?;
+            println!("Printer:     {}", caps.name);
+            println!("Resolutions: {:?} dpi", caps.resolutions);
+            println!("Media types ({}):", caps.media_types.len());
+            for m in &caps.media_types {
+                println!("  - {}", m);
+            }
+            println!("Page sizes ({}):", caps.page_sizes.len());
+            for ps in &caps.page_sizes {
+                let (l, b, r, t) = ps.imageable_area;
+                println!("  - {} \"{}\"  imageable [{:.1} {:.1} {:.1} {:.1}] pt", ps.name, ps.label, l, b, r, t);
+            }
+            let (l, b, r, t) = caps.printable_area;
+            println!("Default printable area: [{:.1} {:.1} {:.1} {:.1}] pt", l, b, r, t);
+        }
+        None => {
+            // List all printers, mark default
+            let printers = printer_discovery::list_printers()?;
+            if printers.is_empty() {
+                println!("No CUPS printer queues found.");
+                return Ok(());
+            }
+            println!("{} printer(s) found:", printers.len());
+            for p in &printers {
+                println!(
+                    "  {} {}",
+                    if p.is_default { "*" } else { " " },
+                    p.name
+                );
+                match printer_discovery::find_ppd_path(&p.name) {
+                    Some(path) => println!("    PPD: {}", path.display()),
+                    None       => println!("    PPD: not found"),
+                }
+            }
+            println!("(* = system default  |  use --name <printer> to show full capabilities)");
+        }
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]
