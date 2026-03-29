@@ -45,7 +45,7 @@ pub struct ProcessOptions {
     pub input: std::path::PathBuf,
     pub output: std::path::PathBuf,
     pub input_icc: Option<std::path::PathBuf>,
-    pub output_icc: std::path::PathBuf,
+    pub output_icc: Option<std::path::PathBuf>,
     pub target_dpi: f64,
     pub intent: lcms2::Intent,
     pub bpc: bool,
@@ -103,11 +103,31 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         }
     };
 
-    println!("Using destination ICC: {}", opts.output_icc.display());
-    let output_icc_bytes = std::fs::read(&opts.output_icc)
-        .with_context(|| format!("failed to read output ICC bytes: {}", opts.output_icc.display()))?;
-    let output_profile = lcms2::Profile::new_file(&opts.output_icc)
-        .with_context(|| format!("failed to load output ICC: {}", opts.output_icc.display()))?;
+    let (output_profile, output_icc_bytes, icc_filename) = match opts.output_icc.as_ref() {
+        Some(path) => {
+            println!("Using destination ICC: {}", path.display());
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("failed to read output ICC: {}", path.display()))?;
+            let profile = lcms2::Profile::new_icc(&bytes)
+                .with_context(|| format!("failed to load output ICC: {}", path.display()))?;
+            let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+            (profile, bytes, fname)
+        }
+        None => match embedded_icc.as_ref() {
+            Some(icc_bytes) => {
+                println!("No output ICC specified, using embedded profile (passthrough).");
+                let profile = lcms2::Profile::new_icc(icc_bytes)
+                    .context("failed to reload embedded ICC for output")?;
+                (profile, icc_bytes.clone(), "embedded (passthrough)".to_string())
+            }
+            None => {
+                println!("No output ICC specified, using sRGB (passthrough).");
+                let profile = lcms2::Profile::new_srgb();
+                let bytes = profile.icc().context("failed to serialize sRGB profile")?;
+                (profile, bytes, "sRGB (passthrough)".to_string())
+            }
+        },
+    };
 
     let intent_name = match opts.intent {
         lcms2::Intent::Perceptual             => "Perceptual",
@@ -122,10 +142,6 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         if opts.bpc { "with" } else { "without" }
     );
 
-    let icc_filename = opts.output_icc
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
     let depth_label = if opts.depth == 8 { "8-bit (dithered)" } else { "16-bit" };
     let sharpen_label = if opts.sharpen == 0 {
         "Off".to_string()

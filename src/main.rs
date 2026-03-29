@@ -62,8 +62,9 @@ enum Command {
         output: PathBuf,
         #[arg(long = "input-icc")]
         input_icc: Option<PathBuf>,
+        /// Output ICC profile (omit to use embedded/sRGB as passthrough)
         #[arg(long = "output-icc")]
-        output_icc: PathBuf,
+        output_icc: Option<PathBuf>,
         #[arg(long = "dpi")]
         dpi: f64,
         /// Rendering intent for ICC color transform (default: relative)
