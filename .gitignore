@@ -1,1 +1,6 @@
 /target
+cargo_check.log
+
+# Generated output TIFFs (processed results, not source data)
+*_out.tif
+*_out.tiff

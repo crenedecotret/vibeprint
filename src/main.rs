@@ -3,14 +3,23 @@ use std::{fs::File, io::BufReader, path::PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use image::GenericImageView;
-
-mod processor;
+use vibeprint::processor;
 
 #[derive(Parser, Debug)]
 #[command(name = "vibeprint", version, about = "Image layout + color-managed printing (prototype)")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone)]
+enum ColorIntent {
+    /// Perceptual rendering intent
+    Perceptual,
+    /// Relative colorimetric (default)
+    Relative,
+    /// Saturation rendering intent
+    Saturation,
 }
 
 #[derive(Subcommand, Debug)]
@@ -21,18 +30,24 @@ enum Command {
         input: PathBuf,
     },
 
-    /// Resample a 16-bit RGB TIFF to a target DPI and apply ICC color transform
+    /// Resample image to a target DPI and apply ICC color transform, output 16-bit TIFF
     Process {
         #[arg(long)]
         input: PathBuf,
         #[arg(long)]
         output: PathBuf,
         #[arg(long = "input-icc")]
-        input_icc: PathBuf,
+        input_icc: Option<PathBuf>,
         #[arg(long = "output-icc")]
         output_icc: PathBuf,
         #[arg(long = "dpi")]
         dpi: f64,
+        /// Rendering intent for ICC color transform (default: relative)
+        #[arg(long = "intent", default_value = "relative")]
+        intent: ColorIntent,
+        /// Disable Black Point Compensation (BPC is enabled by default)
+        #[arg(long = "no-bpc")]
+        no_bpc: bool,
     },
 }
 
@@ -47,12 +62,20 @@ fn main() -> Result<()> {
             input_icc,
             output_icc,
             dpi,
+            intent,
+            no_bpc,
         } => processor::process(processor::ProcessOptions {
             input,
             output,
             input_icc,
             output_icc,
             target_dpi: dpi,
+            intent: match intent {
+                ColorIntent::Perceptual => lcms2::Intent::Perceptual,
+                ColorIntent::Relative   => lcms2::Intent::RelativeColorimetric,
+                ColorIntent::Saturation => lcms2::Intent::Saturation,
+            },
+            bpc: !no_bpc,
         }),
     }
 }
