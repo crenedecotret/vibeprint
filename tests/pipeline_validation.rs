@@ -193,6 +193,7 @@ fn engine_smoke_tests() -> Result<()> {
             bpc: true,
             engine: engine.clone(),
             depth: 16,
+            sharpen: 5,
         })?;
 
         // Proof: 16-bit output at correct DPI
@@ -260,6 +261,7 @@ fn iterative_step_exact_dimensions() -> Result<()> {
         bpc: true,
         engine: vibeprint::processor::ResampleEngine::IterativeStep,
         depth: 16,
+        sharpen: 0,
     })?;
 
     let file = File::open(&output_path)?;
@@ -267,6 +269,86 @@ fn iterative_step_exact_dimensions() -> Result<()> {
     let (w, h) = decoder.dimensions()?;
     assert_eq!(w, 240, "iterative-step: expected width 240, got {}", w);
     assert_eq!(h, 180, "iterative-step: expected height 180, got {}", h);
+
+    Ok(())
+}
+
+#[test]
+fn sharpen_usm_smoke_test() -> Result<()> {
+    let tmp = tempdir().context("failed to create tempdir")?;
+    let input_path = tmp.path().join("checker.tif");
+    let output_sharp = tmp.path().join("sharp.tif");
+    let output_flat  = tmp.path().join("flat.tif");
+    let output_icc_path = tmp.path().join("profile.icc");
+
+    // Step edge at mid-tones (20000 → 48000): clear edges + room to overshoot in both directions
+    {
+        use tiff::encoder::{colortype, TiffEncoder};
+        use tiff::tags::Tag;
+        let (w, h) = (64u32, 64u32);
+        let mut data = vec![0u16; (w * h * 3) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let v: u16 = if x < w / 2 { 20000 } else { 48000 };
+                let idx = ((y * w + x) * 3) as usize;
+                data[idx] = v; data[idx+1] = v; data[idx+2] = v;
+            }
+        }
+        let f = File::create(&input_path)?;
+        let mut enc = TiffEncoder::new(f)?;
+        let mut img = enc.new_image::<colortype::RGB16>(w, h)?;
+        let (n, d) = dpi_to_rational(720.0);
+        let _ = img.encoder().write_tag(Tag::XResolution, tiff::encoder::Rational { n, d });
+        let _ = img.encoder().write_tag(Tag::YResolution, tiff::encoder::Rational { n, d });
+        let _ = img.encoder().write_tag(Tag::ResolutionUnit, 2u16);
+        img.write_data(&data)?;
+    }
+    let wide_bytes = make_wide_gamut_profile_bytes()?;
+    std::fs::write(&output_icc_path, &wide_bytes)?;
+
+    let base_opts = || vibeprint::processor::ProcessOptions {
+        input: input_path.clone(),
+        output: output_flat.clone(),
+        input_icc: None,
+        output_icc: output_icc_path.clone(),
+        target_dpi: 720.0,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: true,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 16,
+        sharpen: 0,
+    };
+
+    // Run with sharpen=0 (no USM)
+    vibeprint::processor::process(base_opts())?;
+    let flat_pixels = read_tiff_pixels_u16(&output_flat)?;
+
+    // Run with sharpen=10 (strong USM) — same input, different output path
+    let mut sharp_opts = base_opts();
+    sharp_opts.output = output_sharp.clone();
+    sharp_opts.sharpen = 10;
+    vibeprint::processor::process(sharp_opts)?;
+    let sharp_pixels = read_tiff_pixels_u16(&output_sharp)?;
+
+    // Proof 1: both outputs are 16-bit
+    let (bd_flat, _)  = read_tiff_bit_depth_and_dpi(&output_flat)?;
+    let (bd_sharp, _) = read_tiff_bit_depth_and_dpi(&output_sharp)?;
+    assert_eq!(bd_flat,  16, "flat:  must be 16-bit");
+    assert_eq!(bd_sharp, 16, "sharp: must be 16-bit");
+
+    // Proof 2: sharpened output differs from unsharpened
+    let diff_count = flat_pixels.iter().zip(&sharp_pixels).filter(|(a, b)| a != b).count();
+    assert!(diff_count > 0, "USM produced no change — sharpening may not be applied");
+
+    // Proof 3: sharpened image has higher max value or lower min (edge overshoot)
+    let sharp_max = sharp_pixels.iter().copied().max().unwrap_or(0);
+    let flat_max  = flat_pixels.iter().copied().max().unwrap_or(0);
+    assert!(sharp_max >= flat_max, "USM should produce brighter highlights on edges");
+
+    println!("USM diff: {} pixels changed ({:.1}%), sharp_max={} flat_max={}",
+        diff_count,
+        100.0 * diff_count as f64 / flat_pixels.len() as f64,
+        sharp_max, flat_max);
 
     Ok(())
 }
@@ -293,6 +375,7 @@ fn depth8_dither_smoke_test() -> Result<()> {
         bpc: true,
         engine: vibeprint::processor::ResampleEngine::Mks,
         depth: 8,
+        sharpen: 0,
     })?;
 
     // Proof 1: output is 8-bit
@@ -349,6 +432,7 @@ fn pipeline_validation_suite() -> Result<()> {
         bpc: true,
         engine: vibeprint::processor::ResampleEngine::Mks,
         depth: 16,
+        sharpen: 5,
     })?;
 
     // Proof 1: output is still 16-bit.

@@ -81,6 +81,9 @@ enum Command {
         /// Output bit depth: 8 (dithered) or 16 (default)
         #[arg(long = "depth", default_value = "16")]
         depth: OutputDepth,
+        /// Unsharp mask sharpening level 0–20 (0=off, default 5)
+        #[arg(long = "sharpen", default_value = "5", value_parser = clap::value_parser!(u8).range(0..=20))]
+        sharpen: u8,
     },
 }
 
@@ -100,6 +103,7 @@ fn main() -> Result<()> {
             no_bpc,
             engine,
             depth,
+            sharpen,
         } => processor::process(processor::ProcessOptions {
             input,
             output,
@@ -122,6 +126,7 @@ fn main() -> Result<()> {
                 OutputDepth::Eight   => 8,
                 OutputDepth::Sixteen => 16,
             },
+            sharpen,
         }),
     }
 }

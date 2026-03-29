@@ -51,6 +51,7 @@ pub struct ProcessOptions {
     pub bpc: bool,
     pub engine: ResampleEngine,
     pub depth: u8,
+    pub sharpen: u8,
 }
 
 pub fn process(opts: ProcessOptions) -> Result<()> {
@@ -71,6 +72,19 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
 
     println!("VibePrint Engine: {} initialized.", opts.engine.display_name());
     let resized = resize_rgb16(&img16, new_w, new_h, &opts.engine);
+
+    let radius_px = opts.target_dpi / 720.0;
+    let sharpened = if opts.sharpen > 0 {
+        let sigma = radius_px / 2.0;
+        let amount = opts.sharpen as f64 * 0.1;
+        println!(
+            "VibePrint: Applying Universal Sharpening (Level {}, Radius {:.2}px).",
+            opts.sharpen, radius_px
+        );
+        unsharp_mask_rgb16(&resized, sigma, amount, 0.03)
+    } else {
+        resized
+    };
 
     let input_profile = match (opts.input_icc.as_ref(), embedded_icc.as_ref()) {
         (Some(path), _) => {
@@ -113,17 +127,23 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
     let depth_label = if opts.depth == 8 { "8-bit (dithered)" } else { "16-bit" };
+    let sharpen_label = if opts.sharpen == 0 {
+        "Off".to_string()
+    } else {
+        opts.sharpen.to_string()
+    };
     let description = format!(
-        "vibeprint | Engine: {} | Intent: {} | BPC: {} | DPI: {} | Depth: {} | Output ICC: {}",
+        "vibeprint | Engine: {} | Intent: {} | BPC: {} | DPI: {} | Sharpen: {} | Depth: {} | Output ICC: {}",
         opts.engine.display_name(),
         intent_name,
         if opts.bpc { "Enabled" } else { "Disabled" },
         opts.target_dpi,
+        sharpen_label,
         depth_label,
         icc_filename,
     );
 
-    let transformed = transform_rgb16_icc(&resized, &input_profile, &output_profile, opts.intent, opts.bpc)?;
+    let transformed = transform_rgb16_icc(&sharpened, &input_profile, &output_profile, opts.intent, opts.bpc)?;
 
     if opts.depth == 8 {
         println!("VibePrint: Outputting 8-bit TIFF (with dithering).");
@@ -527,6 +547,90 @@ fn save_rgb16_tiff_with_dpi(path: &Path, img: &Rgb16Image, dpi: f64, output_icc_
         .context("failed to write TIFF pixel data")?;
 
     Ok(())
+}
+
+fn gaussian_blur_rgb16(img: &Rgb16Image, sigma: f64) -> Rgb16Image {
+    let w = img.width() as usize;
+    let h = img.height() as usize;
+
+    // Clamp sigma to avoid degenerate zero kernel
+    let sigma = sigma.max(0.01);
+    let radius = (sigma * 3.0).ceil() as usize;
+    let kernel_size = 2 * radius + 1;
+
+    let mut kernel = vec![0.0f64; kernel_size];
+    let mut sum = 0.0f64;
+    for i in 0..kernel_size {
+        let x = i as f64 - radius as f64;
+        kernel[i] = (-0.5 * x * x / (sigma * sigma)).exp();
+        sum += kernel[i];
+    }
+    for k in kernel.iter_mut() {
+        *k /= sum;
+    }
+
+    let raw = img.as_raw();
+
+    // Horizontal pass — store as f32 to avoid double rounding
+    let mut horiz = vec![0.0f32; w * h * 3];
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3usize {
+                let mut acc = 0.0f64;
+                for (ki, &kv) in kernel.iter().enumerate() {
+                    let sx = (x as i64 + ki as i64 - radius as i64).clamp(0, w as i64 - 1) as usize;
+                    acc += kv * raw[(y * w + sx) * 3 + c] as f64;
+                }
+                horiz[(y * w + x) * 3 + c] = acc as f32;
+            }
+        }
+    }
+
+    // Vertical pass — output u16
+    let mut result = vec![0u16; w * h * 3];
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3usize {
+                let mut acc = 0.0f64;
+                for (ki, &kv) in kernel.iter().enumerate() {
+                    let sy = (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
+                    acc += kv * horiz[(sy * w + x) * 3 + c] as f64;
+                }
+                result[(y * w + x) * 3 + c] = acc.clamp(0.0, 65535.0).round() as u16;
+            }
+        }
+    }
+
+    ImageBuffer::from_raw(w as u32, h as u32, result).expect("gaussian_blur_rgb16: buffer mismatch")
+}
+
+fn unsharp_mask_rgb16(img: &Rgb16Image, sigma: f64, amount: f64, threshold_frac: f64) -> Rgb16Image {
+    let blurred = gaussian_blur_rgb16(img, sigma);
+    let threshold = threshold_frac * 65535.0;
+
+    let w = img.width();
+    let h = img.height();
+    let mut result = vec![0u16; (w * h * 3) as usize];
+
+    for y in 0..h {
+        for x in 0..w {
+            let orig = img.get_pixel(x, y);
+            let blur = blurred.get_pixel(x, y);
+            let idx = ((y * w + x) * 3) as usize;
+            for c in 0..3usize {
+                let o = orig[c] as f64;
+                let b = blur[c] as f64;
+                let diff = o - b;
+                result[idx + c] = if diff.abs() > threshold {
+                    (o + amount * diff).clamp(0.0, 65535.0).round() as u16
+                } else {
+                    orig[c]
+                };
+            }
+        }
+    }
+
+    ImageBuffer::from_raw(w, h, result).expect("unsharp_mask_rgb16: buffer mismatch")
 }
 
 fn dpi_to_rational(dpi: f64) -> (u32, u32) {
