@@ -360,6 +360,8 @@ fn load_image_with_dpi_and_embedded_icc(path: &Path) -> Result<(LoadedImage, Opt
 
     let (dpi, embedded_icc) = if is_tiff_path(path) {
         read_tiff_dpi_and_embedded_icc(path).unwrap_or((None, None))
+    } else if is_jpeg_path(path) {
+        read_jpeg_dpi_and_embedded_icc(path)
     } else {
         (None, None)
     };
@@ -375,6 +377,95 @@ fn is_tiff_path(path: &Path) -> bool {
         .unwrap_or("")
         .to_ascii_lowercase();
     ext == "tif" || ext == "tiff"
+}
+
+fn is_jpeg_path(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    ext == "jpg" || ext == "jpeg"
+}
+
+fn read_jpeg_dpi_and_embedded_icc(path: &Path) -> (Option<f64>, Option<Vec<u8>>) {
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(_) => return (None, None),
+    };
+
+    // Must start with JPEG SOI marker FF D8
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return (None, None);
+    }
+
+    let mut dpi: Option<f64> = None;
+    let mut icc_segments: Vec<(u8, Vec<u8>)> = Vec::new(); // (seq_num, data)
+    let mut i = 2usize;
+
+    while i + 1 < data.len() {
+        if data[i] != 0xFF {
+            break;
+        }
+        let marker = data[i + 1];
+        i += 2;
+
+        // Markers without a length field
+        if marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7) {
+            continue;
+        }
+        // SOS starts compressed data — stop scanning
+        if marker == 0xDA {
+            break;
+        }
+
+        if i + 2 > data.len() {
+            break;
+        }
+        let seg_len = ((data[i] as usize) << 8) | (data[i + 1] as usize);
+        if seg_len < 2 || i + seg_len > data.len() {
+            break;
+        }
+        // segment payload (after the 2 length bytes)
+        let payload = &data[i + 2..i + seg_len];
+        i += seg_len;
+
+        // APP0 (FF E0): JFIF density
+        if marker == 0xE0 && payload.len() >= 12 && &payload[0..5] == b"JFIF\0" {
+            let units = payload[7];
+            let xd = ((payload[8] as u16) << 8) | payload[9] as u16;
+            let yd = ((payload[10] as u16) << 8) | payload[11] as u16;
+            if units > 0 && xd > 0 && yd > 0 {
+                let density = (xd as f64 + yd as f64) / 2.0;
+                dpi = Some(match units {
+                    1 => density,
+                    2 => density * 2.54,
+                    _ => density,
+                });
+            }
+        }
+
+        // APP2 (FF E2): ICC_PROFILE
+        if marker == 0xE2 && payload.len() > 14 && &payload[0..12] == b"ICC_PROFILE\0" {
+            let seq_num = payload[12];
+            let chunk_data = payload[14..].to_vec();
+            icc_segments.push((seq_num, chunk_data));
+        }
+    }
+
+    // Reassemble ICC chunks sorted by sequence number
+    let icc = if !icc_segments.is_empty() {
+        icc_segments.sort_by_key(|(seq, _)| *seq);
+        let mut combined = Vec::new();
+        for (_, chunk) in icc_segments {
+            combined.extend_from_slice(&chunk);
+        }
+        Some(combined)
+    } else {
+        None
+    };
+
+    (dpi, icc)
 }
 
 fn dynamic_to_rgb8_or_rgb16(img: DynamicImage) -> Result<LoadedImage> {
