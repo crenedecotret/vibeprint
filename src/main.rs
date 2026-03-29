@@ -27,6 +27,16 @@ enum CliEngine {
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
+enum OutputDepth {
+    /// 8-bit output with Floyd-Steinberg dithering
+    #[value(name = "8")]
+    Eight,
+    /// 16-bit output (default, full fidelity)
+    #[value(name = "16")]
+    Sixteen,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone)]
 enum ColorIntent {
     /// Perceptual rendering intent
     Perceptual,
@@ -68,6 +78,9 @@ enum Command {
         /// Resampling engine (default: mks)
         #[arg(long = "engine", default_value = "mks")]
         engine: CliEngine,
+        /// Output bit depth: 8 (dithered) or 16 (default)
+        #[arg(long = "depth", default_value = "16")]
+        depth: OutputDepth,
     },
 }
 
@@ -86,6 +99,7 @@ fn main() -> Result<()> {
             bpc,
             no_bpc,
             engine,
+            depth,
         } => processor::process(processor::ProcessOptions {
             input,
             output,
@@ -103,6 +117,10 @@ fn main() -> Result<()> {
                 CliEngine::Lanczos3      => processor::ResampleEngine::Lanczos3,
                 CliEngine::IterativeStep => processor::ResampleEngine::IterativeStep,
                 CliEngine::RobidouxEwa   => processor::ResampleEngine::RobidouxEwa,
+            },
+            depth: match depth {
+                OutputDepth::Eight   => 8,
+                OutputDepth::Sixteen => 16,
             },
         }),
     }

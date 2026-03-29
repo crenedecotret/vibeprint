@@ -50,6 +50,7 @@ pub struct ProcessOptions {
     pub intent: lcms2::Intent,
     pub bpc: bool,
     pub engine: ResampleEngine,
+    pub depth: u8,
 }
 
 pub fn process(opts: ProcessOptions) -> Result<()> {
@@ -111,17 +112,27 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
+    let depth_label = if opts.depth == 8 { "8-bit (dithered)" } else { "16-bit" };
     let description = format!(
-        "vibeprint | Engine: {} | Intent: {} | BPC: {} | DPI: {} | Output ICC: {}",
+        "vibeprint | Engine: {} | Intent: {} | BPC: {} | DPI: {} | Depth: {} | Output ICC: {}",
         opts.engine.display_name(),
         intent_name,
         if opts.bpc { "Enabled" } else { "Disabled" },
         opts.target_dpi,
+        depth_label,
         icc_filename,
     );
 
     let transformed = transform_rgb16_icc(&resized, &input_profile, &output_profile, opts.intent, opts.bpc)?;
-    save_rgb16_tiff_with_dpi(&opts.output, &transformed, opts.target_dpi, &output_icc_bytes, &description)?;
+
+    if opts.depth == 8 {
+        println!("VibePrint: Outputting 8-bit TIFF (with dithering).");
+        let dithered = dither_rgb16_to_rgb8(&transformed);
+        save_rgb8_tiff_with_dpi(&opts.output, &dithered, opts.target_dpi, &output_icc_bytes, &description)?;
+    } else {
+        println!("VibePrint: Outputting 16-bit TIFF.");
+        save_rgb16_tiff_with_dpi(&opts.output, &transformed, opts.target_dpi, &output_icc_bytes, &description)?;
+    }
 
     Ok(())
 }
@@ -140,6 +151,50 @@ fn rgb8_to_rgb16(img: &Rgb8Image) -> Rgb16Image {
     }
     ImageBuffer::<Rgb<u16>, Vec<u16>>::from_raw(img.width(), img.height(), out)
         .expect("rgb8_to_rgb16: dimensions mismatch")
+}
+
+fn dither_rgb16_to_rgb8(img: &Rgb16Image) -> Rgb8Image {
+    let w = img.width();
+    let h = img.height();
+    // Working buffer in f32 to accumulate diffused error without clamping loss
+    let mut work: Vec<f32> = img.as_raw().iter().map(|&v| v as f32).collect();
+
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3usize {
+                let idx = ((y * w + x) * 3) as usize + c;
+                let old_val = work[idx];
+                // Quantize to nearest 8-bit level (re-expressed in 16-bit scale)
+                let new_val_8 = (old_val / 257.0).round().clamp(0.0, 255.0);
+                let new_val_16 = new_val_8 * 257.0;
+                work[idx] = new_val_16;
+                let error = old_val - new_val_16;
+                // Floyd-Steinberg diffusion
+                if x + 1 < w {
+                    let i = ((y * w + x + 1) * 3) as usize + c;
+                    work[i] = (work[i] + error * (7.0 / 16.0)).clamp(0.0, 65535.0);
+                }
+                if y + 1 < h {
+                    if x > 0 {
+                        let i = (((y + 1) * w + x - 1) * 3) as usize + c;
+                        work[i] = (work[i] + error * (3.0 / 16.0)).clamp(0.0, 65535.0);
+                    }
+                    let i = (((y + 1) * w + x) * 3) as usize + c;
+                    work[i] = (work[i] + error * (5.0 / 16.0)).clamp(0.0, 65535.0);
+                    if x + 1 < w {
+                        let i = (((y + 1) * w + x + 1) * 3) as usize + c;
+                        work[i] = (work[i] + error * (1.0 / 16.0)).clamp(0.0, 65535.0);
+                    }
+                }
+            }
+        }
+    }
+
+    let out: Vec<u8> = work
+        .iter()
+        .map(|&v| (v / 257.0).round().clamp(0.0, 255.0) as u8)
+        .collect();
+    ImageBuffer::from_raw(w, h, out).expect("dither_rgb16_to_rgb8: buffer size mismatch")
 }
 
 fn resize_rgb16(img: &Rgb16Image, new_w: u32, new_h: u32, engine: &ResampleEngine) -> Rgb16Image {
@@ -413,6 +468,35 @@ fn transform_rgb16_icc(
         .context("failed to construct transformed RGB16 image")?;
 
     Ok(out)
+}
+
+fn save_rgb8_tiff_with_dpi(path: &Path, img: &Rgb8Image, dpi: f64, output_icc_bytes: &[u8], description: &str) -> Result<()> {
+    use tiff::encoder::{colortype, TiffEncoder};
+    use tiff::tags::Tag;
+
+    if dpi <= 0.0 {
+        bail!("dpi must be > 0");
+    }
+
+    let file = File::create(path).with_context(|| format!("failed to create output file: {}", path.display()))?;
+    let mut encoder = TiffEncoder::new(file).context("failed to create TIFF encoder")?;
+    let mut image = encoder
+        .new_image::<colortype::RGB8>(img.width(), img.height())
+        .context("failed to create 8-bit TIFF image")?;
+
+    let (n, d) = dpi_to_rational(dpi);
+    let _ = image.encoder().write_tag(Tag::XResolution, tiff::encoder::Rational { n, d });
+    let _ = image.encoder().write_tag(Tag::YResolution, tiff::encoder::Rational { n, d });
+    let _ = image.encoder().write_tag(Tag::ResolutionUnit, 2u16);
+    let _ = image.encoder().write_tag(Tag::IccProfile, output_icc_bytes);
+    let _ = image.encoder().write_tag(Tag::from_u16_exhaustive(40961), 65535u16);
+    let _ = image.encoder().write_tag(Tag::ImageDescription, description);
+
+    image
+        .write_data(img.as_raw())
+        .context("failed to write 8-bit TIFF pixel data")?;
+
+    Ok(())
 }
 
 fn save_rgb16_tiff_with_dpi(path: &Path, img: &Rgb16Image, dpi: f64, output_icc_bytes: &[u8], description: &str) -> Result<()> {

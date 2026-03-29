@@ -192,6 +192,7 @@ fn engine_smoke_tests() -> Result<()> {
             intent: lcms2::Intent::RelativeColorimetric,
             bpc: true,
             engine: engine.clone(),
+            depth: 16,
         })?;
 
         // Proof: 16-bit output at correct DPI
@@ -258,6 +259,7 @@ fn iterative_step_exact_dimensions() -> Result<()> {
         intent: lcms2::Intent::RelativeColorimetric,
         bpc: true,
         engine: vibeprint::processor::ResampleEngine::IterativeStep,
+        depth: 16,
     })?;
 
     let file = File::open(&output_path)?;
@@ -265,6 +267,55 @@ fn iterative_step_exact_dimensions() -> Result<()> {
     let (w, h) = decoder.dimensions()?;
     assert_eq!(w, 240, "iterative-step: expected width 240, got {}", w);
     assert_eq!(h, 180, "iterative-step: expected height 180, got {}", h);
+
+    Ok(())
+}
+
+#[test]
+fn depth8_dither_smoke_test() -> Result<()> {
+    let tmp = tempdir().context("failed to create tempdir")?;
+    let input_path = tmp.path().join("grad.tif");
+    let output_path = tmp.path().join("out8.tif");
+    let output_icc_path = tmp.path().join("profile.icc");
+
+    // Gradient: fine tonal transitions will show banding without dithering
+    write_gradient_rgb16_tiff(&input_path, 256, 32, 360.0)?;
+    let wide_bytes = make_wide_gamut_profile_bytes()?;
+    std::fs::write(&output_icc_path, &wide_bytes)?;
+
+    vibeprint::processor::process(vibeprint::processor::ProcessOptions {
+        input: input_path,
+        output: output_path.clone(),
+        input_icc: None,
+        output_icc: output_icc_path,
+        target_dpi: 360.0,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: true,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 8,
+    })?;
+
+    // Proof 1: output is 8-bit
+    let (bit_depth, dpi) = read_tiff_bit_depth_and_dpi(&output_path)?;
+    assert_eq!(bit_depth, 8, "depth8: output must be 8-bit");
+    assert!((dpi - 360.0).abs() < 1e-6, "depth8: DPI mismatch");
+
+    // Proof 2: pixels are in 0–255 range and not uniform
+    let file = File::open(&output_path)?;
+    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))?;
+    let pixels: Vec<u8> = match decoder.read_image().context("decode 8-bit pixels")? {
+        tiff::decoder::DecodingResult::U8(v) => v,
+        _ => anyhow::bail!("expected U8 decoding result"),
+    };
+    assert!(!pixels.iter().all(|&p| p == 0),   "depth8: output is all zeros");
+    assert!(!pixels.iter().all(|&p| p == 255),  "depth8: output is all white");
+
+    // Proof 3: dithering introduces variation — gradient should have multiple distinct values
+    let mut seen: std::collections::HashSet<u8> = std::collections::HashSet::new();
+    for &p in &pixels { seen.insert(p); }
+    assert!(seen.len() > 10, "depth8: too few distinct values ({}) — dithering may not be working", seen.len());
+
+    println!("depth8: {} distinct pixel values across dithered gradient", seen.len());
 
     Ok(())
 }
@@ -297,6 +348,7 @@ fn pipeline_validation_suite() -> Result<()> {
         intent: lcms2::Intent::RelativeColorimetric,
         bpc: true,
         engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 16,
     })?;
 
     // Proof 1: output is still 16-bit.
