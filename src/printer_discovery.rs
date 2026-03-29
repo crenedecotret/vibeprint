@@ -90,21 +90,220 @@ pub fn list_printers() -> Result<Vec<PrinterInfo>> {
 
 /// Return the path to the PPD file CUPS has installed for `printer_name`.
 ///
-/// CUPS stores PPDs at `/etc/cups/ppd/<name>.ppd` after driver installation.
+/// Checks two locations in order:
+/// 1. The `Interface:` path reported by `lpstat -l -p` (handles non-standard driver layouts)
+/// 2. The standard `/etc/cups/ppd/<name>.ppd` (driver-based installs)
+///
+/// Returns `None` for driverless / IPP Everywhere printers — use [`query_printer_caps`]
+/// which falls back to `lpoptions` in that case.
 pub fn find_ppd_path(printer_name: &str) -> Option<PathBuf> {
+    // Primary: ask CUPS for the actual interface file via lpstat
+    if let Some(p) = find_ppd_via_lpstat(printer_name) {
+        return Some(p);
+    }
+    // Fallback: conventional location
     let p = PathBuf::from(format!("/etc/cups/ppd/{}.ppd", printer_name));
     if p.exists() { Some(p) } else { None }
 }
 
-/// Query the full capability set for a named printer queue by parsing its PPD.
+fn find_ppd_via_lpstat(printer_name: &str) -> Option<PathBuf> {
+    let out = Command::new("lpstat")
+        .args(["-l", "-p", printer_name])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("Interface:") {
+            let path = rest.trim();
+            if path.starts_with('/') && path.ends_with(".ppd") {
+                let p = PathBuf::from(path);
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Query the full capability set for a named printer queue.
+///
+/// Uses a tiered strategy so it works for all printer types:
+/// 1. **PPD** (driver-based: Epson / Canon / HP with full driver) — richest data.
+/// 2. **`lpoptions -p <name> -l`** (driverless IPP Everywhere, remote queues, any CUPS queue)
+///    — CUPS always synthesises this regardless of driver type.
+/// 3. **Standard imageable-area table** — fills in printable bounds for well-known paper sizes
+///    when no PPD margin data is available.
 pub fn query_printer_caps(name: &str) -> Result<PrinterCaps> {
-    let ppd = find_ppd_path(name).with_context(|| {
-        format!(
-            "no PPD found for '{}' — printer may not be installed or CUPS may lack write access",
-            name
-        )
-    })?;
-    parse_ppd(name, &ppd)
+    match find_ppd_path(name) {
+        Some(ppd_path) => {
+            let mut caps = parse_ppd(name, &ppd_path)?;
+            // Some PPDs (e.g. Gutenprint Epson) encode resolution via non-standard keywords;
+            // if parse_ppd came up empty for resolutions, fill from lpoptions.
+            if caps.resolutions.is_empty() {
+                caps.resolutions = lpoptions_resolutions(name);
+            }
+            // Fill imageable areas that PPD left at the fallback value
+            fill_standard_imageable_areas(&mut caps.page_sizes);
+            Ok(caps)
+        }
+        None => {
+            // Driverless / IPP Everywhere / remote queue — no static PPD file.
+            caps_from_lpoptions(name)
+        }
+    }
+}
+
+// ── lpoptions-based capability query (driverless / IPP fallback) ─────────────
+
+/// Build `PrinterCaps` entirely from `lpoptions -p <name> -l`.
+/// Works for every CUPS queue regardless of driver type.
+fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
+    let out = Command::new("lpoptions")
+        .args(["-p", name, "-l"])
+        .output()
+        .with_context(|| format!("failed to run lpoptions for '{name}'"))?;
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut resolutions: Vec<u32> = Vec::new();
+    let mut media_types: Vec<String> = Vec::new();
+    let mut page_size_entries: Vec<(String, String)> = Vec::new();
+
+    for line in text.lines() {
+        let line = line.trim();
+        // Each line: "OptionKey/Option Label: [*]val1[/Val Label] [*]val2 ..."
+        let (option_key, rest) = match line.split_once('/') {
+            Some(p) => p,
+            None => continue,
+        };
+        let values_str = match rest.split_once(':') {
+            Some((_, v)) => v.trim(),
+            None => continue,
+        };
+
+        match option_key.trim() {
+            "Resolution" | "Dpi" | "OutputResolution" => {
+                for token in values_str.split_whitespace() {
+                    let v = token.trim_start_matches('*');
+                    let key = v.split('/').next().unwrap_or(v);
+                    if let Some(dpi) = parse_resolution_value(key) {
+                        if !resolutions.contains(&dpi) { resolutions.push(dpi); }
+                    }
+                }
+            }
+            "MediaType" => {
+                for token in values_str.split_whitespace() {
+                    let v = token.trim_start_matches('*');
+                    // prefer the human label after '/' if present
+                    let label = v.split('/').nth(1).unwrap_or(v).trim().to_string();
+                    if !label.is_empty() && !media_types.contains(&label) {
+                        media_types.push(label);
+                    }
+                }
+            }
+            "PageSize" => {
+                for token in values_str.split_whitespace() {
+                    let v = token.trim_start_matches('*');
+                    let mut parts = v.splitn(2, '/');
+                    let key   = parts.next().unwrap_or(v).trim().to_string();
+                    let label = parts.next().unwrap_or(&key).trim().to_string();
+                    if !key.is_empty() {
+                        page_size_entries.push((key, label));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if resolutions.is_empty() && media_types.is_empty() && page_size_entries.is_empty() {
+        anyhow::bail!(
+            "no capability data for '{name}': no PPD found and lpoptions returned nothing"
+        );
+    }
+
+    resolutions.sort_unstable();
+
+    let mut page_sizes: Vec<PageSize> = page_size_entries
+        .into_iter()
+        .map(|(name, label)| {
+            let imageable_area = standard_imageable_area(&name)
+                .unwrap_or((0.0, 0.0, 612.0, 792.0));
+            PageSize { name, label, imageable_area }
+        })
+        .collect();
+    fill_standard_imageable_areas(&mut page_sizes);
+
+    let printable_area = page_sizes.first()
+        .map(|p| p.imageable_area)
+        .unwrap_or((0.0, 0.0, 612.0, 792.0));
+
+    Ok(PrinterCaps { name: name.to_string(), resolutions, media_types, page_sizes, printable_area })
+}
+
+/// Extract only the `Resolution` values from `lpoptions -p <name> -l`.
+/// Used to fill gaps when a PPD uses non-standard resolution keywords.
+fn lpoptions_resolutions(name: &str) -> Vec<u32> {
+    let Ok(out) = Command::new("lpoptions").args(["-p", name, "-l"]).output() else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut resolutions = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let key = line.split('/').next().unwrap_or("");
+        if key == "Resolution" || key == "OutputResolution" || key == "Dpi" {
+            if let Some(vals) = line.split_once(':').map(|(_, v)| v) {
+                for token in vals.split_whitespace() {
+                    let v = token.trim_start_matches('*').split('/').next().unwrap_or("");
+                    if let Some(dpi) = parse_resolution_value(v) {
+                        if !resolutions.contains(&dpi) { resolutions.push(dpi); }
+                    }
+                }
+            }
+        }
+    }
+    resolutions.sort_unstable();
+    resolutions
+}
+
+/// Standard imageable area (Left, Bottom, Right, Top in PostScript points) for well-known
+/// paper sizes. Used when no PPD margin data is available (driverless / IPP printers).
+/// Values represent the physical page dimensions (i.e. effectively borderless bounds).
+fn standard_imageable_area(size_name: &str) -> Option<(f32, f32, f32, f32)> {
+    Some(match size_name {
+        "Letter"               => (0.0, 0.0, 612.0,  792.0),
+        "Legal"                => (0.0, 0.0, 612.0, 1008.0),
+        "Tabloid" | "11x17"   => (0.0, 0.0, 792.0, 1224.0),
+        "Executive"            => (0.0, 0.0, 522.0,  756.0),
+        "Statement"            => (0.0, 0.0, 396.0,  612.0),
+        "A3"                   => (0.0, 0.0, 842.0, 1191.0),
+        "A4"                   => (0.0, 0.0, 595.0,  842.0),
+        "A5"                   => (0.0, 0.0, 420.0,  595.0),
+        "A6"                   => (0.0, 0.0, 298.0,  420.0),
+        "B4"                   => (0.0, 0.0, 729.0, 1032.0),
+        "B5"                   => (0.0, 0.0, 516.0,  729.0),
+        "SuperB" | "13x19"    => (0.0, 0.0, 936.0, 1368.0),
+        "w288h432" | "4x6"    => (0.0, 0.0, 288.0,  432.0),
+        "w360h504" | "5x7"    => (0.0, 0.0, 360.0,  504.0),
+        "w432h576" | "6x8"    => (0.0, 0.0, 432.0,  576.0),
+        "w576h720" | "8x10"   => (0.0, 0.0, 576.0,  720.0),
+        "w144h432" | "2x6"    => (0.0, 0.0, 144.0,  432.0),
+        "Postcard"             => (0.0, 0.0, 283.0,  416.0),
+        _ => return None,
+    })
+}
+
+/// For any `PageSize` whose imageable area is all-zeros (unresolved), substitute the
+/// standard area from the lookup table.
+fn fill_standard_imageable_areas(sizes: &mut Vec<PageSize>) {
+    for ps in sizes.iter_mut() {
+        if ps.imageable_area == (0.0, 0.0, 0.0, 0.0) {
+            if let Some(area) = standard_imageable_area(&ps.name) {
+                ps.imageable_area = area;
+            }
+        }
+    }
 }
 
 /// Spawn a background thread that enumerates all printers, then queries each one's
