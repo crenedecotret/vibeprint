@@ -4,3 +4,8 @@ cargo_check.log
 # Generated output TIFFs (processed results, not source data)
 *_out.tif
 *_out.tiff
+MatrixLarge_*.tif
+*_mks.tif
+*_lanczos3.tif
+*_iterative-step.tif
+*_robidoux-ewa.tif

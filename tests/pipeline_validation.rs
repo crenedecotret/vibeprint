@@ -89,6 +89,40 @@ fn read_tiff_pixel_rgb16(path: &Path, x: u32, y: u32) -> Result<(u16, u16, u16)>
     Ok((data[idx], data[idx + 1], data[idx + 2]))
 }
 
+fn write_checkerboard_rgb16_tiff(path: &Path, width: u32, height: u32, dpi: f64, block_size: u32) -> Result<()> {
+    use tiff::encoder::{colortype, TiffEncoder};
+    use tiff::tags::Tag;
+
+    let mut data: Vec<u16> = vec![0; (width as usize) * (height as usize) * 3];
+    for y in 0..height {
+        for x in 0..width {
+            let v: u16 = if ((x / block_size) + (y / block_size)) % 2 == 0 { 65535 } else { 0 };
+            let idx = ((y * width + x) * 3) as usize;
+            data[idx]     = v;
+            data[idx + 1] = v;
+            data[idx + 2] = v;
+        }
+    }
+    let file = File::create(path).with_context(|| format!("failed to create: {}", path.display()))?;
+    let mut encoder = TiffEncoder::new(file)?;
+    let mut image = encoder.new_image::<colortype::RGB16>(width, height)?;
+    let (n, d) = dpi_to_rational(dpi);
+    let _ = image.encoder().write_tag(Tag::XResolution, tiff::encoder::Rational { n, d });
+    let _ = image.encoder().write_tag(Tag::YResolution, tiff::encoder::Rational { n, d });
+    let _ = image.encoder().write_tag(Tag::ResolutionUnit, 2u16);
+    image.write_data(&data).context("failed to write checkerboard")?;
+    Ok(())
+}
+
+fn read_tiff_pixels_u16(path: &Path) -> Result<Vec<u16>> {
+    let file = File::open(path).with_context(|| format!("failed to open: {}", path.display()))?;
+    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))?;
+    match decoder.read_image().context("failed to decode pixels")? {
+        tiff::decoder::DecodingResult::U16(v) => Ok(v),
+        _ => anyhow::bail!("expected u16 decoding result"),
+    }
+}
+
 fn make_wide_gamut_profile_bytes() -> Result<Vec<u8>> {
     // Create a "wide gamut" RGB profile with primaries similar to ProPhoto and gamma 1.8.
     // This is only used for validation testing (we need a deterministic, local profile source).
@@ -124,6 +158,118 @@ fn make_wide_gamut_profile_bytes() -> Result<Vec<u8>> {
 }
 
 #[test]
+fn engine_smoke_tests() -> Result<()> {
+    use std::collections::HashMap;
+
+    let tmp = tempdir().context("failed to create tempdir")?;
+    let input_path = tmp.path().join("checker.tif");
+    let output_icc_path = tmp.path().join("wide_gamut.icc");
+
+    // 32×32 checkerboard at 360 DPI — 2× upscale to 720 DPI → 64×64
+    write_checkerboard_rgb16_tiff(&input_path, 32, 32, 360.0, 4)?;
+    let wide_bytes = make_wide_gamut_profile_bytes()?;
+    std::fs::write(&output_icc_path, &wide_bytes)?;
+
+    let target_dpi = 720.0;
+    let engines = [
+        ("mks",            vibeprint::processor::ResampleEngine::Mks),
+        ("lanczos3",       vibeprint::processor::ResampleEngine::Lanczos3),
+        ("iterative-step", vibeprint::processor::ResampleEngine::IterativeStep),
+        ("robidoux-ewa",   vibeprint::processor::ResampleEngine::RobidouxEwa),
+    ];
+
+    let mut pixel_data: HashMap<&str, Vec<u16>> = HashMap::new();
+
+    for (name, engine) in &engines {
+        let out_path = tmp.path().join(format!("out_{}.tif", name));
+
+        vibeprint::processor::process(vibeprint::processor::ProcessOptions {
+            input: input_path.clone(),
+            output: out_path.clone(),
+            input_icc: None,
+            output_icc: output_icc_path.clone(),
+            target_dpi,
+            intent: lcms2::Intent::RelativeColorimetric,
+            bpc: true,
+            engine: engine.clone(),
+        })?;
+
+        // Proof: 16-bit output at correct DPI
+        let (bit_depth, dpi) = read_tiff_bit_depth_and_dpi(&out_path)?;
+        assert_eq!(bit_depth, 16, "[{}] output must be 16-bit", name);
+        assert!(
+            (dpi - target_dpi).abs() < 1e-6,
+            "[{}] expected {target_dpi} DPI, got {dpi}",
+            name
+        );
+
+        // Proof: exact output dimensions (360→720 DPI, 2× scale)
+        let file = File::open(&out_path)?;
+        let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))?;
+        let (w, h) = decoder.dimensions()?;
+        assert_eq!(w, 64, "[{}] expected width 64, got {}", name, w);
+        assert_eq!(h, 64, "[{}] expected height 64, got {}", name, h);
+
+        // Proof: pixel values not uniformly zero or max (engine actually ran)
+        let pixels = read_tiff_pixels_u16(&out_path)?;
+        assert!(!pixels.iter().all(|&p| p == 0),     "[{}] output is all zeros", name);
+        assert!(!pixels.iter().all(|&p| p == 65535), "[{}] output is all white", name);
+
+        pixel_data.insert(name, pixels);
+    }
+
+    // Proof: different engines produce distinct pixel values
+    let mks     = pixel_data.get("mks").unwrap();
+    let lanczos = pixel_data.get("lanczos3").unwrap();
+    let ewa     = pixel_data.get("robidoux-ewa").unwrap();
+
+    let mks_vs_lanczos = mks.iter().zip(lanczos).filter(|(a, b)| a != b).count();
+    let mks_vs_ewa     = mks.iter().zip(ewa).filter(|(a, b)| a != b).count();
+
+    assert!(mks_vs_lanczos > 0, "MKS and Lanczos3 produced identical output");
+    assert!(mks_vs_ewa > 0,     "MKS and Robidoux-EWA produced identical output");
+
+    println!("Engine diff MKS vs Lanczos3  : {} values ({:.1}%)",
+        mks_vs_lanczos, 100.0 * mks_vs_lanczos as f64 / mks.len() as f64);
+    println!("Engine diff MKS vs Robidoux-EWA: {} values ({:.1}%)",
+        mks_vs_ewa, 100.0 * mks_vs_ewa as f64 / mks.len() as f64);
+
+    Ok(())
+}
+
+#[test]
+fn iterative_step_exact_dimensions() -> Result<()> {
+    let tmp = tempdir().context("failed to create tempdir")?;
+    let input_path = tmp.path().join("grad.tif");
+    let output_path = tmp.path().join("out.tif");
+    let output_icc_path = tmp.path().join("profile.icc");
+
+    // 100×75 at 300 DPI → 720 DPI: scale=2.4 → expected 240×180
+    write_gradient_rgb16_tiff(&input_path, 100, 75, 300.0)?;
+    let wide_bytes = make_wide_gamut_profile_bytes()?;
+    std::fs::write(&output_icc_path, &wide_bytes)?;
+
+    vibeprint::processor::process(vibeprint::processor::ProcessOptions {
+        input: input_path,
+        output: output_path.clone(),
+        input_icc: None,
+        output_icc: output_icc_path,
+        target_dpi: 720.0,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: true,
+        engine: vibeprint::processor::ResampleEngine::IterativeStep,
+    })?;
+
+    let file = File::open(&output_path)?;
+    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))?;
+    let (w, h) = decoder.dimensions()?;
+    assert_eq!(w, 240, "iterative-step: expected width 240, got {}", w);
+    assert_eq!(h, 180, "iterative-step: expected height 180, got {}", h);
+
+    Ok(())
+}
+
+#[test]
 fn pipeline_validation_suite() -> Result<()> {
     let tmp = tempdir().context("failed to create tempdir")?;
     let input_path = tmp.path().join("synthetic_input.tif");
@@ -150,6 +296,7 @@ fn pipeline_validation_suite() -> Result<()> {
         target_dpi,
         intent: lcms2::Intent::RelativeColorimetric,
         bpc: true,
+        engine: vibeprint::processor::ResampleEngine::Mks,
     })?;
 
     // Proof 1: output is still 16-bit.

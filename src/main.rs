@@ -13,6 +13,20 @@ struct Cli {
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
+enum CliEngine {
+    /// Magic Kernel Sharp — Catmull-Rom cubic (default)
+    Mks,
+    /// Classic Lanczos3
+    Lanczos3,
+    /// Iterative 1.1x step upscaling (Fusion-style)
+    #[value(name = "iterative-step")]
+    IterativeStep,
+    /// Elliptical Weighted Average with Robidoux coefficients
+    #[value(name = "robidoux-ewa")]
+    RobidouxEwa,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone)]
 enum ColorIntent {
     /// Perceptual rendering intent
     Perceptual,
@@ -45,9 +59,15 @@ enum Command {
         /// Rendering intent for ICC color transform (default: relative)
         #[arg(long = "intent", default_value = "relative")]
         intent: ColorIntent,
-        /// Disable Black Point Compensation (BPC is enabled by default)
-        #[arg(long = "no-bpc")]
+        /// Explicitly enable Black Point Compensation (default: on for relative, off for others)
+        #[arg(long = "bpc", conflicts_with = "no_bpc")]
+        bpc: bool,
+        /// Explicitly disable Black Point Compensation
+        #[arg(long = "no-bpc", conflicts_with = "bpc")]
         no_bpc: bool,
+        /// Resampling engine (default: mks)
+        #[arg(long = "engine", default_value = "mks")]
+        engine: CliEngine,
     },
 }
 
@@ -63,7 +83,9 @@ fn main() -> Result<()> {
             output_icc,
             dpi,
             intent,
+            bpc,
             no_bpc,
+            engine,
         } => processor::process(processor::ProcessOptions {
             input,
             output,
@@ -75,7 +97,13 @@ fn main() -> Result<()> {
                 ColorIntent::Relative   => lcms2::Intent::RelativeColorimetric,
                 ColorIntent::Saturation => lcms2::Intent::Saturation,
             },
-            bpc: !no_bpc,
+            bpc: if bpc { true } else if no_bpc { false } else { matches!(intent, ColorIntent::Relative) },
+            engine: match engine {
+                CliEngine::Mks           => processor::ResampleEngine::Mks,
+                CliEngine::Lanczos3      => processor::ResampleEngine::Lanczos3,
+                CliEngine::IterativeStep => processor::ResampleEngine::IterativeStep,
+                CliEngine::RobidouxEwa   => processor::ResampleEngine::RobidouxEwa,
+            },
         }),
     }
 }

@@ -22,6 +22,25 @@ struct Rgb16Pixel {
 unsafe impl lcms2::Zeroable for Rgb16Pixel {}
 unsafe impl lcms2::Pod for Rgb16Pixel {}
 
+#[derive(Clone)]
+pub enum ResampleEngine {
+    Mks,
+    Lanczos3,
+    IterativeStep,
+    RobidouxEwa,
+}
+
+impl ResampleEngine {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ResampleEngine::Mks           => "MKS (Magic Kernel Sharp)",
+            ResampleEngine::Lanczos3      => "Lanczos3",
+            ResampleEngine::IterativeStep => "Iterative-Step",
+            ResampleEngine::RobidouxEwa   => "Robidoux-EWA",
+        }
+    }
+}
+
 pub struct ProcessOptions {
     pub input: std::path::PathBuf,
     pub output: std::path::PathBuf,
@@ -30,6 +49,7 @@ pub struct ProcessOptions {
     pub target_dpi: f64,
     pub intent: lcms2::Intent,
     pub bpc: bool,
+    pub engine: ResampleEngine,
 }
 
 pub fn process(opts: ProcessOptions) -> Result<()> {
@@ -39,30 +59,17 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
 
     let (img, source_dpi, embedded_icc) = load_image_with_dpi_and_embedded_icc(&opts.input)?;
 
-    let source_dpi = source_dpi.unwrap_or(opts.target_dpi);
-    let (new_w, new_h) = match &img {
-        LoadedImage::Rgb8(im) => scaled_dimensions(im.width(), im.height(), source_dpi, opts.target_dpi),
-        LoadedImage::Rgb16(im) => scaled_dimensions(im.width(), im.height(), source_dpi, opts.target_dpi),
+    // Convert to 16-bit before resize so all engines operate at full depth
+    let img16: Rgb16Image = match img {
+        LoadedImage::Rgb8(im)  => rgb8_to_rgb16(&im),
+        LoadedImage::Rgb16(im) => im,
     };
 
-    let resized = match img {
-        LoadedImage::Rgb8(im) => {
-            let out: Rgb8Image = if new_w != im.width() || new_h != im.height() {
-                image::imageops::resize(&im, new_w, new_h, FilterType::Lanczos3)
-            } else {
-                im
-            };
-            LoadedImage::Rgb8(out)
-        }
-        LoadedImage::Rgb16(im) => {
-            let out: Rgb16Image = if new_w != im.width() || new_h != im.height() {
-                image::imageops::resize(&im, new_w, new_h, FilterType::Lanczos3)
-            } else {
-                im
-            };
-            LoadedImage::Rgb16(out)
-        }
-    };
+    let source_dpi = source_dpi.unwrap_or(opts.target_dpi);
+    let (new_w, new_h) = scaled_dimensions(img16.width(), img16.height(), source_dpi, opts.target_dpi);
+
+    println!("VibePrint Engine: {} initialized.", opts.engine.display_name());
+    let resized = resize_rgb16(&img16, new_w, new_h, &opts.engine);
 
     let input_profile = match (opts.input_icc.as_ref(), embedded_icc.as_ref()) {
         (Some(path), _) => {
@@ -105,24 +112,16 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
     let description = format!(
-        "vibeprint | Intent: {} | BPC: {} | DPI: {} | Output ICC: {}",
+        "vibeprint | Engine: {} | Intent: {} | BPC: {} | DPI: {} | Output ICC: {}",
+        opts.engine.display_name(),
         intent_name,
         if opts.bpc { "Enabled" } else { "Disabled" },
         opts.target_dpi,
         icc_filename,
     );
 
-    match resized {
-        LoadedImage::Rgb8(im) => {
-            let im16 = rgb8_to_rgb16(&im);
-            let transformed = transform_rgb16_icc(&im16, &input_profile, &output_profile, opts.intent, opts.bpc)?;
-            save_rgb16_tiff_with_dpi(&opts.output, &transformed, opts.target_dpi, &output_icc_bytes, &description)?;
-        }
-        LoadedImage::Rgb16(im) => {
-            let transformed = transform_rgb16_icc(&im, &input_profile, &output_profile, opts.intent, opts.bpc)?;
-            save_rgb16_tiff_with_dpi(&opts.output, &transformed, opts.target_dpi, &output_icc_bytes, &description)?;
-        }
-    }
+    let transformed = transform_rgb16_icc(&resized, &input_profile, &output_profile, opts.intent, opts.bpc)?;
+    save_rgb16_tiff_with_dpi(&opts.output, &transformed, opts.target_dpi, &output_icc_bytes, &description)?;
 
     Ok(())
 }
@@ -141,6 +140,128 @@ fn rgb8_to_rgb16(img: &Rgb8Image) -> Rgb16Image {
     }
     ImageBuffer::<Rgb<u16>, Vec<u16>>::from_raw(img.width(), img.height(), out)
         .expect("rgb8_to_rgb16: dimensions mismatch")
+}
+
+fn resize_rgb16(img: &Rgb16Image, new_w: u32, new_h: u32, engine: &ResampleEngine) -> Rgb16Image {
+    if new_w == img.width() && new_h == img.height() {
+        return img.clone();
+    }
+    match engine {
+        ResampleEngine::Mks           => image::imageops::resize(img, new_w, new_h, FilterType::CatmullRom),
+        ResampleEngine::Lanczos3      => image::imageops::resize(img, new_w, new_h, FilterType::Lanczos3),
+        ResampleEngine::IterativeStep => resize_iterative_step(img, new_w, new_h),
+        ResampleEngine::RobidouxEwa   => resize_ewa_robidoux(img, new_w, new_h),
+    }
+}
+
+fn resize_iterative_step(img: &Rgb16Image, target_w: u32, target_h: u32) -> Rgb16Image {
+    let mut current = img.clone();
+    loop {
+        let cur_w = current.width();
+        let cur_h = current.height();
+        if cur_w == target_w && cur_h == target_h {
+            break;
+        }
+        let next_w = if target_w > cur_w {
+            ((cur_w as f64) * 1.1).round() as u32
+        } else {
+            ((cur_w as f64) / 1.1).round().max(1.0) as u32
+        };
+        let next_h = if target_h > cur_h {
+            ((cur_h as f64) * 1.1).round() as u32
+        } else {
+            ((cur_h as f64) / 1.1).round().max(1.0) as u32
+        };
+        let next_w = if target_w > cur_w { next_w.min(target_w) } else { next_w.max(target_w) };
+        let next_h = if target_h > cur_h { next_h.min(target_h) } else { next_h.max(target_h) };
+        current = image::imageops::resize(&current, next_w, next_h, FilterType::Lanczos3);
+    }
+    current
+}
+
+#[inline]
+fn robidoux_kernel(t: f64) -> f64 {
+    const B: f64 = 0.3782;
+    const C: f64 = 0.3109;
+    let t = t.abs();
+    if t < 1.0 {
+        ((12.0 - 9.0 * B - 6.0 * C) * t * t * t
+            + (-18.0 + 12.0 * B + 6.0 * C) * t * t
+            + (6.0 - 2.0 * B))
+            / 6.0
+    } else if t < 2.0 {
+        ((-B - 6.0 * C) * t * t * t
+            + (6.0 * B + 30.0 * C) * t * t
+            + (-12.0 * B - 48.0 * C) * t
+            + (8.0 * B + 24.0 * C))
+            / 6.0
+    } else {
+        0.0
+    }
+}
+
+fn resize_ewa_robidoux(img: &Rgb16Image, dst_w: u32, dst_h: u32) -> Rgb16Image {
+    let src_w = img.width() as f64;
+    let src_h = img.height() as f64;
+    let scale_x = src_w / (dst_w as f64);
+    let scale_y = src_h / (dst_h as f64);
+
+    // Radius in input-pixel space: 2 for upscaling, 2*scale for downscaling (anti-alias)
+    let radius_x = scale_x.max(1.0) * 2.0;
+    let radius_y = scale_y.max(1.0) * 2.0;
+
+    let src_max_x = img.width() as i64 - 1;
+    let src_max_y = img.height() as i64 - 1;
+    let mut output: Vec<u16> = vec![0u16; (dst_w * dst_h * 3) as usize];
+
+    for oy in 0..dst_h {
+        for ox in 0..dst_w {
+            let ix = (ox as f64 + 0.5) * scale_x - 0.5;
+            let iy = (oy as f64 + 0.5) * scale_y - 0.5;
+
+            let x0 = (ix - radius_x).ceil() as i64;
+            let x1 = (ix + radius_x).floor() as i64;
+            let y0 = (iy - radius_y).ceil() as i64;
+            let y1 = (iy + radius_y).floor() as i64;
+
+            let mut sum_r = 0.0f64;
+            let mut sum_g = 0.0f64;
+            let mut sum_b = 0.0f64;
+            let mut sum_w = 0.0f64;
+
+            for sy in y0..=y1 {
+                let dy = (sy as f64 - iy) / radius_y;
+                for sx in x0..=x1 {
+                    let dx = (sx as f64 - ix) / radius_x;
+                    // EWA: circular support — skip samples outside the unit disc
+                    let r2 = dx * dx + dy * dy;
+                    if r2 >= 1.0 {
+                        continue;
+                    }
+                    let w = robidoux_kernel(r2.sqrt() * 2.0);
+                    if w == 0.0 {
+                        continue;
+                    }
+                    let csx = sx.clamp(0, src_max_x) as u32;
+                    let csy = sy.clamp(0, src_max_y) as u32;
+                    let px = img.get_pixel(csx, csy);
+                    sum_r += w * px[0] as f64;
+                    sum_g += w * px[1] as f64;
+                    sum_b += w * px[2] as f64;
+                    sum_w += w;
+                }
+            }
+
+            let idx = ((oy * dst_w + ox) * 3) as usize;
+            if sum_w > 1e-10 {
+                output[idx]     = (sum_r / sum_w).clamp(0.0, 65535.0).round() as u16;
+                output[idx + 1] = (sum_g / sum_w).clamp(0.0, 65535.0).round() as u16;
+                output[idx + 2] = (sum_b / sum_w).clamp(0.0, 65535.0).round() as u16;
+            }
+        }
+    }
+
+    ImageBuffer::from_raw(dst_w, dst_h, output).expect("ewa_robidoux: buffer size mismatch")
 }
 
 fn load_image_with_dpi_and_embedded_icc(path: &Path) -> Result<(LoadedImage, Option<f64>, Option<Vec<u8>>)> {
