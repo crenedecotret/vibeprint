@@ -1,7 +1,7 @@
 use std::{fs::File, io::BufReader, path::Path};
 
 use anyhow::{bail, Context, Result};
-use image::{imageops::FilterType, DynamicImage, ImageBuffer, Rgb};
+use image::{codecs::png::PngDecoder, imageops::FilterType, DynamicImage, ImageBuffer, ImageDecoder, Rgb};
 
 type Rgb16Image = ImageBuffer<Rgb<u16>, Vec<u16>>;
 type Rgb8Image = ImageBuffer<Rgb<u8>, Vec<u8>>;
@@ -362,6 +362,10 @@ fn load_image_with_dpi_and_embedded_icc(path: &Path) -> Result<(LoadedImage, Opt
         read_tiff_dpi_and_embedded_icc(path).unwrap_or((None, None))
     } else if is_jpeg_path(path) {
         read_jpeg_dpi_and_embedded_icc(path)
+    } else if is_png_path(path) {
+        read_png_dpi_and_embedded_icc(path)
+    } else if is_webp_path(path) {
+        (None, read_webp_embedded_icc(path))
     } else {
         (None, None)
     };
@@ -386,6 +390,83 @@ fn is_jpeg_path(path: &Path) -> bool {
         .unwrap_or("")
         .to_ascii_lowercase();
     ext == "jpg" || ext == "jpeg"
+}
+
+fn is_png_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("png"))
+        .unwrap_or(false)
+}
+
+fn is_webp_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("webp"))
+        .unwrap_or(false)
+}
+
+fn read_png_dpi_and_embedded_icc(path: &Path) -> (Option<f64>, Option<Vec<u8>>) {
+    // ICC: delegate to image crate's PngDecoder — handles iCCP zlib decompression
+    let icc = (|| -> Option<Vec<u8>> {
+        let file = File::open(path).ok()?;
+        let mut decoder = PngDecoder::new(BufReader::new(file)).ok()?;
+        decoder.icc_profile().ok().flatten()
+    })();
+
+    // DPI: scan for pHYs chunk (pixels per unit + unit type)
+    let dpi = (|| -> Option<f64> {
+        let data = std::fs::read(path).ok()?;
+        if data.len() < 8 || &data[0..8] != b"\x89PNG\r\n\x1a\n" {
+            return None;
+        }
+        let mut i = 8usize;
+        while i + 12 <= data.len() {
+            let chunk_len = u32::from_be_bytes(data[i..i+4].try_into().ok()?) as usize;
+            let chunk_type = &data[i+4..i+8];
+            if i + 8 + chunk_len > data.len() { break; }
+            let chunk_data = &data[i+8..i+8+chunk_len];
+            i += 12 + chunk_len;
+            if chunk_type == b"pHYs" && chunk_data.len() >= 9 {
+                let px = u32::from_be_bytes(chunk_data[0..4].try_into().ok()?);
+                let py = u32::from_be_bytes(chunk_data[4..8].try_into().ok()?);
+                let unit = chunk_data[8];
+                if unit == 1 && px > 0 && py > 0 {
+                    // unit=1 means pixels per metre; convert to DPI
+                    return Some((px as f64 + py as f64) / 2.0 * 0.0254);
+                }
+            }
+            // pHYs appears before IDAT; stop once image data starts
+            if chunk_type == b"IDAT" || chunk_type == b"IEND" { break; }
+        }
+        None
+    })();
+
+    (dpi, icc)
+}
+
+fn read_webp_embedded_icc(path: &Path) -> Option<Vec<u8>> {
+    let data = std::fs::read(path).ok()?;
+    // RIFF header: "RIFF" + 4-byte LE size + "WEBP"
+    if data.len() < 12
+        || &data[0..4] != b"RIFF"
+        || &data[8..12] != b"WEBP"
+    {
+        return None;
+    }
+    let mut i = 12usize;
+    while i + 8 <= data.len() {
+        let chunk_id = &data[i..i+4];
+        let chunk_size = u32::from_le_bytes(data[i+4..i+8].try_into().ok()?) as usize;
+        let payload_start = i + 8;
+        if payload_start + chunk_size > data.len() { break; }
+        if chunk_id == b"ICCP" {
+            return Some(data[payload_start..payload_start+chunk_size].to_vec());
+        }
+        // Chunks are padded to even byte boundaries
+        i = payload_start + chunk_size + (chunk_size & 1);
+    }
+    None
 }
 
 fn read_jpeg_dpi_and_embedded_icc(path: &Path) -> (Option<f64>, Option<Vec<u8>>) {
