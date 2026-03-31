@@ -28,8 +28,24 @@ pub struct PageSize {
     pub name: String,
     /// Human-readable label from the PPD, e.g. `"A4 (210 x 297 mm)"`.
     pub label: String,
+    /// Physical sheet dimensions (width, height) in PostScript points.
+    /// Sourced from `*PaperDimension`; falls back to imageable-area extents if unavailable.
+    pub paper_size: (f32, f32),
     /// Printable bounds: Left, Bottom, Right, Top (PostScript points).
     pub imageable_area: (f32, f32, f32, f32),
+}
+
+/// A single CUPS/PPD option with all its selectable choices.
+#[derive(Debug, Clone)]
+pub struct CupsOption {
+    /// PPD keyword, e.g. `"ColorModel"`, `"StpQuality"`.
+    pub key: String,
+    /// Human-readable option name, e.g. `"Color Model"`, `"Print Quality"`.
+    pub label: String,
+    /// `(ppd_key, human_label)` pairs for each selectable choice.
+    pub choices: Vec<(String, String)>,
+    /// Index into `choices` of the PPD/CUPS default.
+    pub default_idx: usize,
 }
 
 /// Full hardware capabilities for one printer queue.
@@ -40,11 +56,14 @@ pub struct PrinterCaps {
     pub resolutions: Vec<u32>,
     /// Human-readable media type labels, e.g. `["Plain Paper", "Premium Glossy Photo"]`.
     pub media_types: Vec<String>,
+    /// Source tray / input slot labels, e.g. `["Auto", "Manual", "Roll"]`.
+    pub input_slots: Vec<String>,
     /// All supported page sizes with per-size imageable areas.
     pub page_sizes: Vec<PageSize>,
     /// Printable area for the PPD's default page size (Left, Bottom, Right, Top in points).
-    /// This is the field used directly by the processing pipeline.
     pub printable_area: (f32, f32, f32, f32),
+    /// Every other PPD/CUPS option group not covered by the fields above.
+    pub extra_options: Vec<CupsOption>,
 }
 
 /// Events emitted by the background discovery thread.
@@ -167,7 +186,9 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
     let text = String::from_utf8_lossy(&out.stdout);
     let mut resolutions: Vec<u32> = Vec::new();
     let mut media_types: Vec<String> = Vec::new();
+    let mut input_slots: Vec<String> = Vec::new();
     let mut page_size_entries: Vec<(String, String)> = Vec::new();
+    let mut extra_options: Vec<CupsOption> = Vec::new();
 
     for line in text.lines() {
         let line = line.trim();
@@ -176,17 +197,18 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
             Some(p) => p,
             None => continue,
         };
-        let values_str = match rest.split_once(':') {
-            Some((_, v)) => v.trim(),
+        let (option_label, values_str) = match rest.split_once(':') {
+            Some((l, v)) => (l.trim(), v.trim()),
             None => continue,
         };
+        let key = option_key.trim();
 
-        match option_key.trim() {
+        match key {
             "Resolution" | "Dpi" | "OutputResolution" => {
                 for token in values_str.split_whitespace() {
                     let v = token.trim_start_matches('*');
-                    let key = v.split('/').next().unwrap_or(v);
-                    if let Some(dpi) = parse_resolution_value(key) {
+                    let k = v.split('/').next().unwrap_or(v);
+                    if let Some(dpi) = parse_resolution_value(k) {
                         if !resolutions.contains(&dpi) { resolutions.push(dpi); }
                     }
                 }
@@ -194,10 +216,18 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
             "MediaType" => {
                 for token in values_str.split_whitespace() {
                     let v = token.trim_start_matches('*');
-                    // prefer the human label after '/' if present
                     let label = v.split('/').nth(1).unwrap_or(v).trim().to_string();
                     if !label.is_empty() && !media_types.contains(&label) {
                         media_types.push(label);
+                    }
+                }
+            }
+            "InputSlot" | "MediaPosition" => {
+                for token in values_str.split_whitespace() {
+                    let v = token.trim_start_matches('*');
+                    let label = v.split('/').nth(1).unwrap_or(v).trim().to_string();
+                    if !label.is_empty() && !input_slots.contains(&label) {
+                        input_slots.push(label);
                     }
                 }
             }
@@ -205,14 +235,37 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
                 for token in values_str.split_whitespace() {
                     let v = token.trim_start_matches('*');
                     let mut parts = v.splitn(2, '/');
-                    let key   = parts.next().unwrap_or(v).trim().to_string();
-                    let label = parts.next().unwrap_or(&key).trim().to_string();
-                    if !key.is_empty() {
-                        page_size_entries.push((key, label));
+                    let k     = parts.next().unwrap_or(v).trim().to_string();
+                    let label = parts.next().unwrap_or(&k).trim().to_string();
+                    if !k.is_empty() {
+                        page_size_entries.push((k, label));
                     }
                 }
             }
-            _ => {}
+            _ => {
+                // Generic option — capture as CupsOption
+                let mut choices: Vec<(String, String)> = Vec::new();
+                let mut default_idx = 0usize;
+                for token in values_str.split_whitespace() {
+                    let is_default = token.starts_with('*');
+                    let v = token.trim_start_matches('*');
+                    let (ck, cl) = if let Some((k, l)) = v.split_once('/') {
+                        (k.to_string(), l.to_string())
+                    } else {
+                        (v.to_string(), v.to_string())
+                    };
+                    if is_default { default_idx = choices.len(); }
+                    if !ck.is_empty() { choices.push((ck, cl)); }
+                }
+                if choices.len() >= 2 {
+                    extra_options.push(CupsOption {
+                        key: key.to_string(),
+                        label: option_label.to_string(),
+                        choices,
+                        default_idx,
+                    });
+                }
+            }
         }
     }
 
@@ -229,7 +282,9 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
         .map(|(name, label)| {
             let imageable_area = standard_imageable_area(&name)
                 .unwrap_or((0.0, 0.0, 612.0, 792.0));
-            PageSize { name, label, imageable_area }
+            let paper_size = standard_paper_size(&name)
+                .unwrap_or((imageable_area.2, imageable_area.3));
+            PageSize { name, label, paper_size, imageable_area }
         })
         .collect();
     fill_standard_imageable_areas(&mut page_sizes);
@@ -238,7 +293,7 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
         .map(|p| p.imageable_area)
         .unwrap_or((0.0, 0.0, 612.0, 792.0));
 
-    Ok(PrinterCaps { name: name.to_string(), resolutions, media_types, page_sizes, printable_area })
+    Ok(PrinterCaps { name: name.to_string(), resolutions, media_types, input_slots, page_sizes, printable_area, extra_options })
 }
 
 /// Extract only the `Resolution` values from `lpoptions -p <name> -l`.
@@ -375,51 +430,111 @@ fn discovery_worker(tx: Sender<DiscoveryEvent>) {
 
 // ── PPD Parser ───────────────────────────────────────────────────────────────
 
+/// Extract `(key, human_label)` from a `*OpenUI *Key/Human Label: PickOne` line.
+fn parse_open_ui_key_label(line: &str) -> Option<(String, String)> {
+    // Find the second '*' (first is the *OpenUI / *JCLOpenUI keyword itself)
+    let second = line.char_indices()
+        .filter(|(_, c)| *c == '*')
+        .nth(1)
+        .map(|(i, _)| i)?;
+    let rest = &line[second + 1..];           // "Key/Human Label: PickOne"
+    let colon = rest.find(':')?;
+    let key_label = rest[..colon].trim();     // "Key/Human Label"
+    if let Some((k, l)) = key_label.split_once('/') {
+        Some((k.trim().to_string(), l.trim().to_string()))
+    } else {
+        let k = key_label.to_string();
+        Some((k.clone(), k))
+    }
+}
+
+/// Flush a pending `Generic` section into `extra_options`.
+fn flush_generic(
+    key: String,
+    label: String,
+    choices: Vec<(String, String)>,
+    defaults: &HashMap<String, String>,
+    extra_options: &mut Vec<CupsOption>,
+) {
+    if choices.len() < 2 { return; }
+    let def = defaults.get(&key).map(|s| s.as_str()).unwrap_or("");
+    let default_idx = choices.iter().position(|(k, _)| k == def).unwrap_or(0);
+    extra_options.push(CupsOption { key, label, choices, default_idx });
+}
+
 fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read PPD: {}", path.display()))?;
 
     let mut resolutions: Vec<u32> = Vec::new();
     let mut media_types: Vec<String> = Vec::new();
-    let mut page_size_entries: Vec<(String, String)> = Vec::new(); // (name, label)
+    let mut input_slots: Vec<String> = Vec::new();
+    let mut page_size_entries: Vec<(String, String)> = Vec::new();
     let mut imageable_areas: HashMap<String, (f32, f32, f32, f32)> = HashMap::new();
+    let mut paper_dimensions: HashMap<String, (f32, f32)> = HashMap::new();
     let mut default_page_size: Option<String> = None;
+    let mut extra_options: Vec<CupsOption> = Vec::new();
+    // *Default<Key>: Value lines — used to set default_idx in extra_options
+    let mut defaults: HashMap<String, String> = HashMap::new();
+
+    // These option keys are handled by dedicated fields — skip for extra_options.
+    const SKIP_KEYS: &[&str] = &[
+        "Resolution", "MediaType", "InputSlot", "MediaPosition",
+        "PageSize", "PageRegion",
+    ];
 
     // Which *OpenUI section are we currently inside?
-    #[derive(PartialEq)]
-    enum Section { Resolution, MediaType, PageSize, Other }
+    enum Section {
+        Resolution,
+        MediaType,
+        InputSlot,
+        PageSize,
+        Generic { key: String, label: String, choices: Vec<(String, String)> },
+        Other,
+    }
     let mut section = Section::Other;
 
     for raw in text.lines() {
         let line = raw.trim();
 
-        // ── Section transitions ──────────────────────────────────────────────
-        // Both *OpenUI and *JCLOpenUI wrap the same option types
-        if (line.starts_with("*OpenUI") || line.starts_with("*JCLOpenUI"))
-            && line.contains("*Resolution")
-        {
-            section = Section::Resolution;
+        // ── Collect *Default<Key>: <Value> for later default_idx resolution ──
+        if let Some(rest) = line.strip_prefix("*Default") {
+            if let Some((k, v)) = rest.split_once(':') {
+                defaults.insert(k.trim().to_string(), v.trim().to_string());
+            }
+            // Do not continue — may still be relevant for other matchers below
+        }
+
+        // ── Section open ─────────────────────────────────────────────────────
+        if line.starts_with("*OpenUI") || line.starts_with("*JCLOpenUI") {
+            // Flush any pending generic section first
+            let prev = std::mem::replace(&mut section, Section::Other);
+            if let Section::Generic { key, label, choices } = prev {
+                flush_generic(key, label, choices, &defaults, &mut extra_options);
+            }
+
+            if let Some((key, label)) = parse_open_ui_key_label(line) {
+                section = match key.as_str() {
+                    "Resolution" => Section::Resolution,
+                    "MediaType"  => Section::MediaType,
+                    "InputSlot" | "MediaPosition" => Section::InputSlot,
+                    "PageSize"  | "PageRegion"    => Section::PageSize,
+                    _ => Section::Generic { key, label, choices: Vec::new() },
+                };
+            }
             continue;
         }
-        if (line.starts_with("*OpenUI") || line.starts_with("*JCLOpenUI"))
-            && line.contains("*MediaType")
-        {
-            section = Section::MediaType;
-            continue;
-        }
-        if (line.starts_with("*OpenUI") || line.starts_with("*JCLOpenUI"))
-            && line.contains("*PageSize")
-        {
-            section = Section::PageSize;
-            continue;
-        }
+
+        // ── Section close ────────────────────────────────────────────────────
         if line.starts_with("*CloseUI") || line.starts_with("*JCLCloseUI") {
-            section = Section::Other;
+            let prev = std::mem::replace(&mut section, Section::Other);
+            if let Section::Generic { key, label, choices } = prev {
+                flush_generic(key, label, choices, &defaults, &mut extra_options);
+            }
             continue;
         }
 
         // ── Default page size ────────────────────────────────────────────────
-        // Prefer *DefaultPageSize; fall back to *DefaultImageableArea (used by some Epson PPDs)
         if let Some(rest) = line.strip_prefix("*DefaultPageSize:") {
             default_page_size = Some(rest.trim().to_string());
             continue;
@@ -430,8 +545,20 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
             }
         }
 
-        // ── ImageableArea <Key>[/<Label>]: "L B R T" ────────────────────────────────
-        // Key may have an optional /Label suffix (e.g. "Letter/Letter:" or just "Letter:")
+        // ── PaperDimension <key>[/<label>]: "width height" ───────────────────
+        if let Some(rest) = line.strip_prefix("*PaperDimension ") {
+            if let Some((key_part, val)) = rest.split_once(':') {
+                let key = key_part.trim().split('/').next().unwrap_or("").trim().to_string();
+                if !key.is_empty() {
+                    if let Some((w, h)) = parse_pair(val) {
+                        paper_dimensions.insert(key, (w, h));
+                    }
+                }
+            }
+            continue;
+        }
+
+        // ── ImageableArea ─────────────────────────────────────────────────────
         if let Some(rest) = line.strip_prefix("*ImageableArea ") {
             if let Some((key_part, val)) = rest.split_once(':') {
                 let key = key_part.trim().split('/').next().unwrap_or("").trim().to_string();
@@ -444,8 +571,10 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
             continue;
         }
 
-        // ── Epson/Gutenprint *StpQuality / generic *PrintQuality ────────────
-        // These embed HWResolution[x y] in PostScript code instead of using *OpenUI *Resolution
+        // ── Epson/Gutenprint *StpQuality / *PrintQuality HWResolution ────────
+        // These embed HWResolution[x y] in PostScript instead of *OpenUI *Resolution.
+        // Extract DPI but do NOT continue — fall through so the Generic section
+        // handler below also captures the choice key/label.
         if (line.starts_with("*StpQuality ") || line.starts_with("*PrintQuality "))
             && !line.contains("Default")
         {
@@ -461,26 +590,21 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
                     resolutions.push(dpi);
                 }
             }
-            continue;
+            // fall through to section match below
         }
 
         // ── Options inside the active OpenUI section ─────────────────────────
-        match section {
+        match &mut section {
             Section::Resolution => {
-                // "*Resolution 720dpi/720 dpi: ..." or "*Resolution 1440x720dpi/..."
                 if let Some(rest) = line.strip_prefix("*Resolution ") {
-                    // skip *DefaultResolution lines
                     if rest.starts_with("Default") { continue; }
                     let value = rest.split('/').next().unwrap_or("").trim();
                     if let Some(dpi) = parse_resolution_value(value) {
-                        if !resolutions.contains(&dpi) {
-                            resolutions.push(dpi);
-                        }
+                        if !resolutions.contains(&dpi) { resolutions.push(dpi); }
                     }
                 }
             }
             Section::MediaType => {
-                // "*MediaType GlossyPhoto/Premium Glossy Photo: ..."
                 if let Some(rest) = line.strip_prefix("*MediaType ") {
                     if rest.starts_with("Default") { continue; }
                     if let Some((_, label_rest)) = rest.split_once('/') {
@@ -491,8 +615,26 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
                     }
                 }
             }
+            Section::InputSlot => {
+                for prefix in &["*InputSlot ", "*MediaPosition "] {
+                    if let Some(rest) = line.strip_prefix(prefix) {
+                        if rest.starts_with("Default") { continue; }
+                        if let Some((_, label_rest)) = rest.split_once('/') {
+                            let label = label_rest.split(':').next().unwrap_or("").trim().to_string();
+                            if !label.is_empty() && !input_slots.contains(&label) {
+                                input_slots.push(label);
+                            }
+                        } else if let Some((key, _)) = rest.split_once(':') {
+                            let key = key.trim().to_string();
+                            if !key.is_empty() && !input_slots.contains(&key) {
+                                input_slots.push(key);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
             Section::PageSize => {
-                // "*PageSize A4/A4: ..." or "*PageSize Letter/US Letter: ..."
                 if let Some(rest) = line.strip_prefix("*PageSize ") {
                     if rest.starts_with("Default") { continue; }
                     if let Some((key, label_rest)) = rest.split_once('/') {
@@ -502,15 +644,39 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
                     }
                 }
             }
+            Section::Generic { key, choices, .. } => {
+                // Choice lines: "*<Key> ChoiceKey/Choice Label: <postscript>"
+                let prefix = format!("*{} ", key);
+                if let Some(rest) = line.strip_prefix(prefix.as_str()) {
+                    if rest.starts_with("Default") { continue; }
+                    // Parse "ChoiceKey/Choice Label:" — stop at first ':'
+                    if let Some(colon) = rest.find(':') {
+                        let kl = rest[..colon].trim();
+                        let (ck, cl) = if let Some((k, l)) = kl.split_once('/') {
+                            (k.trim().to_string(), l.trim().to_string())
+                        } else {
+                            (kl.to_string(), kl.to_string())
+                        };
+                        // Sanity: skip empty or suspiciously long / postscript-looking keys
+                        if !ck.is_empty() && ck.len() < 64 && !ck.contains('"') {
+                            choices.push((ck, cl));
+                        }
+                    }
+                }
+            }
             Section::Other => {}
         }
     }
 
+    // Flush any still-open generic section at end-of-file
+    if let Section::Generic { key, label, choices } = section {
+        flush_generic(key, label, choices, &defaults, &mut extra_options);
+    }
+
     resolutions.sort_unstable();
 
-    // Determine printable_area from the default page size
     let default_ps = default_page_size.as_deref().unwrap_or("");
-    let fallback_area = (12.0f32, 12.0, 600.0, 780.0); // conservative Letter margins
+    let fallback_area = (12.0f32, 12.0, 600.0, 780.0);
     let printable_area = imageable_areas
         .get(default_ps)
         .copied()
@@ -525,16 +691,25 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
         .into_iter()
         .map(|(name, label)| {
             let imageable_area = imageable_areas.get(&name).copied().unwrap_or(fallback_area);
-            PageSize { name, label, imageable_area }
+            let paper_size = paper_dimensions.get(&name)
+                .copied()
+                .or_else(|| standard_paper_size(&name))
+                .unwrap_or((imageable_area.2, imageable_area.3));
+            PageSize { name, label, paper_size, imageable_area }
         })
         .collect();
+
+    // Suppress the unused variable warning — SKIP_KEYS is used conceptually above
+    let _ = SKIP_KEYS;
 
     Ok(PrinterCaps {
         name: printer_name.to_string(),
         resolutions,
         media_types,
+        input_slots,
         page_sizes,
         printable_area,
+        extra_options,
     })
 }
 
@@ -543,6 +718,32 @@ fn parse_quad(s: &str) -> Option<(f32, f32, f32, f32)> {
     let s = s.trim().trim_matches('"');
     let mut it = s.split_whitespace().filter_map(|t| t.parse::<f32>().ok());
     Some((it.next()?, it.next()?, it.next()?, it.next()?))
+}
+
+/// Parse `"W H"` or `W H` from a PPD value string (used by `*PaperDimension`).
+fn parse_pair(s: &str) -> Option<(f32, f32)> {
+    let s = s.trim().trim_matches('"');
+    let mut it = s.split_whitespace().filter_map(|t| t.parse::<f32>().ok());
+    Some((it.next()?, it.next()?))
+}
+
+/// Physical sheet dimensions for well-known paper names (width × height, PostScript points).
+fn standard_paper_size(name: &str) -> Option<(f32, f32)> {
+    match name {
+        "Letter"    | "na_letter_8.5x11in"  => Some((612.0,  792.0)),
+        "Legal"     | "na_legal_8.5x14in"   => Some((612.0, 1008.0)),
+        "Tabloid"   | "11x17"               => Some((792.0, 1224.0)),
+        "Executive"                          => Some((522.0,  756.0)),
+        "A3"        | "iso_a3_297x420mm"    => Some((842.0, 1191.0)),
+        "A4"        | "iso_a4_210x297mm"    => Some((595.0,  842.0)),
+        "A5"        | "iso_a5_148x210mm"    => Some((420.0,  595.0)),
+        "B4"        | "iso_b4_250x353mm"    => Some((709.0, 1001.0)),
+        "B5"        | "iso_b5_176x250mm"    => Some((499.0,  709.0)),
+        "Postcard"                           => Some((284.0,  419.0)),
+        "SuperB"    | "13x19"               => Some((936.0, 1368.0)),
+        "Statement"                          => Some((396.0,  612.0)),
+        _                                    => None,
+    }
 }
 
 /// Parse a PPD resolution value string into a DPI integer.
