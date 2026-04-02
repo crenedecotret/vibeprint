@@ -443,7 +443,6 @@ impl App {
                     self.pending_page_size_name = None; // clear after successful restore
                     idx
                 } else {
-                    self.log.push(format!("Saved paper size '{}' not found, using default", sz_name));
                     self.pending_page_size_name = None; // clear even if not found
                     0
                 }
@@ -552,6 +551,7 @@ impl App {
                     let all_have_caps = self.printers.iter().all(|p| self.all_caps.contains_key(&p.name));
                     if all_have_caps {
                         self.discovery_complete = true;
+                        self.log.push("Ready to print!".to_string());
                     }
                 }
             }
