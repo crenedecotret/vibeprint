@@ -440,7 +440,6 @@ impl App {
             // Try to restore saved paper size, otherwise default to 0
             self.selected_page_size_idx = if let Some(ref sz_name) = self.pending_page_size_name {
                 if let Some(idx) = caps.page_sizes.iter().position(|ps| &ps.name == sz_name) {
-                    self.log.push(format!("Restored paper size: {}", sz_name));
                     self.pending_page_size_name = None; // clear after successful restore
                     idx
                 } else {
