@@ -41,6 +41,19 @@ impl ResampleEngine {
     }
 }
 
+/// Full-page layout parameters for print output.
+/// The image will be letterboxed into the print rect, optionally rotated 90° CW,
+/// then composited onto a blank white full-paper page.
+pub struct PageLayout {
+    pub page_w_px:  u32,  // paper width in pixels  (paper_w_pt / 72 * dpi)
+    pub page_h_px:  u32,  // paper height in pixels
+    pub print_x:    u32,  // print rect left on page (centred in imageable area)
+    pub print_y:    u32,  // print rect top on page
+    pub print_w_px: u32,  // print rect width  (target box for letterboxing)
+    pub print_h_px: u32,  // print rect height
+    pub rotate_cw:  bool, // rotate image 90° CW before compositing
+}
+
 pub struct ProcessOptions {
     pub input: std::path::PathBuf,
     pub output: std::path::PathBuf,
@@ -52,6 +65,7 @@ pub struct ProcessOptions {
     pub engine: ResampleEngine,
     pub depth: u8,
     pub sharpen: u8,
+    pub page_layout: Option<PageLayout>,
 }
 
 pub fn process(opts: ProcessOptions) -> Result<()> {
@@ -67,8 +81,20 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         LoadedImage::Rgb16(im) => im,
     };
 
-    let source_dpi = source_dpi.unwrap_or(opts.target_dpi);
-    let (new_w, new_h) = scaled_dimensions(img16.width(), img16.height(), source_dpi, opts.target_dpi);
+    // Determine resize target: explicit print-rect dims or DPI-scaled dims
+    let (new_w, new_h) = if let Some(ref layout) = opts.page_layout {
+        let (ow, oh) = (img16.width(), img16.height());
+        // After 90° CW rotation new_w=oh, new_h=ow; scale so it fits in print rect
+        let s = if layout.rotate_cw {
+            (layout.print_w_px as f64 / oh as f64).min(layout.print_h_px as f64 / ow as f64)
+        } else {
+            (layout.print_w_px as f64 / ow as f64).min(layout.print_h_px as f64 / oh as f64)
+        };
+        ((ow as f64 * s).round().max(1.0) as u32, (oh as f64 * s).round().max(1.0) as u32)
+    } else {
+        scaled_dimensions(img16.width(), img16.height(),
+            source_dpi.unwrap_or(opts.target_dpi), opts.target_dpi)
+    };
 
     println!("VibePrint Engine: {} initialized.", opts.engine.display_name());
     let resized = resize_rgb16(&img16, new_w, new_h, &opts.engine);
@@ -161,13 +187,36 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
 
     let transformed = transform_rgb16_icc(&sharpened, &input_profile, &output_profile, opts.intent, opts.bpc)?;
 
+    // Build full-page canvas if a page layout was requested
+    let final_image = if let Some(ref layout) = opts.page_layout {
+        let placed = if layout.rotate_cw {
+            println!("VibePrint: Rotating image 90° CW for page layout.");
+            rotate_90_cw_rgb16(&transformed)
+        } else {
+            transformed
+        };
+        let (pw, ph) = (placed.width(), placed.height());
+        // Centre the image within the print rect on the page
+        let cx = layout.print_x + layout.print_w_px.saturating_sub(pw) / 2;
+        let cy = layout.print_y + layout.print_h_px.saturating_sub(ph) / 2;
+        println!("VibePrint: Compositing {}x{} image at ({},{}) on {}x{} page.",
+            pw, ph, cx, cy, layout.page_w_px, layout.page_h_px);
+        let page_data = vec![65535u16; (layout.page_w_px * layout.page_h_px * 3) as usize];
+        let mut page: Rgb16Image = ImageBuffer::from_raw(layout.page_w_px, layout.page_h_px, page_data)
+            .context("failed to allocate page buffer")?;
+        composite_rgb16(&mut page, &placed, cx, cy);
+        page
+    } else {
+        transformed
+    };
+
     if opts.depth == 8 {
         println!("VibePrint: Outputting 8-bit TIFF (with dithering).");
-        let dithered = dither_rgb16_to_rgb8(&transformed);
+        let dithered = dither_rgb16_to_rgb8(&final_image);
         save_rgb8_tiff_with_dpi(&opts.output, &dithered, opts.target_dpi, &output_icc_bytes, &description)?;
     } else {
         println!("VibePrint: Outputting 16-bit TIFF.");
-        save_rgb16_tiff_with_dpi(&opts.output, &transformed, opts.target_dpi, &output_icc_bytes, &description)?;
+        save_rgb16_tiff_with_dpi(&opts.output, &final_image, opts.target_dpi, &output_icc_bytes, &description)?;
     }
 
     Ok(())
@@ -825,4 +874,47 @@ fn dpi_to_rational(dpi: f64) -> (u32, u32) {
     let d = 10000u32;
     let n = (dpi * (d as f64)).round().max(0.0) as u32;
     (n, d)
+}
+
+/// Rotate an Rgb16Image 90° clockwise.
+/// New dimensions: new_w = orig_h, new_h = orig_w.
+/// Mapping: new(nx, ny) = old(ny, orig_h - 1 - nx)
+fn rotate_90_cw_rgb16(img: &Rgb16Image) -> Rgb16Image {
+    let (w, h) = (img.width(), img.height());
+    let new_w = h;
+    let new_h = w;
+    let src = img.as_raw();
+    let mut dst = vec![0u16; (new_w * new_h * 3) as usize];
+    for ny in 0..new_h {
+        for nx in 0..new_w {
+            let ox = ny;
+            let oy = h - 1 - nx;
+            let si = ((oy * w + ox) * 3) as usize;
+            let di = ((ny * new_w + nx) * 3) as usize;
+            dst[di]     = src[si];
+            dst[di + 1] = src[si + 1];
+            dst[di + 2] = src[si + 2];
+        }
+    }
+    ImageBuffer::from_raw(new_w, new_h, dst).expect("rotate_90_cw_rgb16: buffer mismatch")
+}
+
+/// Composite `img` onto `page` with its top-left at (x, y), clipping to page bounds.
+fn composite_rgb16(page: &mut Rgb16Image, img: &Rgb16Image, x: u32, y: u32) {
+    let page_w = page.width();
+    let page_h = page.height();
+    let img_w  = img.width();
+    let img_h  = img.height();
+    let src = img.as_raw();
+    let dst = page.as_mut();
+    for row in 0..img_h {
+        let py = y + row;
+        if py >= page_h { break; }
+        let cols = img_w.min(page_w.saturating_sub(x));
+        if cols == 0 { continue; }
+        let si = (row * img_w * 3) as usize;
+        let di = (py * page_w * 3 + x * 3) as usize;
+        dst[di..di + (cols * 3) as usize]
+            .copy_from_slice(&src[si..si + (cols * 3) as usize]);
+    }
 }

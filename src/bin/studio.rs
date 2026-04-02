@@ -7,6 +7,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use vibeprint::{
+    monitor_icc,
     printer_discovery::{self, CupsOption, DiscoveryEvent, PrinterCaps, PrinterInfo},
     processor::{self, ProcessOptions, ResampleEngine},
 };
@@ -38,6 +39,7 @@ const PRINT_SIZES: &[(f32, f32, &str)] = &[
     ( 2.0,  2.0, "2 × 2"),
     // FIT_PAGE_IDX (15) = "Fit to Page" — handled as sentinel, not a real entry
 ];
+
 
 // ── Small types ───────────────────────────────────────────────────────────────
 
@@ -104,6 +106,42 @@ enum ProcState {
     Failed(String),
 }
 
+// ── Persistent settings ───────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct Settings {
+    current_dir:   Option<String>,
+    printer_name:  Option<String>,
+    page_size_name: Option<String>,
+    engine:        Option<String>,
+    sharpen:       Option<u8>,
+    depth16:       Option<bool>,
+    target_dpi:    Option<u32>,
+    output_icc:    Option<String>,
+    intent:        Option<String>,
+    bpc:           Option<bool>,
+    output_dir:    Option<String>,
+}
+
+fn config_path() -> Option<PathBuf> {
+    let mut p = dirs::config_dir()?;
+    p.push("vibeprint");
+    p.push("settings.json");
+    Some(p)
+}
+
+fn load_settings() -> Settings {
+    let path = match config_path() { Some(p) => p, None => return Settings::default() };
+    let text = match std::fs::read_to_string(&path) { Ok(t) => t, Err(_) => return Settings::default() };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+fn save_settings(s: &Settings) {
+    let Some(path) = config_path() else { return };
+    if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Ok(text) = serde_json::to_string_pretty(s) { let _ = std::fs::write(path, text); }
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 struct App {
@@ -112,8 +150,8 @@ struct App {
     subdirs: Vec<(String, PathBuf)>,
     image_files: Vec<PathBuf>,
     thumbs: HashMap<PathBuf, ThumbState>,
-    thumb_tx: Sender<(PathBuf, ColorImage)>,
-    thumb_rx: Receiver<(PathBuf, ColorImage)>,
+    thumb_tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>)>,
+    thumb_rx: Receiver<(PathBuf, ColorImage, Option<Vec<u8>>)>,
     selected: Option<PathBuf>,
     highlighted: Option<PathBuf>,
     canvas_tex: Option<egui::TextureHandle>,
@@ -162,6 +200,16 @@ struct App {
 
     // ── Status ──
     log: Vec<String>,
+
+    // ── Saved-settings restoration ──
+    pending_printer_name: Option<String>,
+    pending_page_size_name: Option<String>,
+
+    // ── Splash screen ──
+    discovery_complete: bool,
+
+    // ── Monitor ICC profile ──
+    monitor_icc_profile: Option<Vec<u8>>,
 }
 
 impl App {
@@ -171,10 +219,40 @@ impl App {
 
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let out_dir = dirs::desktop_dir().unwrap_or_else(|| home.clone());
-        let (thumb_tx, thumb_rx) = mpsc::channel();
+        let (thumb_tx, thumb_rx) = mpsc::channel::<(PathBuf, ColorImage, Option<Vec<u8>>)>();
+        let s = load_settings();
+
+        // Restore last folder (fall back to home if missing)
+        let start_dir = s.current_dir.as_deref()
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| home.clone());
+
+        // Restore output folder (fall back to desktop)
+        let saved_out_dir = s.output_dir.as_deref()
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or(out_dir);
+
+        // Restore output ICC (fall back to None if file missing)
+        let saved_icc: Option<PathBuf> = s.output_icc.as_deref()
+            .map(PathBuf::from)
+            .filter(|p| p.is_file());
+
+        let saved_engine = match s.engine.as_deref() {
+            Some("lanczos3")  => Engine::Lanczos3,
+            Some("iterative") => Engine::Iterative,
+            Some("robidoux")  => Engine::RobidouxEwa,
+            _                 => Engine::Mks,
+        };
+        let saved_intent = match s.intent.as_deref() {
+            Some("perceptual") => Intent::Perceptual,
+            Some("saturation") => Intent::Saturation,
+            _                  => Intent::Relative,
+        };
 
         let mut app = Self {
-            current_dir: home,
+            current_dir: start_dir,
             subdirs: Vec::new(),
             image_files: Vec::new(),
             thumbs: HashMap::new(),
@@ -203,16 +281,16 @@ impl App {
             selected_page_size_idx: 0,
             extra_option_indices: HashMap::new(),
 
-            engine: Engine::Mks,
-            sharpen: 5,
-            depth16: true,
-            target_dpi: 720,
+            engine: saved_engine,
+            sharpen: s.sharpen.unwrap_or(5),
+            depth16: s.depth16.unwrap_or(true),
+            target_dpi: s.target_dpi.unwrap_or(720),
 
-            output_icc: None,
-            intent: Intent::Relative,
-            bpc: true,
+            output_icc: saved_icc,
+            intent: saved_intent,
+            bpc: s.bpc.unwrap_or(true),
 
-            output_dir: out_dir,
+            output_dir: saved_out_dir,
 
             proc_state: ProcState::Idle,
             proc_rx: None,
@@ -220,12 +298,26 @@ impl App {
             right_tab: RightTab::PrinterSettings,
 
             log: Vec::new(),
+
+            pending_printer_name: s.printer_name,
+            pending_page_size_name: s.page_size_name,
+
+            discovery_complete: false,
+
+            monitor_icc_profile: monitor_icc::get_monitor_profile(),
         };
+        
+        // Log monitor ICC status
+        if let Some(ref profile) = app.monitor_icc_profile {
+            let desc = monitor_icc::profile_description(profile).unwrap_or_else(|| "Unknown profile".into());
+            app.log.push(format!("✓ Monitor ICC profile: {}", desc));
+        } else {
+            app.log.push("⚠ No monitor ICC profile found (using raw display)".into());
+        }
+        
         app.scan_dir();
         app
     }
-
-    // ── Directory scanning ────────────────────────────────────────────────────
 
     fn scan_dir(&mut self) {
         self.subdirs.clear();
@@ -316,9 +408,12 @@ impl App {
         self.canvas_img_size = None;
         self.print_size_idx = None;
         self.right_tab = RightTab::ImageProperties;
-        // Send a full-res load via the thumb channel with a special size=0 sentinel
+        // Send a full-res load via the thumb channel with embedded ICC extraction
         let tx = self.thumb_tx.clone();
         thread::spawn(move || {
+            // Try to extract embedded ICC profile
+            let embedded_icc = extract_embedded_icc(&path);
+            
             if let Ok(img) = image::open(&path) {
                 let rgb = img.into_rgb8();
                 let size = [rgb.width() as usize, rgb.height() as usize];
@@ -326,7 +421,7 @@ impl App {
                     .chunks_exact(3)
                     .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
                     .collect();
-                let _ = tx.send((path, ColorImage { size, pixels }));
+                let _ = tx.send((path, ColorImage { size, pixels }, embedded_icc));
             }
         });
     }
@@ -344,7 +439,22 @@ impl App {
         if let Some(caps) = self.all_caps.get(&name) {
             self.props_media_idx        = 0;
             self.props_slot_idx         = 0;
-            self.selected_page_size_idx = 0;
+            
+            // Try to restore saved paper size, otherwise default to 0
+            self.selected_page_size_idx = if let Some(ref sz_name) = self.pending_page_size_name {
+                if let Some(idx) = caps.page_sizes.iter().position(|ps| &ps.name == sz_name) {
+                    self.log.push(format!("Restored paper size: {}", sz_name));
+                    self.pending_page_size_name = None; // clear after successful restore
+                    idx
+                } else {
+                    self.log.push(format!("Saved paper size '{}' not found, using default", sz_name));
+                    self.pending_page_size_name = None; // clear even if not found
+                    0
+                }
+            } else {
+                0
+            };
+            
             // Seed extra_option_indices from each option's PPD default
             self.extra_option_indices.clear();
             for opt in &caps.extra_options {
@@ -361,10 +471,47 @@ impl App {
 
     fn pump(&mut self, ctx: &Context) {
         // Thumbnails / canvas image
-        while let Ok((path, ci)) = self.thumb_rx.try_recv() {
+        while let Ok((path, mut ci, embedded_icc)) = self.thumb_rx.try_recv() {
             let name = path.to_string_lossy().to_string();
             if self.selected.as_ref() == Some(&path) {
                 let size = ci.size;
+                
+                // Apply monitor ICC profile for color-accurate display
+                if let Some(ref monitor_profile) = self.monitor_icc_profile {
+                    self.log.push(format!("🎨 Applying color transform to canvas..."));
+                    
+                    // Convert ColorImage pixels to bytes for lcms2
+                    let mut pixel_bytes: Vec<u8> = ci.pixels
+                        .iter()
+                        .flat_map(|c| vec![c.r(), c.g(), c.b()])
+                        .collect();
+                    
+                    let pixel_count = pixel_bytes.len() / 3;
+                    
+                    // Apply color transform with embedded ICC as source and app's intent/BPC
+                    match monitor_icc::apply_monitor_profile(
+                        monitor_profile, 
+                        embedded_icc.as_deref(),
+                        &mut pixel_bytes,
+                        self.intent.to_lcms(),
+                        self.bpc
+                    ) {
+                        Some(_) => {
+                            self.log.push(format!("✓ Color transform applied to {} pixels", pixel_count));
+                            // Convert back to ColorImage
+                            ci.pixels = pixel_bytes
+                                .chunks_exact(3)
+                                .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
+                                .collect();
+                        }
+                        None => {
+                            self.log.push("✗ Failed to apply color transform".into());
+                        }
+                    }
+                } else {
+                    self.log.push("⚠ No monitor profile available for canvas".into());
+                }
+                
                 let tex = ctx.load_texture(&name, ci, egui::TextureOptions::LINEAR);
                 self.canvas_tex = Some(tex.clone());
                 self.canvas_img_size = Some(size);
@@ -386,7 +533,17 @@ impl App {
         let mut need_sync = false;
         for ev in disc_events {
             match ev {
-                DiscoveryEvent::PrintersListed(p) => { self.printers = p; need_sync = true; }
+                DiscoveryEvent::PrintersListed(p) => {
+                    self.printers = p;
+                    // Restore saved printer selection by name
+                    if let Some(ref name) = self.pending_printer_name.clone() {
+                        if let Some(idx) = self.printers.iter().position(|p| &p.name == name) {
+                            self.printer_idx = idx;
+                        }
+                        self.pending_printer_name = None;
+                    }
+                    need_sync = true;
+                }
                 DiscoveryEvent::CapsReady(c) => {
                     self.all_caps.insert(c.name.clone(), c);
                     need_sync = true;
@@ -395,7 +552,17 @@ impl App {
                 DiscoveryEvent::Error(e)   => self.log.push(format!("✗ CUPS: {e}")),
             }
         }
-        if need_sync { self.sync_caps_to_selection(); }
+        if need_sync { 
+                self.sync_caps_to_selection();
+                // Check if discovery is complete (all printers have caps)
+                if !self.discovery_complete && !self.printers.is_empty() {
+                    let all_have_caps = self.printers.iter().all(|p| self.all_caps.contains_key(&p.name));
+                    if all_have_caps {
+                        self.discovery_complete = true;
+                        self.log.push("✓ Printer discovery complete".to_string());
+                    }
+                }
+            }
 
         // Process result
         if let Some(rx) = &self.proc_rx {
@@ -422,6 +589,63 @@ impl App {
         };
         let stem = input.file_stem().unwrap_or_default().to_string_lossy();
         let output = self.output_dir.join(format!("{}_vp.tif", stem));
+
+        // Build page layout from current canvas state (mirrors draw_canvas logic at print resolution)
+        let page_layout: Option<processor::PageLayout> = (|| {
+            let idx = self.print_size_idx?;
+            let ps  = self.caps.as_ref()?.page_sizes.get(self.selected_page_size_idx)?;
+            let (ia_l, ia_b, ia_r, ia_t) = ps.imageable_area;
+            let dpi = self.target_dpi as f64;
+
+            let ia_w_in = (ia_r - ia_l) as f64 / 72.0;
+            let ia_h_in = (ia_t - ia_b) as f64 / 72.0;
+            let ia_w_px = (ia_w_in * dpi).round() as u32;
+            let ia_h_px = (ia_h_in * dpi).round() as u32;
+            // TIFF is sized to the imageable area (GIMP-style): CUPS positions it
+            // within the printable area automatically when printing with scaling=100.
+            let page_w_px = ia_w_px;
+            let page_h_px = ia_h_px;
+
+            let img_aspect = self.canvas_img_size
+                .map(|s| s[0] as f64 / s[1] as f64)
+                .unwrap_or(1.0);
+
+            let (print_w_px, print_h_px, rotate_cw) = if idx < PRINT_SIZES.len() {
+                let (w_in, h_in, _) = PRINT_SIZES[idx];
+                let (w_in, h_in) = (w_in as f64, h_in as f64);
+                let fits_portrait  = w_in <= ia_w_in && h_in <= ia_h_in;
+                let fits_landscape = h_in <= ia_w_in && w_in <= ia_h_in;
+                let (rect_landscape, rotate_cw) = if img_aspect > 1.0 {
+                    if fits_landscape { (true, false) } else { (false, true) }
+                } else {
+                    if fits_portrait  { (false, false) } else { (true, true) }
+                };
+                let (pw, ph) = if rect_landscape { (h_in, w_in) } else { (w_in, h_in) };
+                ((pw * dpi).round() as u32, (ph * dpi).round() as u32, rotate_cw)
+            } else if idx == FIT_PAGE_IDX {
+                let (nw, nh) = if ia_w_in / ia_h_in > img_aspect {
+                    (ia_h_in * img_aspect, ia_h_in)
+                } else {
+                    (ia_w_in, ia_w_in / img_aspect)
+                };
+                let rot_a = 1.0 / img_aspect;
+                let (rw, rh) = if ia_w_in / ia_h_in > rot_a {
+                    (ia_h_in * rot_a, ia_h_in)
+                } else {
+                    (ia_w_in, ia_w_in * img_aspect)
+                };
+                let (pw, ph, rotate_cw) = if rw * rh > nw * nh { (rw, rh, true) } else { (nw, nh, false) };
+                ((pw * dpi).round() as u32, (ph * dpi).round() as u32, rotate_cw)
+            } else {
+                return None;
+            };
+
+            let print_x = ia_w_px.saturating_sub(print_w_px) / 2;
+            let print_y = ia_h_px.saturating_sub(print_h_px) / 2;
+
+            Some(processor::PageLayout { page_w_px, page_h_px, print_x, print_y, print_w_px, print_h_px, rotate_cw })
+        })();
+
         let opts = ProcessOptions {
             input,
             output: output.clone(),
@@ -433,6 +657,7 @@ impl App {
             engine: self.engine.to_proc(),
             depth: if self.depth16 { 16 } else { 8 },
             sharpen: self.sharpen,
+            page_layout,
         };
         let (tx, rx) = mpsc::channel();
         self.proc_rx = Some(rx);
@@ -463,7 +688,7 @@ impl App {
                 .on_hover_text("Back").clicked() { self.nav_back(); }
             if ui.add_enabled(can_fwd,  egui::Button::new("▶").min_size(btn_size))
                 .on_hover_text("Forward").clicked() { self.nav_fwd(); }
-            if ui.add(egui::Button::new("⌂").min_size(btn_size))
+            if ui.add(egui::Button::new("🏠").min_size(btn_size))
                 .on_hover_text("Home").clicked() { self.navigate(home.clone()); }
         });
 
@@ -838,8 +1063,9 @@ impl App {
                 self.sync_caps_to_selection();
             }
 
+            // ── Paper Size ────────────────────────────────────────────
             if let Some(caps) = &self.caps {
-                // ── Paper Size ────────────────────────────────────────────
+                // Use real caps when available (discovery is complete)
                 let ps_label = caps.page_sizes
                     .get(self.selected_page_size_idx)
                     .map(|p| p.label.as_str())
@@ -879,6 +1105,18 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label("Sharpen:");
                 ui.add(egui::Slider::new(&mut self.sharpen, 0..=20).show_value(true));
+            });
+
+            // Output DPI
+            ui.horizontal(|ui| {
+                ui.label("Output DPI:");
+                egui::ComboBox::from_id_salt("dpi_cb")
+                    .selected_text(format!("{}", self.target_dpi))
+                    .show_ui(ui, |ui| {
+                        for &dpi in &[300u32, 360, 600, 720] {
+                            ui.selectable_value(&mut self.target_dpi, dpi, format!("{dpi}"));
+                        }
+                    });
             });
 
             // Output depth toggle
@@ -949,56 +1187,48 @@ impl App {
                 }
             });
 
-            ui.add_space(10.0);
+            ui.add_space(6.0);
+        }); // end settings ScrollArea
 
-            // Status log
-            ui.label(RichText::new("Log").strong().size(12.0));
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .id_salt("log_scroll")
-                .max_height(80.0)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    for entry in &self.log {
-                        ui.label(RichText::new(entry).small().monospace());
-                    }
-                });
+        // ── Process & Print ───────────────────────────────────────────────────
+        // Button is always rendered at the same position so egui never misses a click.
+        ui.separator();
+        let is_running = matches!(self.proc_state, ProcState::Running);
+        let has_image  = self.selected.is_some();
 
-            ui.add_space(10.0);
+        let btn = egui::Button::new(
+            RichText::new("🖨  Process & Print").size(14.0).strong(),
+        )
+        .min_size(Vec2::new(ui.available_width(), 36.0));
 
-            // ── Process & Print ───────────────────────────────────────────────
-            ui.separator();
-            let is_running = matches!(self.proc_state, ProcState::Running);
-            let has_image  = self.selected.is_some();
+        if ui.add_enabled(has_image && !is_running, btn).clicked() {
+            self.start_process();
+        }
 
-            if is_running {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Processing…");
-                });
-            } else {
-                let btn = egui::Button::new(
-                    RichText::new("🖨  Process & Print").size(14.0).strong(),
-                )
-                .min_size(Vec2::new(ui.available_width(), 36.0));
+        if is_running {
+            ui.horizontal(|ui| { ui.spinner(); ui.label("Processing…"); });
+        } else if !has_image {
+            ui.label(RichText::new("Select an image first").small().weak());
+        } else if let ProcState::Done(ref p) = self.proc_state {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            ui.label(RichText::new(format!("✓ {name}")).small().color(Color32::GREEN));
+        } else if let ProcState::Failed(ref e) = self.proc_state {
+            ui.label(RichText::new(format!("✗ {e}")).small().color(Color32::RED));
+        }
 
-                if ui.add_enabled(has_image, btn).clicked() {
-                    self.start_process();
+        // ── Log (at the bottom) ───────────────────────────────────────────────
+        ui.add_space(4.0);
+        ui.label(RichText::new("Log").strong().size(12.0));
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .id_salt("log_scroll")
+            .max_height(80.0)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for entry in &self.log {
+                    ui.label(RichText::new(entry).small().monospace());
                 }
-
-                if !has_image {
-                    ui.label(RichText::new("Select an image first").small().weak());
-                }
-
-                if let ProcState::Done(ref p) = self.proc_state {
-                    let name = p.file_name().unwrap_or_default().to_string_lossy();
-                    ui.label(RichText::new(format!("✓ {name}")).small().color(Color32::GREEN));
-                }
-                if let ProcState::Failed(ref e) = self.proc_state {
-                    ui.label(RichText::new(format!("✗ {e}")).small().color(Color32::RED));
-                }
-            }
-        });
+            });
     }
 
     fn draw_tab_image(&mut self, ui: &mut egui::Ui) {
@@ -1189,6 +1419,36 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let engine_str = match self.engine {
+            Engine::Lanczos3     => "lanczos3",
+            Engine::Iterative    => "iterative",
+            Engine::RobidouxEwa  => "robidoux",
+            Engine::Mks          => "mks",
+        };
+        let intent_str = match self.intent {
+            Intent::Perceptual  => "perceptual",
+            Intent::Saturation  => "saturation",
+            Intent::Relative    => "relative",
+        };
+        let printer_name = self.printers.get(self.printer_idx).map(|p| p.name.clone());
+        save_settings(&Settings {
+            current_dir:   Some(self.current_dir.to_string_lossy().into_owned()),
+            printer_name,
+            page_size_name: self.caps.as_ref()
+                .and_then(|c| c.page_sizes.get(self.selected_page_size_idx))
+                .map(|ps| ps.name.clone()),
+            engine:    Some(engine_str.into()),
+            sharpen:   Some(self.sharpen),
+            depth16:   Some(self.depth16),
+            target_dpi: Some(self.target_dpi),
+            output_icc: self.output_icc.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            intent:    Some(intent_str.into()),
+            bpc:       Some(self.bpc),
+            output_dir: Some(self.output_dir.to_string_lossy().into_owned()),
+        });
+    }
+
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.pump(ctx);
 
@@ -1201,6 +1461,47 @@ impl eframe::App for App {
 
         if self.show_props { self.show_printer_props(ctx); }
 
+        // Show splash screen during printer discovery
+        if !self.discovery_complete {
+            egui::CentralPanel::default()
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() * 0.3);
+                        
+                        // Title
+                        ui.label(RichText::new("VibePrint Studio").size(32.0).strong());
+                        ui.add_space(24.0);
+                        
+                        // Loading indicator
+                        ui.add_space(16.0);
+                        // Center the container but keep spinner+text together on the left
+                        ui.horizontal(|ui| {
+                            let space_each_side = (ui.available_width() - 200.0) / 2.0;
+                            ui.add_space(space_each_side.max(0.0));
+                            ui.spinner();
+                            ui.label(RichText::new("Discovering printers...").size(16.0));
+                        });
+                        
+                        ui.add_space(ui.available_height() * 0.3);
+                        
+                        // Show any discovery warnings/errors
+                        if !self.log.is_empty() {
+                            ui.separator();
+                            ui.add_space(8.0);
+                            egui::ScrollArea::vertical()
+                                .max_height(120.0)
+                                .show(ui, |ui| {
+                                    for entry in self.log.iter().take(5) {
+                                        ui.label(RichText::new(entry).small().monospace());
+                                    }
+                                });
+                        }
+                    });
+                });
+            return;
+        }
+
+        // Normal UI after discovery complete
         egui::SidePanel::left("assets")
             .default_width(LEFT_W)
             .min_width(140.0)
@@ -1332,6 +1633,119 @@ fn check_size_fit(w_in: f32, h_in: f32, ia_w_in: f32, ia_h_in: f32) -> (bool, bo
     else                    { (false, false) }
 }
 
+/// Extract embedded ICC profile from image file (JPEG APP2, PNG iCCP, TIFF tag)
+fn extract_embedded_icc(path: &std::path::Path) -> Option<Vec<u8>> {
+    let ext = path.extension().and_then(|s| s.to_str())?.to_ascii_lowercase();
+    let data = std::fs::read(path).ok()?;
+    
+    match ext.as_str() {
+        "jpg" | "jpeg" => {
+            // Look for APP2 marker (0xFFE2) followed by "ICC_PROFILE"
+            let mut i = 0;
+            while i < data.len().saturating_sub(16) {
+                if data[i] == 0xFF && data[i+1] == 0xE2 {
+                    // Found APP2 marker, check for ICC_PROFILE signature
+                    let len = ((data[i+2] as usize) << 8) | (data[i+3] as usize);
+                    if i + 4 + 11 < data.len() && &data[i+4..i+4+11] == b"ICC_PROFILE" {
+                        // ICC profile data starts after "ICC_PROFILE\0" + sequence byte
+                        let icc_start = i + 4 + 14; // Skip "ICC_PROFILE\0" + 2 bytes (sequence/chunk)
+                        let icc_len = len.saturating_sub(16);
+                        if icc_start + icc_len <= data.len() {
+                            return Some(data[icc_start..icc_start + icc_len].to_vec());
+                        }
+                    }
+                    i += 2 + len;
+                } else if data[i] == 0xFF && (data[i+1] == 0xD8 || data[i+1] == 0xD9 || data[i+1] >= 0xE0) {
+                    // Skip other markers
+                    let len = if data[i+1] == 0xD8 { 0 } else { ((data[i+2] as usize) << 8) | (data[i+3] as usize) };
+                    i += 2 + len;
+                } else {
+                    i += 1;
+                }
+            }
+            None
+        }
+        "png" => {
+            // Look for iCCP chunk
+            let mut i = 8; // Skip PNG signature
+            while i < data.len().saturating_sub(12) {
+                let len = ((data[i] as usize) << 24) | ((data[i+1] as usize) << 16) |
+                          ((data[i+2] as usize) << 8) | (data[i+3] as usize);
+                let chunk_type = &data[i+4..i+8];
+                if chunk_type == b"iCCP" {
+                    // iCCP chunk: profile name + compression method + compressed profile
+                    let chunk_data = &data[i+8..i+8+len];
+                    // Find null terminator for profile name
+                    let null_pos = chunk_data.iter().position(|&b| b == 0)?;
+                    let compression = chunk_data.get(null_pos + 1)?;
+                    if *compression == 0 { // deflate
+                        let compressed = &chunk_data[null_pos + 2..];
+                        use std::io::Read;
+                        let mut decoder = flate2::read::ZlibDecoder::new(compressed);
+                        let mut profile = Vec::new();
+                        if decoder.read_to_end(&mut profile).is_ok() {
+                            return Some(profile);
+                        }
+                    }
+                } else if chunk_type == b"IEND" {
+                    break;
+                }
+                i += 12 + len; // len + type + data + CRC
+            }
+            None
+        }
+        "tif" | "tiff" => {
+            // Look for ICC tag (34675 = 0x8773)
+            if data.len() < 8 { return None; }
+            let little_endian = data[0] == 0x49; // "II" = little endian
+            let ifd_offset = if little_endian {
+                (data[4] as usize) | ((data[5] as usize) << 8) | ((data[6] as usize) << 16) | ((data[7] as usize) << 24)
+            } else {
+                ((data[4] as usize) << 24) | ((data[5] as usize) << 16) | ((data[6] as usize) << 8) | (data[7] as usize)
+            };
+            
+            if ifd_offset + 2 > data.len() { return None; }
+            let num_entries = if little_endian {
+                (data[ifd_offset] as usize) | ((data[ifd_offset + 1] as usize) << 8)
+            } else {
+                ((data[ifd_offset] as usize) << 8) | (data[ifd_offset + 1] as usize)
+            };
+            
+            let mut offset = ifd_offset + 2;
+            for _ in 0..num_entries {
+                if offset + 12 > data.len() { break; }
+                let tag = if little_endian {
+                    (data[offset] as u16) | ((data[offset + 1] as u16) << 8)
+                } else {
+                    ((data[offset] as u16) << 8) | (data[offset + 1] as u16)
+                };
+                if tag == 34675 { // ICC profile tag
+                    let len = if little_endian {
+                        (data[offset + 4] as usize) | ((data[offset + 5] as usize) << 8) |
+                        ((data[offset + 6] as usize) << 16) | ((data[offset + 7] as usize) << 24)
+                    } else {
+                        ((data[offset + 4] as usize) << 24) | ((data[offset + 5] as usize) << 16) |
+                        ((data[offset + 6] as usize) << 8) | (data[offset + 7] as usize)
+                    };
+                    let value_offset = if little_endian {
+                        (data[offset + 8] as usize) | ((data[offset + 9] as usize) << 8) |
+                        ((data[offset + 10] as usize) << 16) | ((data[offset + 11] as usize) << 24)
+                    } else {
+                        ((data[offset + 8] as usize) << 24) | ((data[offset + 9] as usize) << 16) |
+                        ((data[offset + 10] as usize) << 8) | (data[offset + 11] as usize)
+                    };
+                    if value_offset + len <= data.len() {
+                        return Some(data[value_offset..value_offset + len].to_vec());
+                    }
+                }
+                offset += 12;
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn is_image(path: &std::path::Path) -> bool {
     matches!(
         path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str(),
@@ -1339,7 +1753,7 @@ fn is_image(path: &std::path::Path) -> bool {
     )
 }
 
-fn load_thumb(path: PathBuf, size: u32, tx: Sender<(PathBuf, ColorImage)>) {
+fn load_thumb(path: PathBuf, size: u32, tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>)>) {
     if let Ok(img) = image::open(&path) {
         let thumb = img.thumbnail(size, size).into_rgb8();
         let w = thumb.width() as usize;
@@ -1348,13 +1762,13 @@ fn load_thumb(path: PathBuf, size: u32, tx: Sender<(PathBuf, ColorImage)>) {
             .chunks_exact(3)
             .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
             .collect();
-        let _ = tx.send((path, ColorImage { size: [w, h], pixels }));
+        let _ = tx.send((path, ColorImage { size: [w, h], pixels }, None));
     } else {
         // Signal failure by sending an empty 1×1 magenta image
         let _ = tx.send((path, ColorImage {
             size: [1, 1],
             pixels: vec![Color32::from_rgb(200, 0, 80)],
-        }));
+        }, None));
     }
 }
 

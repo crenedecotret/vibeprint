@@ -136,6 +136,7 @@ fn main() -> Result<()> {
                 OutputDepth::Sixteen => 16,
             },
             sharpen,
+            page_layout: None,
         }),
     }
 }
