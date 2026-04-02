@@ -307,12 +307,9 @@ impl App {
             monitor_icc_profile: monitor_icc::get_monitor_profile(),
         };
         
-        // Log monitor ICC status
-        if let Some(ref profile) = app.monitor_icc_profile {
-            let desc = monitor_icc::profile_description(profile).unwrap_or_else(|| "Unknown profile".into());
-            app.log.push(format!("✓ Monitor ICC profile: {}", desc));
-        } else {
-            app.log.push("⚠ No monitor ICC profile found (using raw display)".into());
+        // Log monitor ICC status (silent - only log errors)
+        if app.monitor_icc_profile.is_none() {
+            app.log.push("⚠ No monitor ICC profile found".into());
         }
         
         app.scan_dir();
@@ -476,10 +473,8 @@ impl App {
             if self.selected.as_ref() == Some(&path) {
                 let size = ci.size;
                 
-                // Apply monitor ICC profile for color-accurate display
+                // Apply monitor ICC profile for color-accurate display (silent)
                 if let Some(ref monitor_profile) = self.monitor_icc_profile {
-                    self.log.push(format!("🎨 Applying color transform to canvas..."));
-                    
                     // Convert ColorImage pixels to bytes for lcms2
                     let mut pixel_bytes: Vec<u8> = ci.pixels
                         .iter()
@@ -497,7 +492,6 @@ impl App {
                         self.bpc
                     ) {
                         Some(_) => {
-                            self.log.push(format!("✓ Color transform applied to {} pixels", pixel_count));
                             // Convert back to ColorImage
                             ci.pixels = pixel_bytes
                                 .chunks_exact(3)
@@ -505,7 +499,7 @@ impl App {
                                 .collect();
                         }
                         None => {
-                            self.log.push("✗ Failed to apply color transform".into());
+                            self.log.push("✗ Color transform failed".into());
                         }
                     }
                 } else {
@@ -559,7 +553,6 @@ impl App {
                     let all_have_caps = self.printers.iter().all(|p| self.all_caps.contains_key(&p.name));
                     if all_have_caps {
                         self.discovery_complete = true;
-                        self.log.push("✓ Printer discovery complete".to_string());
                     }
                 }
             }
