@@ -1291,15 +1291,29 @@ impl App {
     fn show_printer_props(&mut self, ctx: &Context) {
         let Some(caps) = self.caps.clone() else { self.show_props = false; return };
 
+        // Calculate dynamic size based on content and screen
+        let num_extra = caps.extra_options.len();
+        let base_height = if num_extra > 0 { 280.0 } else { 180.0 };
+        let extra_height = (num_extra as f32 * 28.0).min(350.0); // ~28px per row, max 350
+        let content_height = base_height + extra_height;
+        
+        // Use percentage of screen with min/max constraints
+        let screen = ctx.screen_rect();
+        let width = (screen.width() * 0.35).clamp(340.0, 520.0);
+        let height = (screen.height() * 0.7).clamp(220.0, content_height.max(400.0));
+
         egui::Window::new(format!("Properties — {}", caps.name))
             .collapsible(false)
             .resizable(true)
-            .min_width(320.0)
+            .default_size([width, height])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                // Use percentage-based widths for dropdowns
+                let combo_width = ui.available_width() * 0.55;
+                
                 egui::Grid::new("props_grid")
                     .num_columns(2)
-                    .spacing([12.0, 6.0])
+                    .spacing([ui.available_width() * 0.03, 6.0])
                     .striped(true)
                     .show(ui, |ui| {
                         // ── Media Type ───────────────────────────────────
@@ -1308,6 +1322,7 @@ impl App {
                             ui.label(RichText::new("—").weak());
                         } else {
                             egui::ComboBox::from_id_salt("props_media")
+                                .width(combo_width)
                                 .selected_text(
                                     caps.media_types.get(self.props_media_idx)
                                         .map(|s| s.as_str()).unwrap_or("—")
@@ -1329,16 +1344,13 @@ impl App {
                                 .get(self.selected_page_size_idx)
                                 .map(|p| p.label.as_str()).unwrap_or("—");
                             egui::ComboBox::from_id_salt("props_paper")
+                                .width(combo_width)
                                 .selected_text(ps_label)
                                 .show_ui(ui, |ui| {
                                     for i in 0..caps.page_sizes.len() {
-                                        let (_, _, r, t) = caps.page_sizes[i].imageable_area;
-                                        let entry = format!(
-                                            "{} — {:.0}×{:.0} pt",
-                                            caps.page_sizes[i].label, r, t
-                                        );
+                                        let label = caps.page_sizes[i].label.clone();
                                         ui.selectable_value(
-                                            &mut self.selected_page_size_idx, i, entry
+                                            &mut self.selected_page_size_idx, i, label
                                         );
                                     }
                                 });
@@ -1349,6 +1361,7 @@ impl App {
                         if !caps.input_slots.is_empty() {
                             ui.label("Input Slot:");
                             egui::ComboBox::from_id_salt("props_slot")
+                                .width(combo_width)
                                 .selected_text(
                                     caps.input_slots.get(self.props_slot_idx)
                                         .map(|s| s.as_str()).unwrap_or("—")
@@ -1364,35 +1377,59 @@ impl App {
 
                 // ── Additional CUPS options ───────────────────────────────────
                 if !caps.extra_options.is_empty() {
-                    ui.add_space(6.0);
+                    ui.add_space(8.0);
                     ui.separator();
                     ui.label(RichText::new("Advanced / Printer-specific").small().weak());
                     ui.add_space(4.0);
 
+                    // Dynamic scroll area filling remaining space
+                    let remaining = ui.available_height() - 40.0; // Reserve for Close button
                     egui::ScrollArea::vertical()
                         .id_salt("props_extra_scroll")
-                        .max_height(260.0)
+                        .max_height(remaining.max(100.0))
+                        .auto_shrink([false; 2])
                         .show(ui, |ui| {
+                            let extra_combo_width = ui.available_width() * 0.50;
                             egui::Grid::new("props_extra_grid")
                                 .num_columns(2)
-                                .spacing([12.0, 5.0])
+                                .spacing([ui.available_width() * 0.03, 6.0])
                                 .striped(true)
                                 .show(ui, |ui| {
                                     for opt in &caps.extra_options {
-                                        ui.label(&opt.label);
+                                        // Truncate very long labels
+                                        let label_text = if opt.label.len() > 35 {
+                                            format!("{:.32}...", opt.label)
+                                        } else {
+                                            opt.label.clone()
+                                        };
+                                        ui.label(label_text);
+                                        
                                         let idx = self.extra_option_indices
                                             .entry(opt.key.clone())
                                             .or_insert(opt.default_idx);
                                         let sel_text = opt.choices.get(*idx)
-                                            .map(|(_, l)| l.as_str())
-                                            .unwrap_or("—");
+                                            .map(|(_, l)| {
+                                                if l.len() > 30 {
+                                                    format!("{:.27}...", l)
+                                                } else {
+                                                    l.clone()
+                                                }
+                                            })
+                                            .unwrap_or("—".to_string());
+                                        
                                         egui::ComboBox::from_id_salt(
                                             format!("props_extra_{}", opt.key)
                                         )
+                                        .width(extra_combo_width)
                                         .selected_text(sel_text)
                                         .show_ui(ui, |ui| {
                                             for (i, (_, cl)) in opt.choices.iter().enumerate() {
-                                                ui.selectable_value(idx, i, cl);
+                                                let display_cl = if cl.len() > 35 {
+                                                    format!("{:.32}...", cl)
+                                                } else {
+                                                    cl.clone()
+                                                };
+                                                ui.selectable_value(idx, i, display_cl);
                                             }
                                         });
                                         ui.end_row();
@@ -1403,9 +1440,13 @@ impl App {
 
                 ui.add_space(8.0);
                 ui.separator();
-                if ui.button("Close").clicked() {
-                    self.show_props = false;
-                }
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            self.show_props = false;
+                        }
+                    });
+                });
             });
     }
 }

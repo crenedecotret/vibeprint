@@ -236,7 +236,10 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
                     let v = token.trim_start_matches('*');
                     let mut parts = v.splitn(2, '/');
                     let k     = parts.next().unwrap_or(v).trim().to_string();
-                    let label = parts.next().unwrap_or(&k).trim().to_string();
+                    let label = parts.next()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| human_readable_label(&k));
                     if !k.is_empty() {
                         page_size_entries.push((k, label));
                     }
@@ -607,10 +610,22 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
             Section::MediaType => {
                 if let Some(rest) = line.strip_prefix("*MediaType ") {
                     if rest.starts_with("Default") { continue; }
-                    if let Some((_, label_rest)) = rest.split_once('/') {
-                        let label = label_rest.split(':').next().unwrap_or("").trim().to_string();
-                        if !label.is_empty() && !media_types.contains(&label) {
-                            media_types.push(label);
+                    // Split on ':' first to separate key from PostScript value
+                    if let Some((key_part, _)) = rest.split_once(':') {
+                        let key_part = key_part.trim();
+                        // Now check if key_part has "/Label" separator
+                        if let Some((key, label)) = key_part.split_once('/') {
+                            let label = label.trim().to_string();
+                            let label = if label.is_empty() { key.to_string() } else { label };
+                            if !label.is_empty() && !media_types.contains(&label) {
+                                media_types.push(label);
+                            }
+                        } else {
+                            // No "/" separator - use key as label
+                            let key = key_part.to_string();
+                            if !key.is_empty() && !media_types.contains(&key) {
+                                media_types.push(key);
+                            }
                         }
                     }
                 }
@@ -619,15 +634,22 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
                 for prefix in &["*InputSlot ", "*MediaPosition "] {
                     if let Some(rest) = line.strip_prefix(prefix) {
                         if rest.starts_with("Default") { continue; }
-                        if let Some((_, label_rest)) = rest.split_once('/') {
-                            let label = label_rest.split(':').next().unwrap_or("").trim().to_string();
-                            if !label.is_empty() && !input_slots.contains(&label) {
-                                input_slots.push(label);
-                            }
-                        } else if let Some((key, _)) = rest.split_once(':') {
-                            let key = key.trim().to_string();
-                            if !key.is_empty() && !input_slots.contains(&key) {
-                                input_slots.push(key);
+                        // Split on ':' first to separate key from PostScript value
+                        if let Some((key_part, _)) = rest.split_once(':') {
+                            let key_part = key_part.trim();
+                            // Now check if key_part has "/Label" separator
+                            if let Some((key, label)) = key_part.split_once('/') {
+                                let label = label.trim().to_string();
+                                let label = if label.is_empty() { key.to_string() } else { label };
+                                if !label.is_empty() && !input_slots.contains(&label) {
+                                    input_slots.push(label);
+                                }
+                            } else {
+                                // No "/" separator - use key as label
+                                let key = key_part.to_string();
+                                if !key.is_empty() && !input_slots.contains(&key) {
+                                    input_slots.push(key);
+                                }
                             }
                         }
                         break;
@@ -637,10 +659,21 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
             Section::PageSize => {
                 if let Some(rest) = line.strip_prefix("*PageSize ") {
                     if rest.starts_with("Default") { continue; }
-                    if let Some((key, label_rest)) = rest.split_once('/') {
-                        let key = key.trim().to_string();
-                        let label = label_rest.split(':').next().unwrap_or("").trim().to_string();
-                        page_size_entries.push((key, label));
+                    // Split on ':' first to separate key from PostScript value
+                    if let Some((key_part, _)) = rest.split_once(':') {
+                        let key_part = key_part.trim();
+                        // Now check if key_part has "/Label" separator
+                        if let Some((key, label)) = key_part.split_once('/') {
+                            let key = key.trim().to_string();
+                            let label = label.trim().to_string();
+                            let label = if label.is_empty() { human_readable_label(&key) } else { label };
+                            page_size_entries.push((key, label));
+                        } else {
+                            // No "/" separator in key - use key directly
+                            let key = key_part.to_string();
+                            let label = human_readable_label(&key);
+                            page_size_entries.push((key, label));
+                        }
                     }
                 }
             }
@@ -746,6 +779,94 @@ fn standard_paper_size(name: &str) -> Option<(f32, f32)> {
     }
 }
 
+/// Convert a technical page size name (e.g., from IPP/driverless PPDs) to a human-readable label.
+/// Falls back to the original name if no mapping exists.
+fn human_readable_label(key: &str) -> String {
+    // Standard ISO/NA names from IPP/driverless printers
+    let label = match key {
+        // North American sizes
+        "na_letter_8.5x11in" | "Letter" => "Letter",
+        "na_legal_8.5x14in" | "Legal" => "Legal",
+        "na_tabloid_11x17in" | "Tabloid" | "11x17" => "Tabloid (11x17)",
+        "na_executive_7.25x10.5in" | "Executive" => "Executive",
+        "na_foolscap_8.5x13in" => "Foolscap",
+        "na_number-10_4.125x9.5in" => "Envelope #10",
+        "na_monarch_3.875x7.5in" => "Envelope Monarch",
+        "na_invoice_5.5x8.5in" | "Statement" => "Statement (5.5x8.5)",
+        
+        // ISO sizes
+        "iso_a3_297x420mm" | "A3" => "A3",
+        "iso_a4_210x297mm" | "A4" => "A4",
+        "iso_a5_148x210mm" | "A5" => "A5",
+        "iso_a6_105x148mm" | "A6" => "A6",
+        "iso_b4_250x353mm" | "B4" => "B4",
+        "iso_b5_176x250mm" | "B5" => "B5",
+        "iso_c4_229x324mm" => "C4 Envelope",
+        "iso_c5_162x229mm" => "C5 Envelope",
+        "iso_c6_114x162mm" => "C6 Envelope",
+        "iso_dl_110x220mm" => "DL Envelope",
+        
+        // Common photo/paper sizes
+        "jis_b5_182x257mm" => "JIS B5",
+        "jpn_hagaki_100x148mm" => "Hagaki",
+        "jpn_oufuku_148x200mm" => "Oufuku",
+        "om_small-photo_100x150mm" => "4x6 Photo",
+        "oe_photo-l_89x127mm" => "3.5x5 Photo (L)",
+        "oe_photo-2l_127x178mm" => "5x7 Photo (2L)",
+        "na_index-3x5_3x5in" => "3x5 Index",
+        "na_index-4x6_4x6in" => "4x6 Index",
+        "na_index-5x8_5x8in" => "5x8 Index",
+        "na_personal_3.625x6.5in" => "Personal",
+        "na_quarto_8.5x10.83in" => "Quarto",
+        "na_supera_8.94x14in" => "Super A",
+        "na_superb_11.7x17.6in" | "SuperB" | "13x19" => "Super B (13x19)",
+        
+        // Roll paper (common for wide format)
+        "roll_min_8.5in" => "Roll (min 8.5in)",
+        "roll_max_36in" => "Roll (max 36in)",
+        
+        // Legacy w*h*432 format (Epson/Gutenprint style)
+        "w288h432" | "4x6" => "4x6 Photo",
+        "w360h504" | "5x7" => "5x7 Photo",
+        "w432h576" | "6x8" => "6x8 Photo",
+        "w576h720" | "8x10" => "8x10 Photo",
+        "w720h1080" => "10x15 Photo",
+        "w144h432" | "2x6" => "2x6 Photo",
+        
+        // Default: return the key itself
+        _ => key,
+    };
+    
+    // Handle the PostScript PageSize[...] format by extracting dimensions
+    if key.starts_with("PageSize[") {
+        if let Some(close) = key.find(']') {
+            let inner = &key[9..close]; // Skip "PageSize["
+            // Try to parse "W H" format
+            let dims: Vec<&str> = inner.split_whitespace().collect();
+            if dims.len() == 2 {
+                if let (Ok(w), Ok(h)) = (dims[0].parse::<f32>(), dims[1].parse::<f32>()) {
+                    // Convert points to inches for display
+                    let w_in = w / 72.0;
+                    let h_in = h / 72.0;
+                    // Check for common sizes
+                    let dims_str = format!("{:.1}x{:.1}in", w_in, h_in);
+                    return match dims_str.as_str() {
+                        "8.5x11.0in" | "8.5x11in" => "Letter".to_string(),
+                        "8.5x14.0in" | "8.5x14in" => "Legal".to_string(),
+                        "11.0x17.0in" | "11x17in" => "Tabloid (11x17)".to_string(),
+                        "8.3x11.7in" => "A4".to_string(),
+                        "11.7x16.5in" => "A3".to_string(),
+                        _ => format!("{:.1} x {:.1} in", w_in, h_in),
+                    };
+                }
+            }
+            return format!("Custom ({inner})",);
+        }
+    }
+    
+    label.to_string()
+}
+
 /// Parse a PPD resolution value string into a DPI integer.
 ///
 /// Handles: `"360dpi"`, `"720x720dpi"`, `"1440x720dpi"`.
@@ -834,5 +955,67 @@ mod tests {
         let letter = caps.page_sizes.iter().find(|p| p.name == "Letter").unwrap();
         assert_eq!(letter.imageable_area, (12.0, 12.0, 600.0, 780.0));
         assert_eq!(letter.label, "US Letter");
+    }
+
+    #[test]
+    fn ppd_parser_ipp_driverless() {
+        // Simulate IPP/driverless PPD format without "/Label" separators
+        let ppd = r#"
+*OpenUI *PageSize: PickOne
+*DefaultPageSize: na_letter_8.5x11in
+*PageSize na_letter_8.5x11in: "<</PageSize[612 792]>>setpagedevice"
+*PageSize iso_a4_210x297mm: "<</PageSize[595 842]>>setpagedevice"
+*PageSize na_legal_8.5x14in: "<</PageSize[612 1008]>>setpagedevice"
+*PageSize PageSize[252 360]>>setpagedevice: ""
+*CloseUI: *PageSize
+
+*DefaultImageableArea: na_letter_8.5x11in
+*ImageableArea na_letter_8.5x11in: "12 12 600 780"
+*ImageableArea iso_a4_210x297mm: "12 12 583 830"
+"#;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ppd_path = dir.path().join("ipp.ppd");
+        std::fs::write(&ppd_path, ppd).unwrap();
+
+        let caps = parse_ppd("IPPPrinter", &ppd_path).unwrap();
+
+        assert_eq!(caps.page_sizes.len(), 4);
+        
+        // Check that IPP technical names get converted to readable labels
+        let letter = caps.page_sizes.iter().find(|p| p.name == "na_letter_8.5x11in").unwrap();
+        assert_eq!(letter.label, "Letter");
+        
+        let a4 = caps.page_sizes.iter().find(|p| p.name == "iso_a4_210x297mm").unwrap();
+        assert_eq!(a4.label, "A4");
+        
+        let legal = caps.page_sizes.iter().find(|p| p.name == "na_legal_8.5x14in").unwrap();
+        assert_eq!(legal.label, "Legal");
+        
+        // Check PageSize[...] format gets parsed as dimensions
+        let custom = caps.page_sizes.iter().find(|p| p.name.starts_with("PageSize[")).unwrap();
+        assert!(custom.label.contains("x") || custom.label.contains("in"));
+    }
+
+    #[test]
+    fn human_readable_label_mappings() {
+        assert_eq!(human_readable_label("na_letter_8.5x11in"), "Letter");
+        assert_eq!(human_readable_label("iso_a4_210x297mm"), "A4");
+        assert_eq!(human_readable_label("iso_a3_297x420mm"), "A3");
+        assert_eq!(human_readable_label("na_legal_8.5x14in"), "Legal");
+        assert_eq!(human_readable_label("Letter"), "Letter");
+        assert_eq!(human_readable_label("A4"), "A4");
+        assert_eq!(human_readable_label("w288h432"), "4x6 Photo");
+        assert_eq!(human_readable_label("4x6"), "4x6 Photo");
+        
+        // Test PostScript PageSize format
+        let label = human_readable_label("PageSize[612 792]>>setpagedevice");
+        assert_eq!(label, "Letter");
+        
+        let label = human_readable_label("PageSize[595 842]>>setpagedevice");
+        assert_eq!(label, "A4");
+        
+        // Unknown key returns itself
+        assert_eq!(human_readable_label("unknown_key"), "unknown_key");
     }
 }
