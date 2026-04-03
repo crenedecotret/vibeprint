@@ -237,9 +237,9 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
                     let mut parts = v.splitn(2, '/');
                     let k     = parts.next().unwrap_or(v).trim().to_string();
                     let label = parts.next()
-                        .map(|s| s.trim().to_string())
+                        .map(|s| clean_paper_size_label(&s.trim().to_string()))
                         .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| human_readable_label(&k));
+                        .unwrap_or_else(|| human_readable_label(&clean_paper_size_label(&k)));
                     if !k.is_empty() {
                         page_size_entries.push((k, label));
                     }
@@ -665,13 +665,13 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
                         // Now check if key_part has "/Label" separator
                         if let Some((key, label)) = key_part.split_once('/') {
                             let key = key.trim().to_string();
-                            let label = label.trim().to_string();
-                            let label = if label.is_empty() { human_readable_label(&key) } else { label };
+                            let label = clean_paper_size_label(&label.trim().to_string());
+                            let label = if label.is_empty() { human_readable_label(&clean_paper_size_label(&key)) } else { label };
                             page_size_entries.push((key, label));
                         } else {
                             // No "/" separator in key - use key directly
                             let key = key_part.to_string();
-                            let label = human_readable_label(&key);
+                            let label = human_readable_label(&clean_paper_size_label(&key));
                             page_size_entries.push((key, label));
                         }
                     }
@@ -779,6 +779,22 @@ fn standard_paper_size(name: &str) -> Option<(f32, f32)> {
     }
 }
 
+/// Clean up paper size labels by removing square characters and fixing symbols.
+/// Keeps "(Borderless)" to distinguish regular vs borderless sizes.
+fn clean_paper_size_label(label: &str) -> String {
+    // Remove all square-like Unicode characters
+    let squares = ['□', '■', '▪', '▫', '▬', '▭', '▮', '▯', '▰', '▱', '▢', '▣', '▤', '▥', '▦', '▧', '▨', '▩'];
+    let mut cleaned = label.to_string();
+    
+    // Replace inch symbol (″) with regular double quotes
+    cleaned = cleaned.replace('″', "\"");
+    
+    for square in squares.iter() {
+        cleaned = cleaned.replace(*square, "");
+    }
+    cleaned.trim().to_string()
+}
+
 /// Convert a technical page size name (e.g., from IPP/driverless PPDs) to a human-readable label.
 /// Falls back to the original name if no mapping exists.
 fn human_readable_label(key: &str) -> String {
@@ -864,7 +880,7 @@ fn human_readable_label(key: &str) -> String {
         }
     }
     
-    label.to_string()
+    clean_paper_size_label(&label.to_string())
 }
 
 /// Parse a PPD resolution value string into a DPI integer.
