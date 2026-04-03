@@ -106,6 +106,27 @@ enum ProcState {
     Failed(String),
 }
 
+#[derive(Clone)]
+enum ProcessTarget {
+    Export(PathBuf),
+    Print { temp_path: PathBuf, print_after: bool },
+}
+
+#[derive(Clone)]
+struct PrintJobStatus {
+    job_id: u32,
+    printer_name: String,
+    state: PrintJobState,
+}
+
+#[derive(Clone, PartialEq)]
+enum PrintJobState {
+    Pending,
+    Processing,
+    Completed,
+    Failed(String),
+}
+
 // ── Persistent settings ───────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -193,7 +214,7 @@ struct App {
 
     // ── Processing ──
     proc_state: ProcState,
-    proc_rx: Option<Receiver<Result<PathBuf, String>>>,
+    proc_rx: Option<Receiver<Result<(PathBuf, ProcessTarget), String>>>,
 
     // ── Right-panel tab ──
     right_tab: RightTab,
@@ -210,6 +231,11 @@ struct App {
 
     // ── Monitor ICC profile ──
     monitor_icc_profile: Option<Vec<u8>>,
+
+    // ── Printing ──
+    show_print_confirm: bool,
+    pending_print_path: Option<PathBuf>,
+    print_job_status: Option<PrintJobStatus>,
 }
 
 impl App {
@@ -305,6 +331,10 @@ impl App {
             discovery_complete: false,
 
             monitor_icc_profile: monitor_icc::get_monitor_profile(),
+
+            show_print_confirm: false,
+            pending_print_path: None,
+            print_job_status: None,
         };
         
         // Log monitor ICC status (silent - only log errors)
@@ -559,10 +589,26 @@ impl App {
         // Process result
         if let Some(rx) = &self.proc_rx {
             if let Ok(result) = rx.try_recv() {
-                self.proc_state = match result {
-                    Ok(p)  => { self.log.push(format!("✓ Saved: {}", p.display())); ProcState::Done(p) }
-                    Err(e) => { self.log.push(format!("✗ {e}")); ProcState::Failed(e) }
-                };
+                match result {
+                    Ok((path, target)) => {
+                        match target {
+                            ProcessTarget::Export(_) => {
+                                self.log.push(format!("✓ Saved: {}", path.display()));
+                                self.proc_state = ProcState::Done(path);
+                            }
+                            ProcessTarget::Print { temp_path, .. } => {
+                                self.log.push(format!("✓ Processed for print: {}", path.display()));
+                                self.pending_print_path = Some(temp_path);
+                                self.show_print_confirm = true;
+                                self.proc_state = ProcState::Idle;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.log.push(format!("✗ {e}"));
+                        self.proc_state = ProcState::Failed(e);
+                    }
+                }
                 self.proc_rx = None;
             }
         }
@@ -574,13 +620,53 @@ impl App {
 
     // ── Start processing ──────────────────────────────────────────────────────
 
-    fn start_process(&mut self) {
+    fn start_process_export(&mut self) {
         let Some(input) = self.selected.clone() else {
             self.log.push("⚠ No image selected.".into());
             return;
         };
         let stem = input.file_stem().unwrap_or_default().to_string_lossy();
         let output = self.output_dir.join(format!("{}_vp.tif", stem));
+        self.start_process_with_target(ProcessTarget::Export(output));
+    }
+
+    fn start_process_print(&mut self) {
+        let Some(input) = self.selected.clone() else {
+            self.log.push("⚠ No image selected.".into());
+            return;
+        };
+        // Generate temp file path for printing
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let temp_path = std::env::temp_dir().join(format!("vibeprint_{}_{}.tif", timestamp, std::process::id()));
+        self.log.push(format!("📝 Temp file will be: {}", temp_path.display()));
+        self.start_process_with_target(ProcessTarget::Print { temp_path, print_after: true });
+    }
+
+    fn start_process_with_target(&mut self, target: ProcessTarget) {
+        let input = match &target {
+            ProcessTarget::Export(_) | ProcessTarget::Print { .. } => {
+                match self.selected.clone() {
+                    Some(path) => path,
+                    None => {
+                        self.log.push("⚠ No image selected.".into());
+                        return;
+                    }
+                }
+            }
+        };
+
+        let output_path = match &target {
+            ProcessTarget::Export(path) => path.clone(),
+            ProcessTarget::Print { temp_path, .. } => temp_path.clone(),
+        };
+
+        // Store pending print path if printing
+        if let ProcessTarget::Print { temp_path, .. } = &target {
+            self.pending_print_path = Some(temp_path.clone());
+        }
 
         // Build page layout from current canvas state (mirrors draw_canvas logic at print resolution)
         let page_layout: Option<processor::PageLayout> = (|| {
@@ -640,24 +726,152 @@ impl App {
 
         let opts = ProcessOptions {
             input,
-            output: output.clone(),
+            output: output_path.clone(),
             input_icc: None,
             output_icc: self.output_icc.clone(),
             target_dpi: self.target_dpi as f64,
             intent: self.intent.to_lcms(),
             bpc: self.bpc,
             engine: self.engine.to_proc(),
-            depth: if self.depth16 { 16 } else { 8 },
+            // Force 8-bit for printing (CUPS/img2pdf compatibility), respect UI for export
+            depth: if matches!(target, ProcessTarget::Print { .. }) { 8 } else { if self.depth16 { 16 } else { 8 } },
             sharpen: self.sharpen,
             page_layout,
         };
-        let (tx, rx) = mpsc::channel();
+        
+        let target_clone = match &target {
+            ProcessTarget::Export(_) => target.clone(),
+            ProcessTarget::Print { temp_path, print_after } => ProcessTarget::Print { 
+                temp_path: temp_path.clone(), 
+                print_after: *print_after 
+            },
+        };
+        
+        let (tx, rx) = mpsc::channel::<Result<(PathBuf, ProcessTarget), String>>();
         self.proc_rx = Some(rx);
         self.proc_state = ProcState::Running;
         thread::spawn(move || {
-            let r = processor::process(opts).map(|_| output).map_err(|e| e.to_string());
-            let _ = tx.send(r);
+            let result: Result<(PathBuf, ProcessTarget), String> = processor::process(opts)
+                .map(|_| (output_path, target_clone))
+                .map_err(|e| e.to_string());
+            let _ = tx.send(result);
         });
+    }
+
+    // ── Print to CUPS ─────────────────────────────────────────────────────────
+
+    fn submit_print_job(&mut self, temp_path: &PathBuf) {
+        let Some(caps) = &self.caps else {
+            self.log.push("✗ No printer selected".into());
+            return;
+        };
+        let Some(printer) = self.printers.get(self.printer_idx) else {
+            self.log.push("✗ No printer selected".into());
+            return;
+        };
+
+        // Build lpr command with all CUPS options
+        let mut cmd = std::process::Command::new("lpr");
+        cmd.arg("-P").arg(&printer.name);
+
+        // Paper size
+        let media = caps.page_sizes.get(self.selected_page_size_idx)
+            .map(|ps| ps.name.clone())
+            .unwrap_or_else(|| "Letter".to_string());
+        cmd.arg("-o").arg(format!("media={}", media));
+
+        // Media type
+        if let Some(media_type) = caps.media_types.get(self.props_media_idx) {
+            cmd.arg("-o").arg(format!("MediaType={}", media_type));
+        }
+
+        // Input slot
+        if let Some(input_slot) = caps.input_slots.get(self.props_slot_idx) {
+            cmd.arg("-o").arg(format!("InputSlot={}", input_slot));
+        }
+
+        // Prevent CUPS scaling
+        cmd.arg("-o").arg("scaling=100");
+        cmd.arg("-o").arg("fit-to-page=false");
+
+        // All extra options from the modal
+        for opt in &caps.extra_options {
+            if let Some(&idx) = self.extra_option_indices.get(&opt.key) {
+                if let Some((key, _)) = opt.choices.get(idx) {
+                    cmd.arg("-o").arg(format!("{}={}", opt.key, key));
+                }
+            }
+        }
+
+        // Convert TIFF to PDF for CUPS compatibility (CUPS 2.x removed image filters)
+        let pdf_path = temp_path.with_extension("pdf");
+        let img2pdf_result = std::process::Command::new("img2pdf")
+            .arg(temp_path)
+            .arg("-o")
+            .arg(&pdf_path)
+            .output();
+        
+        let print_path = match img2pdf_result {
+            Ok(output) if output.status.success() => {
+                self.log.push("📄 Converted TIFF to PDF for printing".into());
+                pdf_path
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                self.log.push(format!("⚠ img2pdf failed ({}), trying TIFF directly", stderr));
+                temp_path.clone()
+            }
+            Err(e) => {
+                self.log.push(format!("⚠ img2pdf not available ({}), trying TIFF directly", e));
+                temp_path.clone()
+            }
+        };
+
+        cmd.arg(print_path);
+
+        // Execute lpr and capture job ID
+        match cmd.output() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                
+                if !output.status.success() {
+                    self.log.push(format!("✗ Print failed: {}", stderr));
+                    self.print_job_status = Some(PrintJobStatus {
+                        job_id: 0,
+                        printer_name: printer.name.clone(),
+                        state: PrintJobState::Failed(stderr.to_string()),
+                    });
+                    return;
+                }
+
+                // Parse job ID from output: "request id is Printer-123 (1 file(s))"
+                let job_id = stdout.lines()
+                    .chain(stderr.lines())
+                    .find_map(|line| {
+                        let re = regex::Regex::new(r"request id is \w+-(\d+)").ok()?;
+                        re.captures(line).and_then(|cap| cap.get(1)).and_then(|m| m.as_str().parse::<u32>().ok())
+                    })
+                    .unwrap_or(0);
+
+                self.log.push(format!("📤 Print job #{} submitted to {}", job_id, printer.name));
+                self.print_job_status = Some(PrintJobStatus {
+                    job_id,
+                    printer_name: printer.name.clone(),
+                    state: PrintJobState::Pending,
+                });
+
+                // Temp files left in /tmp for CUPS to process (cleaned up on reboot)
+            }
+            Err(e) => {
+                self.log.push(format!("✗ Failed to submit print job: {}", e));
+                self.print_job_status = Some(PrintJobStatus {
+                    job_id: 0,
+                    printer_name: printer.name.clone(),
+                    state: PrintJobState::Failed(e.to_string()),
+                });
+            }
+        }
     }
 
     // ── Left pane ─────────────────────────────────────────────────────────────
@@ -1182,19 +1396,32 @@ impl App {
             ui.add_space(6.0);
         }); // end settings ScrollArea
 
-        // ── Process & Print ───────────────────────────────────────────────────
-        // Button is always rendered at the same position so egui never misses a click.
+        // ── Process & Print / Export ───────────────────────────────────────────
         ui.separator();
         let is_running = matches!(self.proc_state, ProcState::Running);
         let has_image  = self.selected.is_some();
 
-        let btn = egui::Button::new(
-            RichText::new("🖨  Process & Print").size(14.0).strong(),
+        // Primary: Print button
+        let print_btn = egui::Button::new(
+            RichText::new("🖨  Print").size(14.0).strong(),
         )
-        .min_size(Vec2::new(ui.available_width(), 36.0));
+        .min_size(Vec2::new(ui.available_width(), 36.0))
+        .fill(Color32::from_rgb(60, 120, 200));
 
-        if ui.add_enabled(has_image && !is_running, btn).clicked() {
-            self.start_process();
+        if ui.add_enabled(has_image && !is_running, print_btn).clicked() {
+            self.start_process_print();
+        }
+
+        ui.add_space(4.0);
+
+        // Secondary: Export TIFF button
+        let export_btn = egui::Button::new(
+            RichText::new("💾  Export TIFF").size(12.0),
+        )
+        .min_size(Vec2::new(ui.available_width(), 28.0));
+
+        if ui.add_enabled(has_image && !is_running, export_btn).clicked() {
+            self.start_process_export();
         }
 
         if is_running {
@@ -1208,8 +1435,26 @@ impl App {
             ui.label(RichText::new(format!("✗ {e}")).small().color(Color32::RED));
         }
 
+        // Print job status
+        if let Some(ref job) = self.print_job_status {
+            ui.add_space(4.0);
+            let status_text = match job.state {
+                PrintJobState::Pending => format!("📤 Print Job #{} - Pending", job.job_id),
+                PrintJobState::Processing => format!("🖨 Print Job #{} - Processing", job.job_id),
+                PrintJobState::Completed => format!("✅ Print Job #{} - Complete", job.job_id),
+                PrintJobState::Failed(ref e) => format!("❌ Print Job #{} - Failed: {}", job.job_id, e),
+            };
+            let color = match job.state {
+                PrintJobState::Pending => Color32::from_rgb(200, 200, 100),
+                PrintJobState::Processing => Color32::from_rgb(100, 180, 255),
+                PrintJobState::Completed => Color32::from_rgb(100, 220, 100),
+                PrintJobState::Failed(_) => Color32::from_rgb(255, 100, 100),
+            };
+            ui.label(RichText::new(status_text).small().color(color));
+        }
+
         // ── Log (at the bottom) ───────────────────────────────────────────────
-        ui.add_space(4.0);
+        ui.add_space(12.0);
         ui.label(RichText::new("Log").strong().size(12.0));
         ui.separator();
         egui::ScrollArea::vertical()
@@ -1449,6 +1694,108 @@ impl App {
                 });
             });
     }
+
+    // ── Print Confirmation Modal ──────────────────────────────────────────────
+
+    fn show_print_confirm(&mut self, ctx: &Context) {
+        let Some(caps) = self.caps.clone() else { self.show_print_confirm = false; return };
+        let printer_name = self.printers.get(self.printer_idx).map(|p| p.name.clone());
+        let Some(printer_name) = printer_name else { self.show_print_confirm = false; return };
+        let Some(temp_path) = self.pending_print_path.clone() else { self.show_print_confirm = false; return };
+
+        let screen = ctx.screen_rect();
+        let width = (screen.width() * 0.30).clamp(320.0, 480.0);
+
+        egui::Window::new("Confirm Print")
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size([width, 0.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("🖨  Ready to Print").size(18.0).strong());
+                    ui.add_space(8.0);
+                });
+
+                ui.separator();
+                ui.add_space(4.0);
+
+                // Printer info
+                ui.label(RichText::new("Printer:").small().weak());
+                ui.label(&printer_name);
+                ui.add_space(4.0);
+
+                // Paper size
+                let paper = caps.page_sizes.get(self.selected_page_size_idx)
+                    .map(|p| p.label.as_str())
+                    .unwrap_or("—");
+                ui.label(RichText::new("Paper:").small().weak());
+                ui.label(paper);
+                ui.add_space(4.0);
+
+                // Media type
+                if !caps.media_types.is_empty() {
+                    let media = caps.media_types.get(self.props_media_idx)
+                        .map(|m| m.as_str())
+                        .unwrap_or("—");
+                    ui.label(RichText::new("Media Type:").small().weak());
+                    ui.label(media);
+                    ui.add_space(4.0);
+                }
+
+                // Input slot
+                if !caps.input_slots.is_empty() {
+                    let slot = caps.input_slots.get(self.props_slot_idx)
+                        .map(|s| s.as_str())
+                        .unwrap_or("—");
+                    ui.label(RichText::new("Input Slot:").small().weak());
+                    ui.label(slot);
+                    ui.add_space(4.0);
+                }
+
+                // Extra options summary (if any)
+                if !caps.extra_options.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Additional Options:").small().weak());
+                    egui::ScrollArea::vertical()
+                        .max_height(80.0)
+                        .show(ui, |ui| {
+                            for opt in &caps.extra_options {
+                                if let Some(&idx) = self.extra_option_indices.get(&opt.key) {
+                                    if let Some((_, label)) = opt.choices.get(idx) {
+                                        ui.label(format!("• {}: {}", opt.label, label));
+                                    }
+                                }
+                            }
+                        });
+                }
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // Buttons
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.show_print_confirm = false;
+                            self.pending_print_path = None;
+                            // Clean up temp file
+                            let _ = std::fs::remove_file(&temp_path);
+                        }
+                        
+                        let print_btn = ui.add(egui::Button::new(
+                            RichText::new("Print").strong().color(Color32::WHITE)
+                        ));
+                        if print_btn.clicked() {
+                            self.show_print_confirm = false;
+                            self.submit_print_job(&temp_path);
+                            self.pending_print_path = None;
+                        }
+                    });
+                });
+            });
+    }
 }
 
 impl eframe::App for App {
@@ -1493,6 +1840,7 @@ impl eframe::App for App {
         }
 
         if self.show_props { self.show_printer_props(ctx); }
+        if self.show_print_confirm { self.show_print_confirm(ctx); }
 
         // Show splash screen during printer discovery
         if !self.discovery_complete {

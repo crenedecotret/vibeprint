@@ -214,9 +214,11 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         println!("VibePrint: Outputting 8-bit TIFF (with dithering).");
         let dithered = dither_rgb16_to_rgb8(&final_image);
         save_rgb8_tiff_with_dpi(&opts.output, &dithered, opts.target_dpi, &output_icc_bytes, &description)?;
+        println!("VibePrint: Saved 8-bit TIFF to {}", opts.output.display());
     } else {
         println!("VibePrint: Outputting 16-bit TIFF.");
         save_rgb16_tiff_with_dpi(&opts.output, &final_image, opts.target_dpi, &output_icc_bytes, &description)?;
+        println!("VibePrint: Saved 16-bit TIFF to {}", opts.output.display());
     }
 
     Ok(())
