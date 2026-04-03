@@ -699,7 +699,11 @@ impl App {
                     if fits_portrait  { (false, false) } else { (true, true) }
                 };
                 let (pw, ph) = if rect_landscape { (h_in, w_in) } else { (w_in, h_in) };
-                ((pw * dpi).round() as u32, (ph * dpi).round() as u32, rotate_cw)
+                // Calculate exact integer dimensions: inches * DPI (no rounding to avoid 0.5mm errors)
+                let target_dpi = self.target_dpi as u32;
+                let w_px = ((pw as f64 * target_dpi as f64) + 0.0001).round() as u32;
+                let h_px = ((ph as f64 * target_dpi as f64) + 0.0001).round() as u32;
+                ((w_px, h_px, rotate_cw))
             } else if idx == FIT_PAGE_IDX {
                 let (nw, nh) = if ia_w_in / ia_h_in > img_aspect {
                     (ia_h_in * img_aspect, ia_h_in)
@@ -710,14 +714,17 @@ impl App {
                 let (rw, rh) = if ia_w_in / ia_h_in > rot_a {
                     (ia_h_in * rot_a, ia_h_in)
                 } else {
-                    (ia_w_in, ia_w_in * img_aspect)
+                    (ia_w_in, ia_w_in / img_aspect)
                 };
                 let (pw, ph, rotate_cw) = if rw * rh > nw * nh { (rw, rh, true) } else { (nw, nh, false) };
-                ((pw * dpi).round() as u32, (ph * dpi).round() as u32, rotate_cw)
+                // Calculate exact integer dimensions: inches * DPI (no rounding to avoid 0.5mm errors)
+                let target_dpi = self.target_dpi as u32;
+                let w_px = ((pw as f64 * target_dpi as f64) + 0.0001).round() as u32;
+                let h_px = ((ph as f64 * target_dpi as f64) + 0.0001).round() as u32;
+                ((w_px, h_px, rotate_cw))
             } else {
                 return None;
             };
-
             let print_x = ia_w_px.saturating_sub(print_w_px) / 2;
             let print_y = ia_h_px.saturating_sub(print_h_px) / 2;
 
@@ -807,6 +814,10 @@ impl App {
         let pdf_path = temp_path.with_extension("pdf");
         let img2pdf_result = std::process::Command::new("img2pdf")
             .arg(temp_path)
+            .arg("--imgsize")
+            .arg(format!("{}dpi", self.target_dpi))
+            .arg("--fit")
+            .arg("exact")
             .arg("-o")
             .arg(&pdf_path)
             .output();
@@ -1199,7 +1210,9 @@ impl App {
 
         // Status overlay (page size + DPI)
         let info = if let Some(caps) = &self.caps {
-            let ps = caps.page_sizes.first().map(|p| p.label.as_str()).unwrap_or("?");
+            let ps = caps.page_sizes.get(self.selected_page_size_idx)
+                .map(|p| p.label.as_str())
+                .unwrap_or("?");
             let dpi = self.target_dpi;
             format!("{ps}  ·  {dpi} dpi")
         } else {
