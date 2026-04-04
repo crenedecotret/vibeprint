@@ -1422,7 +1422,10 @@ impl App {
                 // Same widgets, invisible color - guarantees identical height
                 ui.label(RichText::new("Output Folder").strong().size(12.0));
                 ui.horizontal(|ui| {
-                    ui.add(egui::Label::new(RichText::new("").small().monospace()));
+                    let label = self.output_dir.to_string_lossy();
+                    ui.add(egui::Label::new(
+                        RichText::new(label.as_ref()).small().monospace().color(Color32::TRANSPARENT)
+                    ).truncate());
                     let _ = ui.small_button("…");
                 });
                 ui.add_space(6.0);
