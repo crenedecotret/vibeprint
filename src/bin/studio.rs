@@ -1491,6 +1491,73 @@ impl App {
                     ui.label(RichText::new(entry).small().monospace());
                 }
             });
+        });
+    }
+
+    fn draw_print_controls(&mut self, ui: &mut egui::Ui) {
+        let is_running = matches!(self.proc_state, ProcState::Running);
+        let has_image = self.selected.is_some();
+
+        // Primary: Print button (dynamic text based on print_to_file)
+        let btn_text = if self.print_to_file { "💾  Print to File" } else { "🖨  Print" };
+        let print_btn = egui::Button::new(
+            RichText::new(btn_text).size(14.0).strong(),
+        )
+        .min_size(Vec2::new(ui.available_width(), 36.0))
+        .fill(Color32::from_rgb(60, 120, 200));
+
+        if ui.add_enabled(has_image && !is_running, print_btn).clicked() {
+            if self.print_to_file {
+                self.start_process_export();
+            } else {
+                self.start_process_print();
+            }
+        }
+
+        ui.add_space(4.0);
+
+        if is_running {
+            ui.horizontal(|ui| { ui.spinner(); ui.label("Processing…"); });
+        } else if !has_image {
+            ui.label(RichText::new("Select an image first").small().weak());
+        } else if let ProcState::Done(ref p) = self.proc_state {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            ui.label(RichText::new(format!("✓ {name}")).small().color(Color32::GREEN));
+        } else if let ProcState::Failed(ref e) = self.proc_state {
+            ui.label(RichText::new(format!("✗ {e}")).small().color(Color32::RED));
+        }
+
+        // Print job status
+        if let Some(ref job) = self.print_job_status {
+            ui.add_space(4.0);
+            let status_text = match job.state {
+                PrintJobState::Pending => format!("📤 Print Job #{} - Pending", job.job_id),
+                PrintJobState::Processing => format!("🖨 Print Job #{} - Processing", job.job_id),
+                PrintJobState::Completed => format!("✅ Print Job #{} - Complete", job.job_id),
+                PrintJobState::Failed(ref e) => format!("❌ Print Job #{} - Failed: {}", job.job_id, e),
+            };
+            let color = match job.state {
+                PrintJobState::Pending => Color32::from_rgb(200, 200, 100),
+                PrintJobState::Processing => Color32::from_rgb(100, 180, 255),
+                PrintJobState::Completed => Color32::GREEN,
+                PrintJobState::Failed(_) => Color32::RED,
+            };
+            ui.label(RichText::new(status_text).small().color(color));
+        }
+
+        // ── Log (at the bottom) ───────────────────────────────────────────────
+        ui.add_space(12.0);
+        ui.label(RichText::new("Log").strong().size(12.0));
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .id_salt("log_scroll")
+            .max_height(80.0)
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for entry in &self.log {
+                    ui.label(RichText::new(entry).small().monospace());
+                }
+            });
     }
 
     fn draw_tab_image(&mut self, ui: &mut egui::Ui) {
