@@ -1458,7 +1458,11 @@ impl App {
         } else {
             ui.label(RichText::new("Output Folder").strong().size(12.0).color(Color32::TRANSPARENT));
         }
-        ui.separator();
+        if self.print_to_file {
+            ui.separator();
+        } else {
+            ui.separator();
+        }
         ui.horizontal(|ui| {
             let label = self.output_dir.to_string_lossy();
             if self.print_to_file {
@@ -1475,7 +1479,7 @@ impl App {
                 ui.add(egui::Label::new(
                     RichText::new(label.as_ref()).small().monospace().color(Color32::TRANSPARENT)
                 ).truncate());
-                let _ = ui.small_button("…");
+                let _ = ui.add_enabled(false, egui::Button::new("…"));
             }
         });
         ui.add_space(6.0);
@@ -1490,10 +1494,8 @@ impl App {
                 ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
             } else {
                 // Same widgets, invisible content - guarantees identical height
-                let _ = ui.selectable_value(&mut self.depth16, true, 
-                    RichText::new("16-bit").color(Color32::TRANSPARENT));
-                let _ = ui.selectable_value(&mut self.depth16, false, 
-                    RichText::new("8-bit Dithered").color(Color32::TRANSPARENT));
+                let _ = ui.add_enabled(false, egui::Button::new(RichText::new("16-bit")));
+                let _ = ui.add_enabled(false, egui::Button::new(RichText::new("8-bit Dithered")));
             }
         });
 
