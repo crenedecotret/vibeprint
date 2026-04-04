@@ -1429,9 +1429,13 @@ impl App {
                     ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
                 });
             } else {
-                // Reserve same vertical space with invisible content to prevent UI jumping
-                // Match exact height of: label (16) + separator (2) + folder row (24) + spacing (6) + depth row (20)
-                ui.add_space(68.0);
+                // Reserve exact space using allocate_ui_with_layout for pixel-perfect consistency
+                // This ensures the Print button never moves regardless of checkbox state
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 72.0),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |_ui| {}  // Empty content - just reserving space
+                );
             }
         }); // end settings ScrollArea
     }
