@@ -1404,9 +1404,10 @@ impl App {
 
             ui.add_space(10.0);
 
-            // Output folder section - preserve space when unchecked to prevent UI jumping
+            // Output folder section - preserve exact space to prevent UI jumping
             if self.print_to_file {
                 ui.label(RichText::new("Output Folder").strong().size(12.0));
+                ui.separator();
                 ui.horizontal(|ui| {
                     let label = self.output_dir.to_string_lossy();
                     ui.add(egui::Label::new(
@@ -1418,27 +1419,16 @@ impl App {
                         }
                     }
                 });
-
                 ui.add_space(6.0);
-
-                // Output depth toggle (only for file output)
                 ui.horizontal(|ui| {
                     ui.label("Output depth:");
                     ui.selectable_value(&mut self.depth16, true,  "16-bit");
                     ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
                 });
             } else {
-                // Render invisible widgets to preserve exact same space as visible version
-                // This ensures pixel-perfect height matching
-                ui.label(RichText::new("Output Folder").strong().size(12.0)).on_hover_text("");
-                ui.horizontal(|ui| {
-                    ui.add(egui::Label::new(RichText::new("").small().monospace()));
-                    ui.add(egui::Button::new(""));
-                });
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label("");
-                });
+                // Reserve exact same space but render nothing visible
+                // Height must match: label + separator + folder row + spacing + depth row
+                ui.allocate_space(egui::vec2(ui.available_width(), 85.0));
             }
         }); // end settings ScrollArea
     }
@@ -1446,9 +1436,6 @@ impl App {
     fn draw_print_controls(&mut self, ui: &mut egui::Ui) {
         let is_running = matches!(self.proc_state, ProcState::Running);
         let has_image = self.selected.is_some();
-
-        // ── Process & Print / Export ───────────────────────────────────────────
-        ui.separator();
 
         // Primary: Print button (dynamic text based on print_to_file)
         let btn_text = if self.print_to_file { "💾  Print to File" } else { "🖨  Print" };
