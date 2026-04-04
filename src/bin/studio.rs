@@ -1429,14 +1429,10 @@ impl App {
                     ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
                 });
             } else {
-                // Reserve same vertical space with empty content to prevent UI jumping
-                ui.label(RichText::new("Output Folder").strong().size(12.0));
-                ui.separator();
-                ui.add_space(28.0);  // Space for folder picker row
-                ui.add_space(6.0);
-                ui.add_space(20.0);  // Space for depth toggle row
+                // Reserve same vertical space with invisible content to prevent UI jumping
+                // Match exact height of: label (16) + separator (2) + folder row (24) + spacing (6) + depth row (20)
+                ui.add_space(68.0);
             }
-            ui.add_space(6.0);
         }); // end settings ScrollArea
     }
 
