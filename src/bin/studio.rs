@@ -1236,7 +1236,7 @@ impl App {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.selectable_value(
-                &mut self.right_tab, RightTab::PrinterSettings, "⚙️ Printer Settings",
+                &mut self.right_tab, RightTab::PrinterSettings, "Printer Settings",
             );
             ui.selectable_value(
                 &mut self.right_tab, RightTab::ImageProperties, "🖼 Image Properties",
