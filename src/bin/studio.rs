@@ -1428,7 +1428,7 @@ impl App {
             } else {
                 // Reserve exact same space but render nothing visible
                 // Height must match: label + separator + folder row + spacing + depth row
-                ui.allocate_space(egui::vec2(ui.available_width(), 85.0));
+                ui.allocate_space(egui::vec2(ui.available_width(), 86.0));
             }
         }); // end settings ScrollArea
     }
