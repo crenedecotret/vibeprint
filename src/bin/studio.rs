@@ -1236,7 +1236,7 @@ impl App {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.selectable_value(
-                &mut self.right_tab, RightTab::PrinterSettings, "🖨️ Printer Settings",
+                &mut self.right_tab, RightTab::PrinterSettings, "⚙️ Printer Settings",
             );
             ui.selectable_value(
                 &mut self.right_tab, RightTab::ImageProperties, "🖼 Image Properties",
@@ -1405,7 +1405,7 @@ impl App {
         let has_image = self.selected.is_some();
 
         // Primary: Print button (dynamic text based on print_to_file)
-        let btn_text = if self.print_to_file { "💾  Print to File" } else { "🖨️  Print" };
+        let btn_text = if self.print_to_file { "💾  Print to File" } else { "🖨  Print" };
         let print_btn = egui::Button::new(
             RichText::new(btn_text).size(14.0).strong(),
         )
@@ -1438,7 +1438,7 @@ impl App {
             ui.add_space(4.0);
             let status_text = match job.state {
                 PrintJobState::Pending => format!("📤 Print Job #{} - Pending", job.job_id),
-                PrintJobState::Processing => format!("🖨️ Print Job #{} - Processing", job.job_id),
+                PrintJobState::Processing => format!("⚙️ Print Job #{} - Processing", job.job_id),
                 PrintJobState::Completed => format!("✅ Print Job #{} - Complete", job.job_id),
                 PrintJobState::Failed(ref e) => format!("❌ Print Job #{} - Failed: {}", job.job_id, e),
             };
@@ -1508,7 +1508,7 @@ impl App {
             ui.add_space(4.0);
             let status_text = match job.state {
                 PrintJobState::Pending => format!("📤 Print Job #{} - Pending", job.job_id),
-                PrintJobState::Processing => format!("🖨️ Print Job #{} - Processing", job.job_id),
+                PrintJobState::Processing => format!("⚙️ Print Job #{} - Processing", job.job_id),
                 PrintJobState::Completed => format!("✅ Print Job #{} - Complete", job.job_id),
                 PrintJobState::Failed(ref e) => format!("❌ Print Job #{} - Failed: {}", job.job_id, e),
             };
@@ -1781,7 +1781,7 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("🖨️  Ready to Print").size(18.0).strong());
+                    ui.label(RichText::new("🖨  Ready to Print").size(18.0).strong());
                     ui.add_space(8.0);
                 });
 
