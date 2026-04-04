@@ -1398,35 +1398,42 @@ impl App {
                     });
             });
 
-            // Output folder section - exact same layout in both cases
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), 80.0),
-                egui::Layout::top_down(egui::Align::LEFT),
-                |ui| {
-                    if self.print_to_file {
-                        ui.label(RichText::new("Output Folder").strong().size(12.0));
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            let label = self.output_dir.to_string_lossy();
-                            ui.add(egui::Label::new(
-                                RichText::new(label.as_ref()).small().monospace()
-                            ).truncate());
-                            if ui.small_button("…").clicked() {
-                                if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                                    self.output_dir = p;
-                                }
-                            }
-                        });
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            ui.label("Output depth:");
-                            ui.selectable_value(&mut self.depth16, true,  "16-bit");
-                            ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
-                        });
+            // Output folder section - identical widgets in both cases for perfect height matching
+            ui.label(RichText::new("Output Folder").strong().size(12.0));
+            ui.separator();
+            ui.horizontal(|ui| {
+                let label = self.output_dir.to_string_lossy();
+                if self.print_to_file {
+                    ui.add(egui::Label::new(
+                        RichText::new(label.as_ref()).small().monospace()
+                    ).truncate());
+                    if ui.small_button("…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                            self.output_dir = p;
+                        }
                     }
-                    // When unchecked: render nothing - container still reserves 80px
+                } else {
+                    // Same widgets, invisible content - guarantees identical height
+                    ui.add(egui::Label::new(
+                        RichText::new(label.as_ref()).small().monospace().color(Color32::TRANSPARENT)
+                    ).truncate());
+                    let _ = ui.small_button("…");
                 }
-            );
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Output depth:");
+                if self.print_to_file {
+                    ui.selectable_value(&mut self.depth16, true,  "16-bit");
+                    ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
+                } else {
+                    // Same widgets, invisible content - guarantees identical height
+                    let _ = ui.selectable_value(&mut self.depth16, true, 
+                        RichText::new("16-bit").color(Color32::TRANSPARENT));
+                    let _ = ui.selectable_value(&mut self.depth16, false, 
+                        RichText::new("8-bit Dithered").color(Color32::TRANSPARENT));
+                }
+            });
 
         let is_running = matches!(self.proc_state, ProcState::Running);
         let has_image = self.selected.is_some();
