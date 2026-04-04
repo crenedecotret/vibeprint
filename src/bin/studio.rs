@@ -1407,7 +1407,6 @@ impl App {
             // Output folder section - preserve space when unchecked to prevent UI jumping
             if self.print_to_file {
                 ui.label(RichText::new("Output Folder").strong().size(12.0));
-                ui.separator();
                 ui.horizontal(|ui| {
                     let label = self.output_dir.to_string_lossy();
                     ui.add(egui::Label::new(
@@ -1429,13 +1428,17 @@ impl App {
                     ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
                 });
             } else {
-                // Reserve exact space using allocate_ui_with_layout for pixel-perfect consistency
-                // This ensures the Print button never moves regardless of checkbox state
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), 72.0),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |_ui| {}  // Empty content - just reserving space
-                );
+                // Render invisible widgets to preserve exact same space as visible version
+                // This ensures pixel-perfect height matching
+                ui.label(RichText::new("Output Folder").strong().size(12.0)).on_hover_text("");
+                ui.horizontal(|ui| {
+                    ui.add(egui::Label::new(RichText::new("").small().monospace()));
+                    ui.add(egui::Button::new(""));
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("");
+                });
             }
         }); // end settings ScrollArea
     }
