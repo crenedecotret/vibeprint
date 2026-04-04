@@ -211,6 +211,7 @@ struct App {
 
     // ── Output ──
     output_dir: PathBuf,
+    print_to_file: bool,
 
     // ── Processing ──
     proc_state: ProcState,
@@ -317,6 +318,7 @@ impl App {
             bpc: s.bpc.unwrap_or(true),
 
             output_dir: saved_out_dir,
+            print_to_file: false,
 
             proc_state: ProcState::Idle,
             proc_rx: None,
@@ -1317,6 +1319,9 @@ impl App {
                 });
             }
 
+            // ── Print to file ───────────────────────────────────────────
+            ui.checkbox(&mut self.print_to_file, "Print to file");
+
             ui.add_space(10.0);
 
             // ── Block B: Processing Engine ────────────────────────────────────
@@ -1351,13 +1356,6 @@ impl App {
                             ui.selectable_value(&mut self.target_dpi, dpi, format!("{dpi}"));
                         }
                     });
-            });
-
-            // Output depth toggle
-            ui.horizontal(|ui| {
-                ui.label("Output depth:");
-                ui.selectable_value(&mut self.depth16, true,  "16-bit");
-                ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
             });
 
             ui.add_space(10.0);
@@ -1406,22 +1404,33 @@ impl App {
 
             ui.add_space(10.0);
 
-            // Output folder
-            ui.label(RichText::new("Output Folder").strong().size(12.0));
-            ui.separator();
-            ui.horizontal(|ui| {
-                let label = self.output_dir.to_string_lossy();
-                ui.add(egui::Label::new(
-                    RichText::new(label.as_ref()).small().monospace()
-                ).truncate());
-                if ui.small_button("…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                        self.output_dir = p;
+            // Output folder (only show when print to file is enabled)
+            if self.print_to_file {
+                ui.label(RichText::new("Output Folder").strong().size(12.0));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let label = self.output_dir.to_string_lossy();
+                    ui.add(egui::Label::new(
+                        RichText::new(label.as_ref()).small().monospace()
+                    ).truncate());
+                    if ui.small_button("…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                            self.output_dir = p;
+                        }
                     }
-                }
-            });
+                });
 
-            ui.add_space(6.0);
+                ui.add_space(6.0);
+
+                // Output depth toggle (only for file output)
+                ui.horizontal(|ui| {
+                    ui.label("Output depth:");
+                    ui.selectable_value(&mut self.depth16, true,  "16-bit");
+                    ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
+                });
+
+                ui.add_space(6.0);
+            }
         }); // end settings ScrollArea
     }
 
@@ -1432,28 +1441,23 @@ impl App {
         // ── Process & Print / Export ───────────────────────────────────────────
         ui.separator();
 
-        // Primary: Print button
+        // Primary: Print button (dynamic text based on print_to_file)
+        let btn_text = if self.print_to_file { "💾  Print to File" } else { "🖨  Print" };
         let print_btn = egui::Button::new(
-            RichText::new("🖨  Print").size(14.0).strong(),
+            RichText::new(btn_text).size(14.0).strong(),
         )
         .min_size(Vec2::new(ui.available_width(), 36.0))
         .fill(Color32::from_rgb(60, 120, 200));
 
         if ui.add_enabled(has_image && !is_running, print_btn).clicked() {
-            self.start_process_print();
+            if self.print_to_file {
+                self.start_process_export();
+            } else {
+                self.start_process_print();
+            }
         }
 
         ui.add_space(4.0);
-
-        // Secondary: Export TIFF button
-        let export_btn = egui::Button::new(
-            RichText::new("💾  Export TIFF").size(12.0),
-        )
-        .min_size(Vec2::new(ui.available_width(), 28.0));
-
-        if ui.add_enabled(has_image && !is_running, export_btn).clicked() {
-            self.start_process_export();
-        }
 
         if is_running {
             ui.horizontal(|ui| { ui.spinner(); ui.label("Processing…"); });
