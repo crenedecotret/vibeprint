@@ -1419,7 +1419,7 @@ impl App {
                     ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
                 });
             } else {
-                // Same widgets, invisible/empty - guarantees identical height
+                // Same widgets, invisible color - guarantees identical height
                 ui.label(RichText::new("Output Folder").strong().size(12.0));
                 ui.horizontal(|ui| {
                     ui.add(egui::Label::new(RichText::new("").small().monospace()));
@@ -1428,8 +1428,10 @@ impl App {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label("Output depth:");
-                    let _ = ui.selectable_value(&mut self.depth16, true,  "");
-                    let _ = ui.selectable_value(&mut self.depth16, false, "");
+                    let _ = ui.selectable_value(&mut self.depth16, true, 
+                        RichText::new("16-bit").color(Color32::TRANSPARENT));
+                    let _ = ui.selectable_value(&mut self.depth16, false, 
+                        RichText::new("8-bit Dithered").color(Color32::TRANSPARENT));
                 });
             }
 
