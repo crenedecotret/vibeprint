@@ -1448,20 +1448,6 @@ impl App {
             };
             ui.label(RichText::new(status_text).small().color(color));
         }
-
-        // ── Log (at the bottom) ───────────────────────────────────────────────
-        ui.add_space(12.0);
-        ui.label(RichText::new("Log").strong().size(12.0));
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .id_salt("log_scroll")
-            .max_height(80.0)
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                for entry in &self.log {
-                    ui.label(RichText::new(entry).small().monospace());
-                }
-            });
         });
     }
 
