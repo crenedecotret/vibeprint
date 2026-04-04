@@ -1405,7 +1405,7 @@ impl App {
         let has_image = self.selected.is_some();
 
         // Primary: Print button (dynamic text based on print_to_file)
-        let btn_text = if self.print_to_file { "💾  Print to File" } else { "🖨  Print" };
+        let btn_text = if self.print_to_file { "💾  Print to File" } else { "Print" };
         let print_btn = egui::Button::new(
             RichText::new(btn_text).size(14.0).strong(),
         )
