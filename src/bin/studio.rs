@@ -1453,7 +1453,11 @@ impl App {
 
     fn draw_print_controls(&mut self, ui: &mut egui::Ui) {
         // Output folder section - identical widgets in both cases for perfect height matching
-        ui.label(RichText::new("Output Folder").strong().size(12.0));
+        if self.print_to_file {
+            ui.label(RichText::new("Output Folder").strong().size(12.0));
+        } else {
+            ui.label(RichText::new("Output Folder").strong().size(12.0).color(Color32::TRANSPARENT));
+        }
         ui.separator();
         ui.horizontal(|ui| {
             let label = self.output_dir.to_string_lossy();
@@ -1476,7 +1480,11 @@ impl App {
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label("Output depth:");
+            if self.print_to_file {
+                ui.label("Output depth:");
+            } else {
+                ui.label(RichText::new("Output depth:").color(Color32::TRANSPARENT));
+            }
             if self.print_to_file {
                 ui.selectable_value(&mut self.depth16, true,  "16-bit");
                 ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
