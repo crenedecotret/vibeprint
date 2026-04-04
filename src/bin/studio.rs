@@ -1781,7 +1781,7 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("🖨  Ready to Print").size(18.0).strong());
+                    ui.label(RichText::new("Ready to Print").size(18.0).strong());
                     ui.add_space(8.0);
                 });
 
