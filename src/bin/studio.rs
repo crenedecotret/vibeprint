@@ -1239,7 +1239,7 @@ impl App {
                 &mut self.right_tab, RightTab::PrinterSettings, "Printer Settings",
             );
             ui.selectable_value(
-                &mut self.right_tab, RightTab::ImageProperties, "🖼 Image Properties",
+                &mut self.right_tab, RightTab::ImageProperties, "Image Properties",
             );
         });
         ui.separator();
