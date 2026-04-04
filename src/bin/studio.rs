@@ -1362,7 +1362,6 @@ impl App {
 
             // ── Block C: Color Management ─────────────────────────────────────
             ui.label(RichText::new("Color Management").strong().size(12.0));
-            ui.separator();
 
             // Output ICC
             ui.horizontal(|ui| {
