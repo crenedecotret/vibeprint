@@ -1398,43 +1398,7 @@ impl App {
                     });
             });
 
-            // Output folder section - identical widgets in both cases for perfect height matching
-            ui.label(RichText::new("Output Folder").strong().size(12.0));
-            ui.separator();
-            ui.horizontal(|ui| {
-                let label = self.output_dir.to_string_lossy();
-                if self.print_to_file {
-                    ui.add(egui::Label::new(
-                        RichText::new(label.as_ref()).small().monospace()
-                    ).truncate());
-                    if ui.small_button("…").clicked() {
-                        if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                            self.output_dir = p;
-                        }
-                    }
-                } else {
-                    // Same widgets, invisible content - guarantees identical height
-                    ui.add(egui::Label::new(
-                        RichText::new(label.as_ref()).small().monospace().color(Color32::TRANSPARENT)
-                    ).truncate());
-                    let _ = ui.small_button("…");
-                }
-            });
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label("Output depth:");
-                if self.print_to_file {
-                    ui.selectable_value(&mut self.depth16, true,  "16-bit");
-                    ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
-                } else {
-                    // Same widgets, invisible content - guarantees identical height
-                    let _ = ui.selectable_value(&mut self.depth16, true, 
-                        RichText::new("16-bit").color(Color32::TRANSPARENT));
-                    let _ = ui.selectable_value(&mut self.depth16, false, 
-                        RichText::new("8-bit Dithered").color(Color32::TRANSPARENT));
-                }
-            });
-
+            
         let is_running = matches!(self.proc_state, ProcState::Running);
         let has_image = self.selected.is_some();
 
@@ -1502,39 +1466,45 @@ impl App {
     }
 
     fn draw_print_controls(&mut self, ui: &mut egui::Ui) {
-        let is_running = matches!(self.proc_state, ProcState::Running);
-        let has_image = self.selected.is_some();
-
-        // Primary: Print button (dynamic text based on print_to_file)
-        let btn_text = if self.print_to_file { "💾  Print to File" } else { "🖨  Print" };
-        let print_btn = egui::Button::new(
-            RichText::new(btn_text).size(14.0).strong(),
-        )
-        .min_size(Vec2::new(ui.available_width(), 36.0))
-        .fill(Color32::from_rgb(60, 120, 200));
-
-        if ui.add_enabled(has_image && !is_running, print_btn).clicked() {
+        // Output folder section - identical widgets in both cases for perfect height matching
+        ui.label(RichText::new("Output Folder").strong().size(12.0));
+        ui.separator();
+        ui.horizontal(|ui| {
+            let label = self.output_dir.to_string_lossy();
             if self.print_to_file {
-                self.start_process_export();
+                ui.add(egui::Label::new(
+                    RichText::new(label.as_ref()).small().monospace()
+                ).truncate());
+                if ui.small_button("…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                        self.output_dir = p;
+                    }
+                }
             } else {
-                self.start_process_print();
+                // Same widgets, invisible content - guarantees identical height
+                ui.add(egui::Label::new(
+                    RichText::new(label.as_ref()).small().monospace().color(Color32::TRANSPARENT)
+                ).truncate());
+                let _ = ui.small_button("…");
             }
-        }
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label("Output depth:");
+            if self.print_to_file {
+                ui.selectable_value(&mut self.depth16, true,  "16-bit");
+                ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
+            } else {
+                // Same widgets, invisible content - guarantees identical height
+                let _ = ui.selectable_value(&mut self.depth16, true, 
+                    RichText::new("16-bit").color(Color32::TRANSPARENT));
+                let _ = ui.selectable_value(&mut self.depth16, false, 
+                    RichText::new("8-bit Dithered").color(Color32::TRANSPARENT));
+            }
+        });
 
         ui.add_space(4.0);
 
-        if is_running {
-            ui.horizontal(|ui| { ui.spinner(); ui.label("Processing…"); });
-        } else if !has_image {
-            ui.label(RichText::new("Select an image first").small().weak());
-        } else if let ProcState::Done(ref p) = self.proc_state {
-            let name = p.file_name().unwrap_or_default().to_string_lossy();
-            ui.label(RichText::new(format!("✓ {name}")).small().color(Color32::GREEN));
-        } else if let ProcState::Failed(ref e) = self.proc_state {
-            ui.label(RichText::new(format!("✗ {e}")).small().color(Color32::RED));
-        }
-
-        // Print job status
         if let Some(ref job) = self.print_job_status {
             ui.add_space(4.0);
             let status_text = match job.state {
