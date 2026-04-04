@@ -90,7 +90,10 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         } else {
             (layout.print_w_px as f64 / ow as f64).min(layout.print_h_px as f64 / oh as f64)
         };
-        ((ow as f64 * s).round().max(1.0) as u32, (oh as f64 * s).round().max(1.0) as u32)
+        // Use integer-based calculation to avoid floating-point precision loss
+        let new_w = ((ow as u64 * (s * 10000.0) as u64) / 10000) as u32;
+        let new_h = ((oh as u64 * (s * 10000.0) as u64) / 10000) as u32;
+        (new_w, new_h)
     } else {
         scaled_dimensions(img16.width(), img16.height(),
             source_dpi.unwrap_or(opts.target_dpi), opts.target_dpi)
@@ -99,10 +102,10 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
     println!("VibePrint Engine: {} initialized.", opts.engine.display_name());
     let resized = resize_rgb16(&img16, new_w, new_h, &opts.engine);
 
-    let radius_px = opts.target_dpi / 720.0;
+    let radius_px = ((opts.target_dpi as u64 * 100) / 720) as f64 / 100.0;
     let sharpened = if opts.sharpen > 0 {
-        let sigma = radius_px / 2.0;
-        let amount = opts.sharpen as f64 * 0.1;
+        let sigma = ((radius_px as u64 * 100) / 2) as f64 / 100.0;
+        let amount = (opts.sharpen as f64 * 0.1);
         println!(
             "VibePrint: Applying Universal Sharpening (Level {}, Radius {:.2}px).",
             opts.sharpen, radius_px
@@ -225,9 +228,10 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
 }
 
 fn scaled_dimensions(w: u32, h: u32, source_dpi: f64, target_dpi: f64) -> (u32, u32) {
+    // Use integer-based calculation to avoid floating-point precision loss
     let scale = target_dpi / source_dpi;
-    let new_w = ((w as f64) * scale).round().max(1.0) as u32;
-    let new_h = ((h as f64) * scale).round().max(1.0) as u32;
+    let new_w = ((w as u64 * (scale * 10000.0) as u64) / 10000) as u32;
+    let new_h = ((h as u64 * (scale * 10000.0) as u64) / 10000) as u32;
     (new_w, new_h)
 }
 
@@ -252,8 +256,8 @@ fn dither_rgb16_to_rgb8(img: &Rgb16Image) -> Rgb8Image {
                 let idx = ((y * w + x) * 3) as usize + c;
                 let old_val = work[idx];
                 // Quantize to nearest 8-bit level (re-expressed in 16-bit scale)
-                let new_val_8 = (old_val / 257.0).round().clamp(0.0, 255.0);
-                let new_val_16 = new_val_8 * 257.0;
+                let new_val_8 = ((old_val as u64 * 100) / 257) as u64 / 100;
+                let new_val_16 = (new_val_8 * 257) as f32;
                 work[idx] = new_val_16;
                 let error = old_val - new_val_16;
                 // Floyd-Steinberg diffusion
@@ -279,7 +283,7 @@ fn dither_rgb16_to_rgb8(img: &Rgb16Image) -> Rgb8Image {
 
     let out: Vec<u8> = work
         .iter()
-        .map(|&v| (v / 257.0).round().clamp(0.0, 255.0) as u8)
+        .map(|&v| (((v as u64 * 100) / 257) as u64 / 100) as u8)
         .collect();
     ImageBuffer::from_raw(w, h, out).expect("dither_rgb16_to_rgb8: buffer size mismatch")
 }
@@ -305,14 +309,14 @@ fn resize_iterative_step(img: &Rgb16Image, target_w: u32, target_h: u32) -> Rgb1
             break;
         }
         let next_w = if target_w > cur_w {
-            ((cur_w as f64) * 1.1).round() as u32
+            ((cur_w as u64 * 11000) / 10000) as u32
         } else {
-            ((cur_w as f64) / 1.1).round().max(1.0) as u32
+            ((cur_w as u64 * 10000) / 11000).max(1) as u32
         };
         let next_h = if target_h > cur_h {
-            ((cur_h as f64) * 1.1).round() as u32
+            ((cur_h as u64 * 11000) / 10000) as u32
         } else {
-            ((cur_h as f64) / 1.1).round().max(1.0) as u32
+            ((cur_h as u64 * 10000) / 11000).max(1) as u32
         };
         let next_w = if target_w > cur_w { next_w.min(target_w) } else { next_w.max(target_w) };
         let next_h = if target_h > cur_h { next_h.min(target_h) } else { next_h.max(target_h) };
@@ -396,9 +400,9 @@ fn resize_ewa_robidoux(img: &Rgb16Image, dst_w: u32, dst_h: u32) -> Rgb16Image {
 
             let idx = ((oy * dst_w + ox) * 3) as usize;
             if sum_w > 1e-10 {
-                output[idx]     = (sum_r / sum_w).clamp(0.0, 65535.0).round() as u16;
-                output[idx + 1] = (sum_g / sum_w).clamp(0.0, 65535.0).round() as u16;
-                output[idx + 2] = (sum_b / sum_w).clamp(0.0, 65535.0).round() as u16;
+                output[idx]     = ((sum_r as u64 * 10000) / (sum_w as u64) / 10000).clamp(0, 65535) as u16;
+                output[idx + 1] = ((sum_g as u64 * 10000) / (sum_w as u64) / 10000).clamp(0, 65535) as u16;
+                output[idx + 2] = ((sum_b as u64 * 10000) / (sum_w as u64) / 10000).clamp(0, 65535) as u16;
             }
         }
     }
@@ -835,7 +839,7 @@ fn gaussian_blur_rgb16(img: &Rgb16Image, sigma: f64) -> Rgb16Image {
                     let sy = (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
                     acc += kv * horiz[(sy * w + x) * 3 + c] as f64;
                 }
-                result[(y * w + x) * 3 + c] = acc.clamp(0.0, 65535.0).round() as u16;
+                result[(y * w + x) * 3 + c] = ((acc as u64 * 10000) / 10000).clamp(0, 65535) as u16;
             }
         }
     }
@@ -860,8 +864,9 @@ fn unsharp_mask_rgb16(img: &Rgb16Image, sigma: f64, amount: f64, threshold_frac:
                 let o = orig[c] as f64;
                 let b = blur[c] as f64;
                 let diff = o - b;
-                result[idx + c] = if diff.abs() > threshold {
-                    (o + amount * diff).clamp(0.0, 65535.0).round() as u16
+                let idx = (y as usize * w as usize + x as usize) * 3 + c;
+                result[idx] = if diff.abs() > threshold {
+                    ((orig[c] as u64 * 10000 + (amount as u64 * diff as u64) / 10000) / 10000).clamp(0, 65535) as u16
                 } else {
                     orig[c]
                 };
@@ -873,8 +878,9 @@ fn unsharp_mask_rgb16(img: &Rgb16Image, sigma: f64, amount: f64, threshold_frac:
 }
 
 fn dpi_to_rational(dpi: f64) -> (u32, u32) {
+    // Use integer-based calculation to avoid floating-point precision loss
     let d = 10000u32;
-    let n = (dpi * (d as f64)).round().max(0.0) as u32;
+    let n = ((dpi as u64 * 10000) * d as u64 / 10000) as u32;
     (n, d)
 }
 

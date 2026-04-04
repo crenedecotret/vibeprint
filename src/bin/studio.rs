@@ -1243,8 +1243,23 @@ impl App {
         ui.separator();
 
         match self.right_tab {
-            RightTab::PrinterSettings => self.draw_tab_printer(ui),
-            RightTab::ImageProperties => self.draw_tab_image(ui),
+            RightTab::PrinterSettings => {
+                // ── Settings Section (Top - Scrollable) ─────────────────────────────
+                let available_height = ui.available_height();
+                egui::ScrollArea::vertical()
+                    .id_salt("settings_scroll")
+                    .max_height(available_height * 0.6)
+                    .show(ui, |ui| {
+                        self.draw_tab_printer(ui);
+                    });
+
+                // ── Print Section (Bottom - Fixed) ─────────────────────────────────────
+                ui.separator();
+                self.draw_print_controls(ui);
+            }
+            RightTab::ImageProperties => {
+                self.draw_tab_image(ui);
+            }
         }
     }
 
@@ -1408,11 +1423,14 @@ impl App {
 
             ui.add_space(6.0);
         }); // end settings ScrollArea
+    }
+
+    fn draw_print_controls(&mut self, ui: &mut egui::Ui) {
+        let is_running = matches!(self.proc_state, ProcState::Running);
+        let has_image = self.selected.is_some();
 
         // ── Process & Print / Export ───────────────────────────────────────────
         ui.separator();
-        let is_running = matches!(self.proc_state, ProcState::Running);
-        let has_image  = self.selected.is_some();
 
         // Primary: Print button
         let print_btn = egui::Button::new(
