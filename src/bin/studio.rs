@@ -1398,6 +1398,8 @@ impl App {
                     });
             });
 
+            ui.add_space(10.0);
+
             
         let is_running = matches!(self.proc_state, ProcState::Running);
         let has_image = self.selected.is_some();
