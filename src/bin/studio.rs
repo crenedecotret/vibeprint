@@ -1401,6 +1401,7 @@ impl App {
             // Output folder section - identical widgets in both cases for perfect height matching
             if self.print_to_file {
                 ui.label(RichText::new("Output Folder").strong().size(12.0));
+                ui.separator();
                 ui.horizontal(|ui| {
                     let label = self.output_dir.to_string_lossy();
                     ui.add(egui::Label::new(
@@ -1421,6 +1422,7 @@ impl App {
             } else {
                 // Same widgets, invisible color - guarantees identical height
                 ui.label(RichText::new("Output Folder").strong().size(12.0));
+                ui.separator();
                 ui.horizontal(|ui| {
                     let label = self.output_dir.to_string_lossy();
                     ui.add(egui::Label::new(
