@@ -1404,7 +1404,7 @@ impl App {
 
             ui.add_space(10.0);
 
-            // Output folder (only show when print to file is enabled)
+            // Output folder section - preserve space when unchecked to prevent UI jumping
             if self.print_to_file {
                 ui.label(RichText::new("Output Folder").strong().size(12.0));
                 ui.separator();
@@ -1428,9 +1428,15 @@ impl App {
                     ui.selectable_value(&mut self.depth16, true,  "16-bit");
                     ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
                 });
-
+            } else {
+                // Reserve same vertical space with empty content to prevent UI jumping
+                ui.label(RichText::new("Output Folder").strong().size(12.0));
+                ui.separator();
+                ui.add_space(28.0);  // Space for folder picker row
                 ui.add_space(6.0);
+                ui.add_space(20.0);  // Space for depth toggle row
             }
+            ui.add_space(6.0);
         }); // end settings ScrollArea
     }
 
