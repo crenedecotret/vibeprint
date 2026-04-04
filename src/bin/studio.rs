@@ -1403,11 +1403,11 @@ impl App {
                 egui::vec2(ui.available_width(), 80.0),
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
-                    ui.label(RichText::new("Output Folder").strong().size(12.0));
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        let label = self.output_dir.to_string_lossy();
-                        if self.print_to_file {
+                    if self.print_to_file {
+                        ui.label(RichText::new("Output Folder").strong().size(12.0));
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            let label = self.output_dir.to_string_lossy();
                             ui.add(egui::Label::new(
                                 RichText::new(label.as_ref()).small().monospace()
                             ).truncate());
@@ -1416,24 +1416,15 @@ impl App {
                                     self.output_dir = p;
                                 }
                             }
-                        } else {
-                            ui.add(egui::Label::new(
-                                RichText::new(label.as_ref()).small().monospace()
-                            ).truncate());
-                            let _ = ui.small_button("…");
-                        }
-                    });
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Output depth:");
-                        if self.print_to_file {
+                        });
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Output depth:");
                             ui.selectable_value(&mut self.depth16, true,  "16-bit");
                             ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
-                        } else {
-                            let _ = ui.selectable_value(&mut self.depth16, true,  "16-bit");
-                            let _ = ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
-                        }
-                    });
+                        });
+                    }
+                    // When unchecked: render nothing - container still reserves 80px
                 }
             );
 
