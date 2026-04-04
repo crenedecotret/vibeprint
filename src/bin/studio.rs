@@ -1399,41 +1399,6 @@ impl App {
                     });
             });
 
-            // BPC toggle
-            ui.checkbox(&mut self.bpc, "Black point compensation");
-
-            ui.add_space(10.0);
-
-            // Output folder section - preserve exact space to prevent UI jumping
-            if self.print_to_file {
-                ui.label(RichText::new("Output Folder").strong().size(12.0));
-                ui.separator();
-                ui.horizontal(|ui| {
-                    let label = self.output_dir.to_string_lossy();
-                    ui.add(egui::Label::new(
-                        RichText::new(label.as_ref()).small().monospace()
-                    ).truncate());
-                    if ui.small_button("…").clicked() {
-                        if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                            self.output_dir = p;
-                        }
-                    }
-                });
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label("Output depth:");
-                    ui.selectable_value(&mut self.depth16, true,  "16-bit");
-                    ui.selectable_value(&mut self.depth16, false, "8-bit Dithered");
-                });
-            } else {
-                // Reserve exact same space but render nothing visible
-                // Height must match: label + separator + folder row + spacing + depth row
-                ui.allocate_space(egui::vec2(ui.available_width(), 75.0));
-            }
-        }); // end settings ScrollArea
-    }
-
-    fn draw_print_controls(&mut self, ui: &mut egui::Ui) {
         let is_running = matches!(self.proc_state, ProcState::Running);
         let has_image = self.selected.is_some();
 
