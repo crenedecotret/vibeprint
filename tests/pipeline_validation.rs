@@ -35,6 +35,55 @@ fn write_gradient_rgb16_tiff(path: &Path, width: u32, height: u32, dpi: f64) -> 
     Ok(())
 }
 
+#[test]
+fn unset_output_icc_can_default_to_wide_profile() -> Result<()> {
+    let tmp = tempdir().context("failed to create tempdir")?;
+    let input_path = tmp.path().join("input.tif");
+    let output_path = tmp.path().join("output_default_wide.tif");
+
+    write_gradient_rgb16_tiff(&input_path, 16, 16, 360.0)?;
+
+    vibeprint::processor::process_composite_page(vibeprint::processor::CompositePageOptions {
+        output: output_path.clone(),
+        placements: vec![vibeprint::processor::PagePlacement {
+            input: input_path,
+            input_icc: None,
+            dest_x_px: 0,
+            dest_y_px: 0,
+            dest_w_px: 160,
+            dest_h_px: 160,
+            rotate_cw: false,
+        }],
+        page_w_px: 160,
+        page_h_px: 160,
+        output_icc: None,
+        default_wide_output_when_unset: true,
+        target_dpi: 360.0,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: true,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 16,
+        sharpen: 0,
+    })?;
+
+    let embedded = read_tiff_embedded_icc(&output_path)?;
+    let srgb_bytes = lcms2::Profile::new_srgb().icc().context("failed to serialize sRGB profile")?;
+    assert_ne!(embedded, srgb_bytes, "default-wide output ICC unexpectedly matched sRGB");
+
+    let embedded_profile = lcms2::Profile::new_icc(&embedded)
+        .context("failed to parse embedded output ICC profile")?;
+    let desc = embedded_profile
+        .info(lcms2::InfoType::Description, lcms2::Locale::none())
+        .unwrap_or_default();
+    assert_eq!(
+        desc,
+        "VibePrint Wide Gamut Linear D50 RGB",
+        "embedded default-wide ICC description mismatch"
+    );
+
+    Ok(())
+}
+
 fn dpi_to_rational(dpi: f64) -> (u32, u32) {
     let d = 10000u32;
     let n = (dpi * (d as f64)).round().max(0.0) as u32;
@@ -114,12 +163,69 @@ fn write_checkerboard_rgb16_tiff(path: &Path, width: u32, height: u32, dpi: f64,
     Ok(())
 }
 
+fn write_solid_rgb16_tiff(path: &Path, width: u32, height: u32, dpi: f64, rgb: (u16, u16, u16)) -> Result<()> {
+    use tiff::encoder::{colortype, TiffEncoder};
+    use tiff::tags::Tag;
+
+    let mut data: Vec<u16> = vec![0; (width as usize) * (height as usize) * 3];
+    for y in 0..height {
+        for x in 0..width {
+            let idx = ((y * width + x) * 3) as usize;
+            data[idx] = rgb.0;
+            data[idx + 1] = rgb.1;
+            data[idx + 2] = rgb.2;
+        }
+    }
+
+    let file = File::create(path).with_context(|| format!("failed to create test TIFF: {}", path.display()))?;
+    let mut encoder = TiffEncoder::new(file).context("failed to create TIFF encoder")?;
+    let mut image = encoder
+        .new_image::<colortype::RGB16>(width, height)
+        .context("failed to create TIFF image")?;
+
+    let (n, d) = dpi_to_rational(dpi);
+    let _ = image.encoder().write_tag(Tag::XResolution, tiff::encoder::Rational { n, d });
+    let _ = image.encoder().write_tag(Tag::YResolution, tiff::encoder::Rational { n, d });
+    let _ = image.encoder().write_tag(Tag::ResolutionUnit, 2u16);
+
+    image.write_data(&data).context("failed to write solid-color TIFF")?;
+    Ok(())
+}
+
 fn read_tiff_pixels_u16(path: &Path) -> Result<Vec<u16>> {
     let file = File::open(path).with_context(|| format!("failed to open: {}", path.display()))?;
     let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))?;
     match decoder.read_image().context("failed to decode pixels")? {
         tiff::decoder::DecodingResult::U16(v) => Ok(v),
         _ => anyhow::bail!("expected u16 decoding result"),
+    }
+}
+
+fn read_tiff_embedded_icc(path: &Path) -> Result<Vec<u8>> {
+    use tiff::decoder::ifd::Value;
+    use tiff::tags::Tag;
+
+    let file = File::open(path).with_context(|| format!("failed to open TIFF: {}", path.display()))?;
+    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file)).context("failed to create decoder")?;
+    let v = decoder
+        .get_tag(Tag::IccProfile)
+        .context("missing ICC profile tag on output TIFF")?;
+
+    match v {
+        Value::Byte(b) => Ok(vec![b]),
+        Value::SignedByte(b) => Ok(vec![b as u8]),
+        Value::List(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for item in values {
+                match item {
+                    Value::Byte(b) => out.push(b),
+                    Value::SignedByte(b) => out.push(b as u8),
+                    _ => anyhow::bail!("unexpected ICC tag list item type"),
+                }
+            }
+            Ok(out)
+        }
+        _ => anyhow::bail!("unexpected ICC profile tag value type"),
     }
 }
 
@@ -188,6 +294,7 @@ fn engine_smoke_tests() -> Result<()> {
             output: out_path.clone(),
             input_icc: None,
             output_icc: Some(output_icc_path.clone()),
+            default_wide_output_when_unset: false,
             target_dpi,
             intent: lcms2::Intent::RelativeColorimetric,
             bpc: true,
@@ -257,6 +364,7 @@ fn iterative_step_exact_dimensions() -> Result<()> {
         output: output_path.clone(),
         input_icc: None,
         output_icc: Some(output_icc_path),
+        default_wide_output_when_unset: false,
         target_dpi: 720.0,
         intent: lcms2::Intent::RelativeColorimetric,
         bpc: true,
@@ -313,6 +421,7 @@ fn sharpen_usm_smoke_test() -> Result<()> {
         output: output_flat.clone(),
         input_icc: None,
         output_icc: Some(output_icc_path.clone()),
+        default_wide_output_when_unset: false,
         target_dpi: 720.0,
         intent: lcms2::Intent::RelativeColorimetric,
         bpc: true,
@@ -357,6 +466,53 @@ fn sharpen_usm_smoke_test() -> Result<()> {
 }
 
 #[test]
+fn single_image_page_layout_smoke_test() -> Result<()> {
+    let tmp = tempdir().context("failed to create tempdir")?;
+    let input_path = tmp.path().join("page_input.tif");
+    let output_path = tmp.path().join("page_layout_out.tif");
+    let output_icc_path = tmp.path().join("page_profile.icc");
+
+    write_gradient_rgb16_tiff(&input_path, 64, 64, 360.0)?;
+    let wide_bytes = make_wide_gamut_profile_bytes()?;
+    std::fs::write(&output_icc_path, &wide_bytes)?;
+
+    vibeprint::processor::process(vibeprint::processor::ProcessOptions {
+        input: input_path,
+        output: output_path.clone(),
+        input_icc: None,
+        output_icc: Some(output_icc_path),
+        default_wide_output_when_unset: false,
+        target_dpi: 360.0,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: true,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 8,
+        sharpen: 0,
+        page_layout: Some(vibeprint::processor::PageLayout {
+            page_w_px: 300,
+            page_h_px: 200,
+            print_x: 50,
+            print_y: 20,
+            print_w_px: 200,
+            print_h_px: 160,
+            rotate_cw: false,
+        }),
+    })?;
+
+    let (bit_depth, dpi) = read_tiff_bit_depth_and_dpi(&output_path)?;
+    assert_eq!(bit_depth, 8, "page-layout output must be 8-bit");
+    assert!((dpi - 360.0).abs() < 1e-6, "page-layout DPI mismatch");
+
+    let file = File::open(&output_path)?;
+    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))?;
+    let (w, h) = decoder.dimensions()?;
+    assert_eq!(w, 300, "page-layout width mismatch");
+    assert_eq!(h, 200, "page-layout height mismatch");
+
+    Ok(())
+}
+
+#[test]
 fn depth8_dither_smoke_test() -> Result<()> {
     let tmp = tempdir().context("failed to create tempdir")?;
     let input_path = tmp.path().join("grad.tif");
@@ -373,6 +529,7 @@ fn depth8_dither_smoke_test() -> Result<()> {
         output: output_path.clone(),
         input_icc: None,
         output_icc: Some(output_icc_path),
+        default_wide_output_when_unset: false,
         target_dpi: 360.0,
         intent: lcms2::Intent::RelativeColorimetric,
         bpc: true,
@@ -408,6 +565,157 @@ fn depth8_dither_smoke_test() -> Result<()> {
 }
 
 #[test]
+fn composite_page_smoke_test() -> Result<()> {
+    let tmp = tempdir().context("failed to create tempdir")?;
+    let input_a = tmp.path().join("comp_a.tif");
+    let input_b = tmp.path().join("comp_b.tif");
+    let output_path = tmp.path().join("composite_out.tif");
+    let output_icc_path = tmp.path().join("composite_profile.icc");
+
+    write_gradient_rgb16_tiff(&input_a, 48, 48, 360.0)?;
+    write_checkerboard_rgb16_tiff(&input_b, 48, 48, 360.0, 6)?;
+    let wide_bytes = make_wide_gamut_profile_bytes()?;
+    std::fs::write(&output_icc_path, &wide_bytes)?;
+
+    vibeprint::processor::process_composite_page(vibeprint::processor::CompositePageOptions {
+        output: output_path.clone(),
+        placements: vec![
+            vibeprint::processor::PagePlacement {
+                input: input_a,
+                input_icc: None,
+                dest_x_px: 0,
+                dest_y_px: 0,
+                dest_w_px: 120,
+                dest_h_px: 120,
+                rotate_cw: false,
+            },
+            vibeprint::processor::PagePlacement {
+                input: input_b,
+                input_icc: None,
+                dest_x_px: 120,
+                dest_y_px: 0,
+                dest_w_px: 120,
+                dest_h_px: 120,
+                rotate_cw: false,
+            },
+        ],
+        page_w_px: 240,
+        page_h_px: 120,
+        output_icc: Some(output_icc_path),
+        default_wide_output_when_unset: false,
+        target_dpi: 360.0,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: true,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 8,
+        sharpen: 0,
+    })?;
+
+    let (bit_depth, dpi) = read_tiff_bit_depth_and_dpi(&output_path)?;
+    assert_eq!(bit_depth, 8, "composite output must be 8-bit");
+    assert!((dpi - 360.0).abs() < 1e-6, "composite DPI mismatch");
+
+    let file = File::open(&output_path)?;
+    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))?;
+    let (w, h) = decoder.dimensions()?;
+    assert_eq!(w, 240, "composite width mismatch");
+    assert_eq!(h, 120, "composite height mismatch");
+
+    let pixels: Vec<u8> = match decoder.read_image().context("decode composite 8-bit pixels")? {
+        tiff::decoder::DecodingResult::U8(v) => v,
+        _ => anyhow::bail!("expected U8 decoding result"),
+    };
+    assert!(!pixels.iter().all(|&p| p == 255), "composite output is all white");
+
+    Ok(())
+}
+
+#[test]
+fn wide_gamut_input_does_not_roundtrip_through_srgb() -> Result<()> {
+    let tmp = tempdir().context("failed to create tempdir")?;
+    let input_path = tmp.path().join("wide_input.tif");
+    let output_path = tmp.path().join("wide_output.tif");
+    let wide_icc_path = tmp.path().join("wide.icc");
+
+    let wide_bytes = make_wide_gamut_profile_bytes()?;
+    std::fs::write(&wide_icc_path, &wide_bytes)?;
+
+    let src_rgb = (0u16, 65535u16, 0u16);
+    write_solid_rgb16_tiff(&input_path, 1, 1, 720.0, src_rgb)?;
+
+    vibeprint::processor::process(vibeprint::processor::ProcessOptions {
+        input: input_path,
+        output: output_path.clone(),
+        input_icc: Some(wide_icc_path.clone()),
+        output_icc: Some(wide_icc_path.clone()),
+        default_wide_output_when_unset: false,
+        target_dpi: 720.0,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: true,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 16,
+        sharpen: 0,
+        page_layout: None,
+    })?;
+
+    let out = read_tiff_pixel_rgb16(&output_path, 0, 0)?;
+
+    let input_profile = lcms2::Profile::new_icc(&wide_bytes)
+        .context("failed to load synthetic wide-gamut profile")?;
+    let output_profile = lcms2::Profile::new_icc(&wide_bytes)
+        .context("failed to load synthetic wide-gamut profile")?;
+    let srgb_profile = lcms2::Profile::new_srgb();
+
+    let flags = lcms2::Flags::BLACKPOINT_COMPENSATION | lcms2::Flags::NO_CACHE;
+    let to_srgb = lcms2::Transform::<[u16; 3], [u16; 3]>::new_flags(
+        &input_profile,
+        lcms2::PixelFormat::RGB_16,
+        &srgb_profile,
+        lcms2::PixelFormat::RGB_16,
+        lcms2::Intent::RelativeColorimetric,
+        flags,
+    )
+    .context("failed to create input->sRGB transform")?;
+    let to_output = lcms2::Transform::<[u16; 3], [u16; 3]>::new_flags(
+        &srgb_profile,
+        lcms2::PixelFormat::RGB_16,
+        &output_profile,
+        lcms2::PixelFormat::RGB_16,
+        lcms2::Intent::RelativeColorimetric,
+        flags,
+    )
+    .context("failed to create sRGB->output transform")?;
+
+    let src_buf = [[src_rgb.0, src_rgb.1, src_rgb.2]];
+    let mut srgb_buf = [[0u16, 0u16, 0u16]];
+    let mut srgb_roundtrip = [[0u16, 0u16, 0u16]];
+    to_srgb.transform_pixels(&src_buf, &mut srgb_buf);
+    to_output.transform_pixels(&srgb_buf, &mut srgb_roundtrip);
+
+    let abs_sum_diff = |a: (u16, u16, u16), b: (u16, u16, u16)| -> u32 {
+        a.0.abs_diff(b.0) as u32 + a.1.abs_diff(b.1) as u32 + a.2.abs_diff(b.2) as u32
+    };
+
+    let delta_out_vs_src = abs_sum_diff(out, src_rgb);
+    let delta_srgb_roundtrip_vs_src = abs_sum_diff(
+        (srgb_roundtrip[0][0], srgb_roundtrip[0][1], srgb_roundtrip[0][2]),
+        src_rgb,
+    );
+
+    assert!(
+        delta_out_vs_src + 256 < delta_srgb_roundtrip_vs_src,
+        "output is too close to an sRGB-intermediate roundtrip: out={:?}, src={:?}, srgb_roundtrip={:?}, delta_out={}, delta_srgb={}",
+        out,
+        src_rgb,
+        srgb_roundtrip,
+        delta_out_vs_src,
+        delta_srgb_roundtrip_vs_src
+    );
+
+    Ok(())
+}
+
+#[test]
 fn pipeline_validation_suite() -> Result<()> {
     let tmp = tempdir().context("failed to create tempdir")?;
     let input_path = tmp.path().join("synthetic_input.tif");
@@ -431,6 +739,7 @@ fn pipeline_validation_suite() -> Result<()> {
         output: output_path.clone(),
         input_icc: None,
         output_icc: Some(output_icc_path.clone()),
+        default_wide_output_when_unset: false,
         target_dpi,
         intent: lcms2::Intent::RelativeColorimetric,
         bpc: true,

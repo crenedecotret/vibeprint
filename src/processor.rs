@@ -11,26 +11,112 @@ enum LoadedImage {
     Rgb16(Rgb16Image),
 }
 
-pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
-    if opts.target_dpi <= 0.0 {
-        bail!("dpi must be > 0");
-    }
-
-    let (output_profile, output_icc_bytes, icc_filename) = match opts.output_icc.as_ref() {
+fn load_output_profile(
+    output_icc: Option<&std::path::PathBuf>,
+    passthrough_icc: Option<&[u8]>,
+    default_wide_when_unset: bool,
+) -> Result<(lcms2::Profile, Vec<u8>, String)> {
+    match output_icc {
         Some(path) => {
             let bytes = std::fs::read(path)
                 .with_context(|| format!("failed to read output ICC: {}", path.display()))?;
             let profile = lcms2::Profile::new_icc(&bytes)
                 .with_context(|| format!("failed to load output ICC: {}", path.display()))?;
             let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
-            (profile, bytes, fname)
+            Ok((profile, bytes, fname))
         }
         None => {
-            let profile = lcms2::Profile::new_srgb();
-            let bytes = profile.icc().context("failed to serialize sRGB profile")?;
-            (profile, bytes, "sRGB (passthrough)".to_string())
+            if default_wide_when_unset {
+                let profile = load_wide_working_profile()?;
+                let bytes = profile
+                    .icc()
+                    .context("failed to serialize wide-gamut working profile")?;
+                return Ok((profile, bytes, "wide-gamut working RGB (default)".to_string()));
+            }
+            match passthrough_icc {
+                Some(icc_bytes) => {
+                    let profile = lcms2::Profile::new_icc(icc_bytes)
+                        .context("failed to load passthrough ICC profile")?;
+                    Ok((profile, icc_bytes.to_vec(), "embedded (passthrough)".to_string()))
+                }
+                None => {
+                    let profile = lcms2::Profile::new_srgb();
+                    let bytes = profile.icc().context("failed to serialize sRGB profile")?;
+                    Ok((profile, bytes, "sRGB (passthrough)".to_string()))
+                }
+            }
         }
+    }
+}
+
+fn load_input_profile(
+    input_icc: Option<&std::path::PathBuf>,
+    embedded_icc: Option<&[u8]>,
+) -> Result<lcms2::Profile> {
+    match (input_icc, embedded_icc) {
+        (Some(path), _) => lcms2::Profile::new_file(path)
+            .with_context(|| format!("failed to load input ICC: {}", path.display())),
+        (None, Some(icc)) => lcms2::Profile::new_icc(icc)
+            .context("failed to load embedded ICC profile"),
+        (None, None) => Ok(lcms2::Profile::new_srgb()),
+    }
+}
+
+fn load_wide_working_profile() -> Result<lcms2::Profile> {
+    let wp = lcms2::CIExyY {
+        x: 0.3457,
+        y: 0.3585,
+        Y: 1.0,
     };
+    let primaries = lcms2::CIExyYTRIPLE {
+        Red: lcms2::CIExyY {
+            x: 0.7347,
+            y: 0.2653,
+            Y: 1.0,
+        },
+        Green: lcms2::CIExyY {
+            x: 0.1596,
+            y: 0.8404,
+            Y: 1.0,
+        },
+        Blue: lcms2::CIExyY {
+            x: 0.0366,
+            y: 0.0001,
+            Y: 1.0,
+        },
+    };
+
+    let curve = lcms2::ToneCurve::new(1.0);
+    let mut profile = lcms2::Profile::new_rgb(&wp, &primaries, &[&curve, &curve, &curve])
+        .context("failed to create wide-gamut working RGB profile")?;
+
+    let mut desc = lcms2::MLU::new(1);
+    desc.set_text_ascii("VibePrint Wide Gamut Linear D50 RGB", lcms2::Locale::new("en_US"));
+    if !profile.write_tag(lcms2::TagSignature::ProfileDescriptionTag, lcms2::Tag::MLU(&desc)) {
+        bail!("failed to set wide-gamut profile description tag");
+    }
+
+    let mut copyright = lcms2::MLU::new(1);
+    copyright.set_text_ascii("No copyright, use freely", lcms2::Locale::new("en_US"));
+    if !profile.write_tag(lcms2::TagSignature::CopyrightTag, lcms2::Tag::MLU(&copyright)) {
+        bail!("failed to set wide-gamut profile copyright tag");
+    }
+
+    Ok(profile)
+}
+
+pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
+    if opts.target_dpi <= 0.0 {
+        bail!("dpi must be > 0");
+    }
+
+    let (output_profile, output_icc_bytes, icc_filename) =
+        load_output_profile(
+            opts.output_icc.as_ref(),
+            None,
+            opts.default_wide_output_when_unset,
+        )?;
+    let working_profile = load_wide_working_profile()?;
 
     let intent_name = match opts.intent {
         lcms2::Intent::Perceptual             => "Perceptual",
@@ -67,13 +153,7 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
             LoadedImage::Rgb16(im) => im,
         };
 
-        let input_profile = match (p.input_icc.as_ref(), embedded_icc.as_ref()) {
-            (Some(path), _) => lcms2::Profile::new_file(path)
-                .with_context(|| format!("failed to load input ICC: {}", path.display()))?,
-            (None, Some(_)) => lcms2::Profile::new_icc(embedded_icc.as_ref().unwrap())
-                .context("failed to load embedded ICC profile")?,
-            (None, None) => lcms2::Profile::new_srgb(),
-        };
+        let input_profile = load_input_profile(p.input_icc.as_ref(), embedded_icc.as_deref())?;
 
         let (ow, oh) = (img16.width(), img16.height());
         let s = if p.rotate_cw {
@@ -97,7 +177,7 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         let transformed = transform_rgb16_icc(
             &sharpened,
             &input_profile,
-            &output_profile,
+            &working_profile,
             opts.intent,
             opts.bpc,
         )?;
@@ -114,6 +194,8 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
 
         let _ = source_dpi;
     }
+
+    let page = transform_rgb16_icc(&page, &working_profile, &output_profile, opts.intent, opts.bpc)?;
 
     if opts.depth == 8 {
         let dithered = dither_rgb16_to_rgb8(&page);
@@ -172,6 +254,7 @@ pub struct ProcessOptions {
     pub output: std::path::PathBuf,
     pub input_icc: Option<std::path::PathBuf>,
     pub output_icc: Option<std::path::PathBuf>,
+    pub default_wide_output_when_unset: bool,
     pub target_dpi: f64,
     pub intent: lcms2::Intent,
     pub bpc: bool,
@@ -198,6 +281,7 @@ pub struct CompositePageOptions {
     pub page_w_px: u32,
     pub page_h_px: u32,
     pub output_icc: Option<std::path::PathBuf>,
+    pub default_wide_output_when_unset: bool,
     pub target_dpi: f64,
     pub intent: lcms2::Intent,
     pub bpc: bool,
@@ -256,44 +340,41 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
     let input_profile = match (opts.input_icc.as_ref(), embedded_icc.as_ref()) {
         (Some(path), _) => {
             println!("Using input ICC: {}", path.display());
-            lcms2::Profile::new_file(path)
-                .with_context(|| format!("failed to load input ICC: {}", path.display()))?
+            load_input_profile(opts.input_icc.as_ref(), embedded_icc.as_deref())?
         }
         (None, Some(_)) => {
             println!("Using embedded ICC profile");
-            lcms2::Profile::new_icc(embedded_icc.as_ref().unwrap())
-                .context("failed to load embedded ICC profile")?
+            load_input_profile(opts.input_icc.as_ref(), embedded_icc.as_deref())?
         }
         (None, None) => {
             println!("No profile found, defaulting to sRGB");
-            lcms2::Profile::new_srgb()
+            load_input_profile(opts.input_icc.as_ref(), embedded_icc.as_deref())?
         }
     };
 
     let (output_profile, output_icc_bytes, icc_filename) = match opts.output_icc.as_ref() {
         Some(path) => {
             println!("Using destination ICC: {}", path.display());
-            let bytes = std::fs::read(path)
-                .with_context(|| format!("failed to read output ICC: {}", path.display()))?;
-            let profile = lcms2::Profile::new_icc(&bytes)
-                .with_context(|| format!("failed to load output ICC: {}", path.display()))?;
-            let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
-            (profile, bytes, fname)
+            load_output_profile(
+                opts.output_icc.as_ref(),
+                embedded_icc.as_deref(),
+                opts.default_wide_output_when_unset,
+            )?
         }
-        None => match embedded_icc.as_ref() {
-            Some(icc_bytes) => {
+        None => {
+            if opts.default_wide_output_when_unset {
+                println!("No output ICC specified, using wide-gamut working RGB (default).");
+            } else if embedded_icc.is_some() {
                 println!("No output ICC specified, using embedded profile (passthrough).");
-                let profile = lcms2::Profile::new_icc(icc_bytes)
-                    .context("failed to reload embedded ICC for output")?;
-                (profile, icc_bytes.clone(), "embedded (passthrough)".to_string())
-            }
-            None => {
+            } else {
                 println!("No output ICC specified, using sRGB (passthrough).");
-                let profile = lcms2::Profile::new_srgb();
-                let bytes = profile.icc().context("failed to serialize sRGB profile")?;
-                (profile, bytes, "sRGB (passthrough)".to_string())
             }
-        },
+            load_output_profile(
+                opts.output_icc.as_ref(),
+                embedded_icc.as_deref(),
+                opts.default_wide_output_when_unset,
+            )?
+        }
     };
 
     let intent_name = match opts.intent {
@@ -326,18 +407,23 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         icc_filename,
     );
 
-    let transformed = transform_rgb16_icc(&sharpened, &input_profile, &output_profile, opts.intent, opts.bpc)?;
+    let working_profile = load_wide_working_profile()?;
 
-    // Build full-page canvas if a page layout was requested
-    let final_image = if let Some(ref layout) = opts.page_layout {
-        let placed = if layout.rotate_cw {
+    let final_working_image = if let Some(ref layout) = opts.page_layout {
+        let placed_source = if layout.rotate_cw {
             println!("VibePrint: Rotating image 90° CW for page layout.");
-            rotate_90_cw_rgb16(&transformed)
+            rotate_90_cw_rgb16(&sharpened)
         } else {
-            transformed
+            sharpened
         };
+        let placed = transform_rgb16_icc(
+            &placed_source,
+            &input_profile,
+            &working_profile,
+            opts.intent,
+            opts.bpc,
+        )?;
         let (pw, ph) = (placed.width(), placed.height());
-        // Centre the image within the print rect on the page
         let cx = layout.print_x + layout.print_w_px.saturating_sub(pw) / 2;
         let cy = layout.print_y + layout.print_h_px.saturating_sub(ph) / 2;
         println!("VibePrint: Compositing {}x{} image at ({},{}) on {}x{} page.",
@@ -348,8 +434,22 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         composite_rgb16(&mut page, &placed, cx, cy);
         page
     } else {
-        transformed
+        transform_rgb16_icc(
+            &sharpened,
+            &input_profile,
+            &working_profile,
+            opts.intent,
+            opts.bpc,
+        )?
     };
+
+    let final_image = transform_rgb16_icc(
+        &final_working_image,
+        &working_profile,
+        &output_profile,
+        opts.intent,
+        opts.bpc,
+    )?;
 
     if opts.depth == 8 {
         println!("VibePrint: Outputting 8-bit TIFF (with dithering).");
