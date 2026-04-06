@@ -1077,6 +1077,7 @@ impl App {
                     page_w_px,
                     page_h_px,
                     output_icc: output_icc.clone(),
+                    default_wide_output_when_unset: matches!(target, ProcessTarget::Export),
                     target_dpi,
                     intent,
                     bpc,

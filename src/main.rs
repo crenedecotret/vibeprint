@@ -118,6 +118,7 @@ fn main() -> Result<()> {
             output,
             input_icc,
             output_icc,
+            default_wide_output_when_unset: false,
             target_dpi: dpi,
             intent: match intent {
                 ColorIntent::Perceptual => lcms2::Intent::Perceptual,

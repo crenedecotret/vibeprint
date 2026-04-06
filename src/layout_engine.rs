@@ -148,6 +148,8 @@ pub fn layout_queue(
         row_h = row_h.max(box_h_px);
     }
 
+    center_rows_horizontally_per_page(&mut placements, page_w_px);
+
     let page_count = placements
         .values()
         .map(|p| p.page)
@@ -158,6 +160,39 @@ pub fn layout_queue(
     LayoutResult {
         placements,
         page_count,
+    }
+}
+
+fn center_rows_horizontally_per_page(
+    placements: &mut HashMap<Uuid, Placement>,
+    page_w_px: u32,
+) {
+    let mut bounds_by_page_row: HashMap<(usize, u32), (u32, u32)> = HashMap::new();
+
+    for p in placements.values() {
+        let key = (p.page, p.y_px);
+        let min_x = p.x_px;
+        let max_x = p.x_px.saturating_add(p.w_px);
+        bounds_by_page_row
+            .entry(key)
+            .and_modify(|b| {
+                b.0 = b.0.min(min_x);
+                b.1 = b.1.max(max_x);
+            })
+            .or_insert((min_x, max_x));
+    }
+
+    let mut offsets_by_page_row: HashMap<(usize, u32), i64> = HashMap::new();
+    for (key, (min_x, max_x)) in bounds_by_page_row {
+        let used_w = max_x.saturating_sub(min_x).min(page_w_px.max(1));
+        let dx = ((page_w_px.saturating_sub(used_w)) / 2) as i64 - min_x as i64;
+        offsets_by_page_row.insert(key, dx);
+    }
+
+    for p in placements.values_mut() {
+        if let Some(dx) = offsets_by_page_row.get(&(p.page, p.y_px)).copied() {
+            p.x_px = (p.x_px as i64 + dx).max(0) as u32;
+        }
     }
 }
 
@@ -224,6 +259,13 @@ fn choose_orientation_for_flow_with_state(
         let alt_cost = (alt_sim.wrapped_page as u8, alt_sim.wrapped_row as u8);
         if alt_cost < pref_cost {
             return (alt_w_px, alt_h_px, alt_rotate);
+        }
+        if alt_cost == pref_cost {
+            let pref_cap = packing_capacity(pref_w_px, pref_h_px, page_w_px, page_h_px, spacing_px);
+            let alt_cap = packing_capacity(alt_w_px, alt_h_px, page_w_px, page_h_px, spacing_px);
+            if alt_cap > pref_cap {
+                return (alt_w_px, alt_h_px, alt_rotate);
+            }
         }
         return (pref_w_px, pref_h_px, pref_rotate);
     }
@@ -292,6 +334,39 @@ fn fitted_area(src_w: f32, src_h: f32, box_w: f32, box_h: f32) -> f32 {
     let fw = src_w * s;
     let fh = src_h * s;
     fw * fh
+}
+
+fn packing_capacity(
+    box_w_px: u32,
+    box_h_px: u32,
+    page_w_px: u32,
+    page_h_px: u32,
+    spacing_px: u32,
+) -> u32 {
+    let page_w_px = page_w_px.max(1);
+    let page_h_px = page_h_px.max(1);
+    if box_w_px == 0 || box_h_px == 0 || box_w_px > page_w_px || box_h_px > page_h_px {
+        return 0;
+    }
+
+    let cols = if box_w_px.saturating_add(spacing_px) == 0 {
+        0
+    } else {
+        page_w_px
+            .saturating_add(spacing_px)
+            .checked_div(box_w_px.saturating_add(spacing_px))
+            .unwrap_or(0)
+    };
+    let rows = if box_h_px.saturating_add(spacing_px) == 0 {
+        0
+    } else {
+        page_h_px
+            .saturating_add(spacing_px)
+            .checked_div(box_h_px.saturating_add(spacing_px))
+            .unwrap_or(0)
+    };
+
+    cols.saturating_mul(rows).max(1)
 }
 
 fn should_rotate_for_full_page(
@@ -409,5 +484,53 @@ mod tests {
 
         assert_eq!(page_b, highest_page, "fit-to-page item should be on the last used page");
         assert_eq!(result.page_count, highest_page + 1, "page count should match highest placed page");
+    }
+
+    #[test]
+    fn portrait_duplicates_can_repack_to_single_page() {
+        let a = queued(Uuid::new_v4(), 5.0, 7.0, (2000, 3000));
+        let b = queued(Uuid::new_v4(), 5.0, 7.0, (2100, 3200));
+        let items = vec![a.clone(), b.clone()];
+
+        let result = layout_queue(&items, 1000, 1100, 100, 0.25);
+        let pa = result.placements.get(&a.id).expect("placement missing");
+        let pb = result.placements.get(&b.id).expect("placement missing");
+
+        assert_eq!(result.page_count, 1, "both portrait duplicates should fit on one page after repack");
+        assert_eq!(pa.page, 0, "first item should remain on page 1");
+        assert_eq!(pb.page, 0, "second item should remain on page 1");
+        assert!(pa.y_px.saturating_add(pa.h_px) <= 1100, "first item overflowed page height");
+        assert!(pb.y_px.saturating_add(pb.h_px) <= 1100, "second item overflowed page height");
+    }
+
+    #[test]
+    fn single_item_is_centered_horizontally_and_top_anchored() {
+        let a = queued(Uuid::new_v4(), 2.0, 2.0, (1000, 1000));
+        let result = layout_queue(&[a.clone()], 1000, 1000, 100, 0.0);
+        let p = result.placements.get(&a.id).expect("placement missing");
+
+        assert_eq!(p.w_px, 200);
+        assert_eq!(p.h_px, 200);
+        assert_eq!(p.x_px, 400, "item should be centered horizontally");
+        assert_eq!(p.y_px, 0, "first row should be top-anchored");
+    }
+
+    #[test]
+    fn final_row_is_centered_horizontally_with_three_items() {
+        let a = queued(Uuid::new_v4(), 4.0, 6.0, (2000, 3000));
+        let b = queued(Uuid::new_v4(), 4.0, 6.0, (2100, 3200));
+        let c = queued(Uuid::new_v4(), 4.0, 6.0, (1900, 2900));
+        let items = vec![a.clone(), b.clone(), c.clone()];
+
+        let result = layout_queue(&items, 1000, 1400, 100, 0.25);
+        let pa = result.placements.get(&a.id).expect("placement missing");
+        let pb = result.placements.get(&b.id).expect("placement missing");
+        let pc = result.placements.get(&c.id).expect("placement missing");
+
+        assert_eq!(result.page_count, 1, "three 4x6 items should remain on one page");
+        assert_eq!(pa.y_px, 0, "first row should start at top margin");
+        assert_eq!(pb.y_px, 0, "first row should start at top margin");
+        assert!(pc.y_px > 0, "third item should be on a lower row");
+        assert_eq!(pc.x_px, 300, "single item on second row should be horizontally centered");
     }
 }
