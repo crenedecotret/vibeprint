@@ -194,6 +194,7 @@ fn engine_smoke_tests() -> Result<()> {
             engine: engine.clone(),
             depth: 16,
             sharpen: 5,
+            page_layout: None,
         })?;
 
         // Proof: 16-bit output at correct DPI
@@ -262,6 +263,7 @@ fn iterative_step_exact_dimensions() -> Result<()> {
         engine: vibeprint::processor::ResampleEngine::IterativeStep,
         depth: 16,
         sharpen: 0,
+        page_layout: None,
     })?;
 
     let file = File::open(&output_path)?;
@@ -317,6 +319,7 @@ fn sharpen_usm_smoke_test() -> Result<()> {
         engine: vibeprint::processor::ResampleEngine::Mks,
         depth: 16,
         sharpen: 0,
+        page_layout: None,
     };
 
     // Run with sharpen=0 (no USM)
@@ -376,6 +379,7 @@ fn depth8_dither_smoke_test() -> Result<()> {
         engine: vibeprint::processor::ResampleEngine::Mks,
         depth: 8,
         sharpen: 0,
+        page_layout: None,
     })?;
 
     // Proof 1: output is 8-bit
@@ -433,6 +437,7 @@ fn pipeline_validation_suite() -> Result<()> {
         engine: vibeprint::processor::ResampleEngine::Mks,
         depth: 16,
         sharpen: 5,
+        page_layout: None,
     })?;
 
     // Proof 1: output is still 16-bit.

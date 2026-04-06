@@ -11,6 +11,119 @@ enum LoadedImage {
     Rgb16(Rgb16Image),
 }
 
+pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
+    if opts.target_dpi <= 0.0 {
+        bail!("dpi must be > 0");
+    }
+
+    let (output_profile, output_icc_bytes, icc_filename) = match opts.output_icc.as_ref() {
+        Some(path) => {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("failed to read output ICC: {}", path.display()))?;
+            let profile = lcms2::Profile::new_icc(&bytes)
+                .with_context(|| format!("failed to load output ICC: {}", path.display()))?;
+            let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+            (profile, bytes, fname)
+        }
+        None => {
+            let profile = lcms2::Profile::new_srgb();
+            let bytes = profile.icc().context("failed to serialize sRGB profile")?;
+            (profile, bytes, "sRGB (passthrough)".to_string())
+        }
+    };
+
+    let intent_name = match opts.intent {
+        lcms2::Intent::Perceptual             => "Perceptual",
+        lcms2::Intent::RelativeColorimetric   => "Relative Colorimetric",
+        lcms2::Intent::Saturation             => "Saturation",
+        lcms2::Intent::AbsoluteColorimetric   => "Absolute Colorimetric",
+        _                                     => "Unknown",
+    };
+    let depth_label = if opts.depth == 8 { "8-bit (dithered)" } else { "16-bit" };
+    let sharpen_label = if opts.sharpen == 0 {
+        "Off".to_string()
+    } else {
+        opts.sharpen.to_string()
+    };
+    let description = format!(
+        "vibeprint | Engine: {} | Intent: {} | BPC: {} | DPI: {} | Sharpen: {} | Depth: {} | Output ICC: {}",
+        opts.engine.display_name(),
+        intent_name,
+        if opts.bpc { "Enabled" } else { "Disabled" },
+        opts.target_dpi,
+        sharpen_label,
+        depth_label,
+        icc_filename,
+    );
+
+    let page_data = vec![65535u16; (opts.page_w_px * opts.page_h_px * 3) as usize];
+    let mut page: Rgb16Image = ImageBuffer::from_raw(opts.page_w_px, opts.page_h_px, page_data)
+        .context("failed to allocate page buffer")?;
+
+    for p in &opts.placements {
+        let (img, source_dpi, embedded_icc) = load_image_with_dpi_and_embedded_icc(&p.input)?;
+        let img16: Rgb16Image = match img {
+            LoadedImage::Rgb8(im)  => rgb8_to_rgb16(&im),
+            LoadedImage::Rgb16(im) => im,
+        };
+
+        let input_profile = match (p.input_icc.as_ref(), embedded_icc.as_ref()) {
+            (Some(path), _) => lcms2::Profile::new_file(path)
+                .with_context(|| format!("failed to load input ICC: {}", path.display()))?,
+            (None, Some(_)) => lcms2::Profile::new_icc(embedded_icc.as_ref().unwrap())
+                .context("failed to load embedded ICC profile")?,
+            (None, None) => lcms2::Profile::new_srgb(),
+        };
+
+        let (ow, oh) = (img16.width(), img16.height());
+        let s = if p.rotate_cw {
+            (p.dest_w_px as f64 / oh as f64).min(p.dest_h_px as f64 / ow as f64)
+        } else {
+            (p.dest_w_px as f64 / ow as f64).min(p.dest_h_px as f64 / oh as f64)
+        };
+        let new_w = ((ow as f64 * s).round().max(1.0)) as u32;
+        let new_h = ((oh as f64 * s).round().max(1.0)) as u32;
+
+        let resized = resize_rgb16(&img16, new_w, new_h, &opts.engine);
+        let radius_px = ((opts.target_dpi as u64 * 100) / 720) as f64 / 100.0;
+        let sharpened = if opts.sharpen > 0 {
+            let sigma = ((radius_px as u64 * 100) / 2) as f64 / 100.0;
+            let amount = opts.sharpen as f64 * 0.1;
+            unsharp_mask_rgb16(&resized, sigma, amount, 0.03)
+        } else {
+            resized
+        };
+
+        let transformed = transform_rgb16_icc(
+            &sharpened,
+            &input_profile,
+            &output_profile,
+            opts.intent,
+            opts.bpc,
+        )?;
+        let placed = if p.rotate_cw {
+            rotate_90_cw_rgb16(&transformed)
+        } else {
+            transformed
+        };
+
+        let (pw, ph) = (placed.width(), placed.height());
+        let cx = p.dest_x_px + p.dest_w_px.saturating_sub(pw) / 2;
+        let cy = p.dest_y_px + p.dest_h_px.saturating_sub(ph) / 2;
+        composite_rgb16(&mut page, &placed, cx, cy);
+
+        let _ = source_dpi;
+    }
+
+    if opts.depth == 8 {
+        let dithered = dither_rgb16_to_rgb8(&page);
+        save_rgb8_tiff_with_dpi(&opts.output, &dithered, opts.target_dpi, &output_icc_bytes, &description)?;
+    } else {
+        save_rgb16_tiff_with_dpi(&opts.output, &page, opts.target_dpi, &output_icc_bytes, &description)?;
+    }
+    Ok(())
+}
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 struct Rgb16Pixel {
@@ -68,6 +181,31 @@ pub struct ProcessOptions {
     pub page_layout: Option<PageLayout>,
 }
 
+#[derive(Clone)]
+pub struct PagePlacement {
+    pub input: std::path::PathBuf,
+    pub input_icc: Option<std::path::PathBuf>,
+    pub dest_x_px: u32,
+    pub dest_y_px: u32,
+    pub dest_w_px: u32,
+    pub dest_h_px: u32,
+    pub rotate_cw: bool,
+}
+
+pub struct CompositePageOptions {
+    pub output: std::path::PathBuf,
+    pub placements: Vec<PagePlacement>,
+    pub page_w_px: u32,
+    pub page_h_px: u32,
+    pub output_icc: Option<std::path::PathBuf>,
+    pub target_dpi: f64,
+    pub intent: lcms2::Intent,
+    pub bpc: bool,
+    pub engine: ResampleEngine,
+    pub depth: u8,
+    pub sharpen: u8,
+}
+
 pub fn process(opts: ProcessOptions) -> Result<()> {
     if opts.target_dpi <= 0.0 {
         bail!("dpi must be > 0");
@@ -105,7 +243,7 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
     let radius_px = ((opts.target_dpi as u64 * 100) / 720) as f64 / 100.0;
     let sharpened = if opts.sharpen > 0 {
         let sigma = ((radius_px as u64 * 100) / 2) as f64 / 100.0;
-        let amount = (opts.sharpen as f64 * 0.1);
+        let amount = opts.sharpen as f64 * 0.1;
         println!(
             "VibePrint: Applying Universal Sharpening (Level {}, Radius {:.2}px).",
             opts.sharpen, radius_px
@@ -859,14 +997,13 @@ fn unsharp_mask_rgb16(img: &Rgb16Image, sigma: f64, amount: f64, threshold_frac:
         for x in 0..w {
             let orig = img.get_pixel(x, y);
             let blur = blurred.get_pixel(x, y);
-            let idx = ((y * w + x) * 3) as usize;
             for c in 0..3usize {
                 let o = orig[c] as f64;
                 let b = blur[c] as f64;
                 let diff = o - b;
                 let idx = (y as usize * w as usize + x as usize) * 3 + c;
                 result[idx] = if diff.abs() > threshold {
-                    ((orig[c] as u64 * 10000 + (amount as u64 * diff as u64) / 10000) / 10000).clamp(0, 65535) as u16
+                    (o + amount * diff).round().clamp(0.0, 65535.0) as u16
                 } else {
                     orig[c]
                 };

@@ -253,6 +253,6 @@ mod tests {
         let fake_profile = vec![0u8; 2048]; // 2KB fake profile
         let desc = profile_description(&fake_profile);
         assert!(desc.is_some());
-        assert!(desc.unwrap().contains("2048"));
+        assert!(desc.unwrap().contains("2KB"));
     }
 }

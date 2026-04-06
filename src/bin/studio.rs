@@ -1,15 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eframe::egui::{self, Color32, ColorImage, Context, Pos2, Rect, RichText, Sense, Stroke, Vec2};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use uuid::Uuid;
 
 use vibeprint::{
+    layout_engine::{self, Point, PrintSize, QueuedImage, Unit},
     monitor_icc,
-    printer_discovery::{self, CupsOption, DiscoveryEvent, PrinterCaps, PrinterInfo},
-    processor::{self, ProcessOptions, ResampleEngine},
+    printer_discovery::{self, DiscoveryEvent, PrinterCaps, PrinterInfo},
+    processor::{self, ResampleEngine},
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -19,6 +21,7 @@ const RIGHT_W:      f32  = 295.0;
 const THUMB_PX:     u32  = 96;
 const RULER_PX:     f32  = 22.0;
 const FIT_PAGE_IDX: usize = 15; // sentinel index = "Fit to Page"
+const QUEUE_SPACING_IN: f32 = 0.25;
 
 /// Standard print sizes (width × height in inches, label).  Width is always the shorter side.
 const PRINT_SIZES: &[(f32, f32, &str)] = &[
@@ -49,6 +52,22 @@ enum Engine {
     RobidouxEwa,
     Iterative,
     Lanczos3,
+}
+
+fn aspect_fit_rect_in_box(box_rect: Rect, src_w: u32, src_h: u32, rotate_cw: bool) -> Rect {
+    let sw = src_w.max(1) as f32;
+    let sh = src_h.max(1) as f32;
+    let aspect = if rotate_cw { sh / sw } else { sw / sh };
+    let bw = box_rect.width().max(1.0);
+    let bh = box_rect.height().max(1.0);
+
+    let (w, h) = if bw / bh > aspect {
+        (bh * aspect, bh)
+    } else {
+        (bw, bw / aspect)
+    };
+
+    Rect::from_center_size(box_rect.center(), Vec2::new(w, h))
 }
 
 fn apply_preview_transform(
@@ -172,33 +191,36 @@ enum ThumbState {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum RightTab { PrinterSettings, ImageProperties }
+enum LoadKind {
+    Thumb,
+    FullResStaged,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum RightTab { PrinterSettings, ImageProperties, ImageQueue }
 
 enum ProcState {
     Idle,
     Running,
-    Done(PathBuf),
+    Done(Vec<PathBuf>),
     Failed(String),
 }
 
 #[derive(Clone)]
 enum ProcessTarget {
-    Export(PathBuf),
-    Print { temp_path: PathBuf, print_after: bool },
+    Export,
+    Print,
 }
 
 #[derive(Clone)]
 struct PrintJobStatus {
     job_id: u32,
-    printer_name: String,
     state: PrintJobState,
 }
 
 #[derive(Clone, PartialEq)]
 enum PrintJobState {
     Pending,
-    Processing,
-    Completed,
     Failed(String),
 }
 
@@ -246,15 +268,28 @@ struct App {
     subdirs: Vec<(String, PathBuf)>,
     image_files: Vec<PathBuf>,
     thumbs: HashMap<PathBuf, ThumbState>,
-    thumb_tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>)>,
-    thumb_rx: Receiver<(PathBuf, ColorImage, Option<Vec<u8>>)>,
+    thumb_tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>, LoadKind)>,
+    thumb_rx: Receiver<(PathBuf, ColorImage, Option<Vec<u8>>, LoadKind)>,
+    staged: Option<PathBuf>,
+    staged_embedded_icc: Option<Vec<u8>>,
+    staged_source_image: Option<ColorImage>,
+    staged_img_size: Option<[usize; 2]>,
     selected: Option<PathBuf>,
     selected_embedded_icc: Option<Vec<u8>>,
     selected_source_image: Option<ColorImage>,
     highlighted: Option<PathBuf>,
     canvas_tex: Option<egui::TextureHandle>,
-    print_size_idx: Option<usize>,
     canvas_img_size: Option<[usize; 2]>,
+    full_images: HashMap<PathBuf, ColorImage>,
+    embedded_icc_by_path: HashMap<PathBuf, Option<Vec<u8>>>,
+    preview_textures: HashMap<PathBuf, egui::TextureHandle>,
+    preview_dirty: bool,
+    preview_cache_page: Option<usize>,
+    queue: Vec<QueuedImage>,
+    selected_queue_id: Option<Uuid>,
+    current_page: usize,
+    page_count: usize,
+    canvas_hit_rects: Vec<(Uuid, Rect)>,
     nav_history: Vec<PathBuf>,
     nav_forward: Vec<PathBuf>,
     tree_expanded: HashMap<PathBuf, bool>,
@@ -293,7 +328,7 @@ struct App {
 
     // ── Processing ──
     proc_state: ProcState,
-    proc_rx: Option<Receiver<Result<(PathBuf, ProcessTarget), String>>>,
+    proc_rx: Option<Receiver<Result<(Vec<PathBuf>, ProcessTarget), String>>>,
 
     // ── Right-panel tab ──
     right_tab: RightTab,
@@ -313,7 +348,7 @@ struct App {
 
     // ── Printing ──
     show_print_confirm: bool,
-    pending_print_path: Option<PathBuf>,
+    pending_print_paths: Vec<PathBuf>,
     print_job_status: Option<PrintJobStatus>,
 }
 
@@ -324,7 +359,7 @@ impl App {
 
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let out_dir = dirs::desktop_dir().unwrap_or_else(|| home.clone());
-        let (thumb_tx, thumb_rx) = mpsc::channel::<(PathBuf, ColorImage, Option<Vec<u8>>)>();
+        let (thumb_tx, thumb_rx) = mpsc::channel::<(PathBuf, ColorImage, Option<Vec<u8>>, LoadKind)>();
         let s = load_settings();
 
         // Restore last folder (fall back to home if missing)
@@ -363,13 +398,26 @@ impl App {
             thumbs: HashMap::new(),
             thumb_tx,
             thumb_rx,
+            staged: None,
+            staged_embedded_icc: None,
+            staged_source_image: None,
+            staged_img_size: None,
             selected: None,
             selected_embedded_icc: None,
             selected_source_image: None,
             highlighted: None,
             canvas_tex: None,
-            print_size_idx: None,
             canvas_img_size: None,
+            full_images: HashMap::new(),
+            embedded_icc_by_path: HashMap::new(),
+            preview_textures: HashMap::new(),
+            preview_dirty: true,
+            preview_cache_page: None,
+            queue: Vec::new(),
+            selected_queue_id: None,
+            current_page: 0,
+            page_count: 1,
+            canvas_hit_rects: Vec::new(),
             nav_history: Vec::new(),
             nav_forward: Vec::new(),
             tree_expanded: HashMap::new(),
@@ -416,7 +464,7 @@ impl App {
             monitor_icc_profile: monitor_icc::get_monitor_profile(),
 
             show_print_confirm: false,
-            pending_print_path: None,
+            pending_print_paths: Vec::new(),
             print_job_status: None,
         };
         
@@ -512,14 +560,13 @@ impl App {
         }
     }
 
-    fn select_image(&mut self, path: PathBuf) {
-        self.selected = Some(path.clone());
-        self.selected_embedded_icc = None;
-        self.selected_source_image = None;
-        self.canvas_tex = None;
-        self.canvas_img_size = None;
-        self.print_size_idx = None;
+    fn stage_image(&mut self, path: PathBuf) {
+        self.staged = Some(path.clone());
+        self.staged_embedded_icc = None;
+        self.staged_source_image = None;
+        self.staged_img_size = None;
         self.right_tab = RightTab::ImageProperties;
+
         // Send a full-res load via the thumb channel with embedded ICC extraction
         let tx = self.thumb_tx.clone();
         thread::spawn(move || {
@@ -533,51 +580,264 @@ impl App {
                     .chunks_exact(3)
                     .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
                     .collect();
-                let _ = tx.send((path, ColorImage { size, pixels }, embedded_icc));
+                let _ = tx.send((path, ColorImage { size, pixels }, embedded_icc, LoadKind::FullResStaged));
             }
         });
     }
 
+    fn mark_preview_dirty(&mut self) {
+        self.preview_dirty = true;
+        self.preview_cache_page = None;
+    }
+
     fn rebuild_canvas_texture(&mut self, ctx: &Context) {
-        let (Some(path), Some(mut ci)) = (self.selected.clone(), self.selected_source_image.clone()) else {
-            self.canvas_tex = None;
-            self.canvas_img_size = None;
-            return;
-        };
+        self.preview_textures.clear();
 
-        let size = ci.size;
-        if let Some(ref monitor_profile) = self.monitor_icc_profile {
-            let mut pixel_bytes: Vec<u8> = ci
-                .pixels
-                .iter()
-                .flat_map(|c| [c.r(), c.g(), c.b()])
-                .collect();
+        let mut seen = HashSet::new();
+        let paths: Vec<PathBuf> = self
+            .queue
+            .iter()
+            .filter(|q| q.page == self.current_page)
+            .filter_map(|q| {
+                if seen.insert(q.filepath.clone()) {
+                    Some(q.filepath.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-            if apply_preview_transform(
-                monitor_profile,
-                self.selected_embedded_icc.as_deref(),
-                self.output_icc.as_ref(),
-                &mut pixel_bytes,
-                self.intent.to_lcms(),
-                self.bpc,
-                self.softproof_enabled,
-            )
-            .is_some()
-            {
-                ci.pixels = pixel_bytes
-                    .chunks_exact(3)
-                    .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
+        for path in paths {
+            let Some(base) = self.ensure_full_image_loaded(&path) else { continue; };
+            let mut ci = base.clone();
+
+            if let Some(ref monitor_profile) = self.monitor_icc_profile {
+                let mut pixel_bytes: Vec<u8> = ci
+                    .pixels
+                    .iter()
+                    .flat_map(|c| [c.r(), c.g(), c.b()])
                     .collect();
-            } else {
-                self.log.push("✗ Color transform failed".into());
+
+                let src_icc = self
+                    .embedded_icc_by_path
+                    .get(&path)
+                    .and_then(|v| v.as_deref());
+
+                if apply_preview_transform(
+                    monitor_profile,
+                    src_icc,
+                    self.output_icc.as_ref(),
+                    &mut pixel_bytes,
+                    self.intent.to_lcms(),
+                    self.bpc,
+                    self.softproof_enabled,
+                )
+                .is_some()
+                {
+                    ci.pixels = pixel_bytes
+                        .chunks_exact(3)
+                        .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
+                        .collect();
+                }
+            }
+
+            let tex_name = format!("page_preview::{}", path.to_string_lossy());
+            let tex = ctx.load_texture(&tex_name, ci, egui::TextureOptions::LINEAR);
+            self.preview_textures.insert(path.clone(), tex.clone());
+
+            if self.selected.as_ref() == Some(&path) {
+                self.canvas_tex = Some(tex);
             }
         }
 
-        let name = path.to_string_lossy().to_string();
-        let tex = ctx.load_texture(&name, ci, egui::TextureOptions::LINEAR);
-        self.canvas_tex = Some(tex.clone());
+        if let Some(sel) = &self.selected {
+            if let Some(ci) = self.full_images.get(sel) {
+                self.canvas_img_size = Some(ci.size);
+            }
+        }
+
+        self.preview_cache_page = Some(self.current_page);
+        self.preview_dirty = false;
+    }
+
+    fn ensure_full_image_loaded(&mut self, path: &PathBuf) -> Option<&ColorImage> {
+        if !self.full_images.contains_key(path) {
+            let img = image::open(path).ok()?.into_rgb8();
+            let size = [img.width() as usize, img.height() as usize];
+            let pixels = img
+                .into_raw()
+                .chunks_exact(3)
+                .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
+                .collect();
+            self.full_images.insert(path.clone(), ColorImage { size, pixels });
+            self.embedded_icc_by_path
+                .entry(path.clone())
+                .or_insert_with(|| extract_embedded_icc(path));
+        }
+        self.full_images.get(path)
+    }
+
+    fn imageable_size_in(&self) -> (f32, f32) {
+        self.caps
+            .as_ref()
+            .and_then(|c| c.page_sizes.get(self.selected_page_size_idx))
+            .map(|ps| {
+                let (l, b, r, t) = ps.imageable_area;
+                ((r - l) / 72.0, (t - b) / 72.0)
+            })
+            .unwrap_or((7.5, 10.0))
+    }
+
+    fn imageable_size_px(&self) -> (u32, u32) {
+        let (w_in, h_in) = self.imageable_size_in();
+        let dpi = self.target_dpi as f32;
+        (
+            (w_in * dpi).round().max(1.0) as u32,
+            (h_in * dpi).round().max(1.0) as u32,
+        )
+    }
+
+    fn queued_box_px(&self, qi: &QueuedImage) -> (u32, u32) {
+        if qi.placed_w_px > 0 && qi.placed_h_px > 0 {
+            return (qi.placed_w_px, qi.placed_h_px);
+        }
+        let (w_in, h_in) = qi.size.as_inches();
+        let (w_in, h_in) = if qi.rotation > 0.0 { (h_in, w_in) } else { (w_in, h_in) };
+        let dpi = self.target_dpi as f32;
+        (
+            (w_in * dpi).round().max(1.0) as u32,
+            (h_in * dpi).round().max(1.0) as u32,
+        )
+    }
+
+    fn size_from_idx(&self, idx: usize, src_size_px: Option<(u32, u32)>) -> Option<PrintSize> {
+        if idx < PRINT_SIZES.len() {
+            let (w, h, _) = PRINT_SIZES[idx];
+            return Some(PrintSize { width: w, height: h, unit: Unit::Inches });
+        }
+        if idx == FIT_PAGE_IDX {
+            let (ia_w_in, ia_h_in) = self.imageable_size_in();
+            if let Some((sw, sh)) = src_size_px {
+                let aspect = (sw.max(1) as f32) / (sh.max(1) as f32);
+                let (nw, nh) = if ia_w_in / ia_h_in > aspect {
+                    (ia_h_in * aspect, ia_h_in)
+                } else {
+                    (ia_w_in, ia_w_in / aspect)
+                };
+                let rot_aspect = 1.0 / aspect;
+                let (rw, rh) = if ia_w_in / ia_h_in > rot_aspect {
+                    (ia_h_in * rot_aspect, ia_h_in)
+                } else {
+                    (ia_w_in, ia_w_in * aspect)
+                };
+                let (w, h) = if rw * rh > nw * nh { (rw, rh) } else { (nw, nh) };
+                return Some(PrintSize { width: w, height: h, unit: Unit::Inches });
+            }
+            return Some(PrintSize { width: ia_w_in, height: ia_h_in, unit: Unit::Inches });
+        }
+        None
+    }
+
+    fn relayout_queue(&mut self) {
+        let (page_w_px, page_h_px) = self.imageable_size_px();
+        let result = layout_engine::layout_queue(
+            &self.queue,
+            page_w_px,
+            page_h_px,
+            self.target_dpi,
+            QUEUE_SPACING_IN,
+        );
+
+        for qi in &mut self.queue {
+            if let Some(p) = result.placements.get(&qi.id) {
+                qi.position = Point { x: p.x_px, y: p.y_px };
+                qi.page = p.page;
+                qi.rotation = p.rotation_deg;
+                qi.placed_w_px = p.w_px;
+                qi.placed_h_px = p.h_px;
+            }
+        }
+
+        self.page_count = result.page_count.max(1);
+        if self.current_page >= self.page_count {
+            self.current_page = self.page_count.saturating_sub(1);
+        }
+        self.mark_preview_dirty();
+    }
+
+    fn enqueue_staged_with_idx(&mut self, idx: usize) -> bool {
+        let Some(path) = self.staged.clone() else { return false; };
+        let Some(src) = self.staged_source_image.as_ref() else {
+            self.log.push("⚠ Image still loading…".into());
+            return false;
+        };
+        let size = src.size;
+        let src_size = (size[0] as u32, size[1] as u32);
+        let Some(print_size) = self.size_from_idx(idx, Some(src_size)) else {
+            return false;
+        };
+        let fit_to_page = idx == FIT_PAGE_IDX;
+
+        self.queue.push(QueuedImage {
+            id: Uuid::new_v4(),
+            filepath: path.clone(),
+            size: print_size,
+            fit_to_page,
+            source_icc: None,
+            position: Point::default(),
+            page: 0,
+            rotation: 0.0,
+            placed_w_px: 0,
+            placed_h_px: 0,
+            src_size_px: Some(src_size),
+        });
+        self.selected_queue_id = self.queue.last().map(|q| q.id);
+        self.selected = Some(path.clone());
+        self.selected_source_image = Some(src.clone());
+        self.selected_embedded_icc = self.staged_embedded_icc.clone();
         self.canvas_img_size = Some(size);
-        self.thumbs.insert(path, ThumbState::Ready(tex));
+        self.full_images.insert(path.clone(), src.clone());
+        self.embedded_icc_by_path
+            .insert(path, self.staged_embedded_icc.clone());
+
+        self.staged = None;
+        self.staged_embedded_icc = None;
+        self.staged_source_image = None;
+        self.staged_img_size = None;
+
+        self.relayout_queue();
+        if let Some(id) = self.selected_queue_id {
+            if let Some(item) = self.queue.iter().find(|q| q.id == id) {
+                self.current_page = item.page;
+            }
+        }
+        true
+    }
+
+    fn selected_queue_mut(&mut self) -> Option<&mut QueuedImage> {
+        let id = self.selected_queue_id?;
+        self.queue.iter_mut().find(|q| q.id == id)
+    }
+
+    fn selected_queue(&self) -> Option<&QueuedImage> {
+        let id = self.selected_queue_id?;
+        self.queue.iter().find(|q| q.id == id)
+    }
+
+    fn update_selected_queue_size_idx(&mut self, idx: usize) {
+        let src_size = self.selected_queue().and_then(|q| q.src_size_px);
+        let Some(ps) = self.size_from_idx(idx, src_size) else { return; };
+        let sel = self.selected_queue_id;
+        if let Some(item) = self.selected_queue_mut() {
+            item.size = ps;
+            item.fit_to_page = idx == FIT_PAGE_IDX;
+        }
+        self.relayout_queue();
+        if let Some(id) = sel {
+            if let Some(item) = self.queue.iter().find(|q| q.id == id) {
+                self.current_page = item.page;
+            }
+        }
     }
 
     // ── Printer caps sync ──────────────────────────────────────────────────────
@@ -613,9 +873,11 @@ impl App {
                 self.extra_option_indices.insert(opt.key.clone(), opt.default_idx);
             }
             self.caps = Some(caps.clone());
+            self.relayout_queue();
         } else {
             self.caps = None;
             self.extra_option_indices.clear();
+            self.relayout_queue();
         }
     }
 
@@ -623,17 +885,29 @@ impl App {
 
     fn pump(&mut self, ctx: &Context) {
         // Thumbnails / canvas image
-        while let Ok((path, mut ci, embedded_icc)) = self.thumb_rx.try_recv() {
+        while let Ok((path, ci, embedded_icc, kind)) = self.thumb_rx.try_recv() {
             let name = path.to_string_lossy().to_string();
-            if self.selected.as_ref() == Some(&path) {
-                let size = ci.size;
-                self.selected_embedded_icc = embedded_icc;
-                self.selected_source_image = Some(ci.clone());
-                self.canvas_img_size = Some(size);
-                self.rebuild_canvas_texture(ctx);
-            } else {
-                let tex = ctx.load_texture(&name, ci, egui::TextureOptions::LINEAR);
-                self.thumbs.insert(path, ThumbState::Ready(tex));
+            match kind {
+                LoadKind::Thumb => {
+                    let tex = ctx.load_texture(&name, ci, egui::TextureOptions::LINEAR);
+                    self.thumbs.insert(path, ThumbState::Ready(tex));
+                }
+                LoadKind::FullResStaged => {
+                    if self.staged.as_ref() == Some(&path) {
+                        let size = ci.size;
+                        self.full_images.insert(path.clone(), ci.clone());
+                        self.embedded_icc_by_path.insert(path.clone(), embedded_icc.clone());
+                        self.staged_embedded_icc = embedded_icc;
+                        self.staged_source_image = Some(ci);
+                        self.staged_img_size = Some(size);
+                    } else {
+                        self.full_images.insert(path.clone(), ci.clone());
+                        self.embedded_icc_by_path.insert(path.clone(), embedded_icc);
+                        let tex = ctx.load_texture(&name, ci, egui::TextureOptions::LINEAR);
+                        self.thumbs.insert(path, ThumbState::Ready(tex));
+                    }
+                    self.mark_preview_dirty();
+                }
             }
         }
 
@@ -683,15 +957,19 @@ impl App {
         if let Some(rx) = &self.proc_rx {
             if let Ok(result) = rx.try_recv() {
                 match result {
-                    Ok((path, target)) => {
+                    Ok((paths, target)) => {
                         match target {
-                            ProcessTarget::Export(_) => {
-                                self.log.push(format!("✓ Saved: {}", path.display()));
-                                self.proc_state = ProcState::Done(path);
+                            ProcessTarget::Export => {
+                                if let Some(first) = paths.first() {
+                                    self.log.push(format!("✓ Saved {} page(s). First: {}", paths.len(), first.display()));
+                                } else {
+                                    self.log.push("✓ Export complete".into());
+                                }
+                                self.proc_state = ProcState::Done(paths);
                             }
-                            ProcessTarget::Print { temp_path, .. } => {
-                                self.log.push(format!("✓ Processed for print: {}", path.display()));
-                                self.pending_print_path = Some(temp_path);
+                            ProcessTarget::Print => {
+                                self.log.push(format!("✓ Processed {} page(s) for print", paths.len()));
+                                self.pending_print_paths = paths;
                                 self.show_print_confirm = true;
                                 self.proc_state = ProcState::Idle;
                             }
@@ -714,153 +992,116 @@ impl App {
     // ── Start processing ──────────────────────────────────────────────────────
 
     fn start_process_export(&mut self) {
-        let Some(input) = self.selected.clone() else {
-            self.log.push("⚠ No image selected.".into());
-            return;
-        };
-        let stem = input.file_stem().unwrap_or_default().to_string_lossy();
-        let output = self.output_dir.join(format!("{}_vp.tif", stem));
-        self.start_process_with_target(ProcessTarget::Export(output));
+        self.start_process_with_target(ProcessTarget::Export);
     }
 
     fn start_process_print(&mut self) {
-        let Some(input) = self.selected.clone() else {
-            self.log.push("⚠ No image selected.".into());
+        self.start_process_with_target(ProcessTarget::Print);
+    }
+
+    fn start_process_with_target(&mut self, target: ProcessTarget) {
+        if self.queue.is_empty() {
+            self.log.push("⚠ Queue is empty.".into());
             return;
-        };
-        // Generate temp file path for printing
+        }
+
+        let (page_w_px, page_h_px) = self.imageable_size_px();
+        let max_page = self.queue.iter().map(|q| q.page).max().unwrap_or(0);
+        let mut per_page: Vec<Vec<processor::PagePlacement>> = vec![Vec::new(); max_page.saturating_add(1)];
+        for q in &self.queue {
+            let (w, h) = self.queued_box_px(q);
+            per_page[q.page].push(processor::PagePlacement {
+                input: q.filepath.clone(),
+                input_icc: q.source_icc.clone(),
+                dest_x_px: q.position.x,
+                dest_y_px: q.position.y,
+                dest_w_px: w,
+                dest_h_px: h,
+                rotate_cw: q.rotation > 0.0,
+            });
+        }
+
+        let stem = self
+            .queue
+            .first()
+            .and_then(|q| q.filepath.file_stem())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "vibeprint".to_string());
+
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let temp_path = std::env::temp_dir().join(format!("vibeprint_{}_{}.tif", timestamp, std::process::id()));
-        self.log.push(format!("📝 Temp file will be: {}", temp_path.display()));
-        self.start_process_with_target(ProcessTarget::Print { temp_path, print_after: true });
-    }
 
-    fn start_process_with_target(&mut self, target: ProcessTarget) {
-        let input = match &target {
-            ProcessTarget::Export(_) | ProcessTarget::Print { .. } => {
-                match self.selected.clone() {
-                    Some(path) => path,
-                    None => {
-                        self.log.push("⚠ No image selected.".into());
-                        return;
-                    }
-                }
-            }
+        let outputs: Vec<PathBuf> = per_page
+            .iter()
+            .enumerate()
+            .map(|(idx, _)| match target {
+                ProcessTarget::Export => self
+                    .output_dir
+                    .join(format!("{}_page_{:03}_vp.tif", stem, idx + 1)),
+                ProcessTarget::Print => std::env::temp_dir().join(format!(
+                    "vibeprint_{}_{}_page_{:03}.tif",
+                    timestamp,
+                    std::process::id(),
+                    idx + 1
+                )),
+            })
+            .collect();
+
+        let output_icc = self.output_icc.clone();
+        let target_dpi = self.target_dpi as f64;
+        let intent = self.intent.to_lcms();
+        let bpc = self.bpc;
+        let engine = self.engine.to_proc();
+        let depth = if matches!(target, ProcessTarget::Print) {
+            8
+        } else if self.depth16 {
+            16
+        } else {
+            8
         };
+        let sharpen = self.sharpen;
 
-        let output_path = match &target {
-            ProcessTarget::Export(path) => path.clone(),
-            ProcessTarget::Print { temp_path, .. } => temp_path.clone(),
-        };
-
-        // Store pending print path if printing
-        if let ProcessTarget::Print { temp_path, .. } = &target {
-            self.pending_print_path = Some(temp_path.clone());
-        }
-
-        // Build page layout from current canvas state (mirrors draw_canvas logic at print resolution)
-        let page_layout: Option<processor::PageLayout> = (|| {
-            let idx = self.print_size_idx?;
-            let ps  = self.caps.as_ref()?.page_sizes.get(self.selected_page_size_idx)?;
-            let (ia_l, ia_b, ia_r, ia_t) = ps.imageable_area;
-            let dpi = self.target_dpi as f64;
-
-            let ia_w_in = (ia_r - ia_l) as f64 / 72.0;
-            let ia_h_in = (ia_t - ia_b) as f64 / 72.0;
-            let ia_w_px = (ia_w_in * dpi).round() as u32;
-            let ia_h_px = (ia_h_in * dpi).round() as u32;
-            // TIFF is sized to the imageable area (GIMP-style): CUPS positions it
-            // within the printable area automatically when printing with scaling=100.
-            let page_w_px = ia_w_px;
-            let page_h_px = ia_h_px;
-
-            let img_aspect = self.canvas_img_size
-                .map(|s| s[0] as f64 / s[1] as f64)
-                .unwrap_or(1.0);
-
-            let (print_w_px, print_h_px, rotate_cw) = if idx < PRINT_SIZES.len() {
-                let (w_in, h_in, _) = PRINT_SIZES[idx];
-                let (w_in, h_in) = (w_in as f64, h_in as f64);
-                let fits_portrait  = w_in <= ia_w_in && h_in <= ia_h_in;
-                let fits_landscape = h_in <= ia_w_in && w_in <= ia_h_in;
-                let (rect_landscape, rotate_cw) = if img_aspect > 1.0 {
-                    if fits_landscape { (true, false) } else { (false, true) }
-                } else {
-                    if fits_portrait  { (false, false) } else { (true, true) }
-                };
-                let (pw, ph) = if rect_landscape { (h_in, w_in) } else { (w_in, h_in) };
-                // Calculate exact integer dimensions: inches * DPI (no rounding to avoid 0.5mm errors)
-                let target_dpi = self.target_dpi as u32;
-                let w_px = ((pw as f64 * target_dpi as f64) + 0.0001).round() as u32;
-                let h_px = ((ph as f64 * target_dpi as f64) + 0.0001).round() as u32;
-                ((w_px, h_px, rotate_cw))
-            } else if idx == FIT_PAGE_IDX {
-                let (nw, nh) = if ia_w_in / ia_h_in > img_aspect {
-                    (ia_h_in * img_aspect, ia_h_in)
-                } else {
-                    (ia_w_in, ia_w_in / img_aspect)
-                };
-                let rot_a = 1.0 / img_aspect;
-                let (rw, rh) = if ia_w_in / ia_h_in > rot_a {
-                    (ia_h_in * rot_a, ia_h_in)
-                } else {
-                    (ia_w_in, ia_w_in / img_aspect)
-                };
-                let (pw, ph, rotate_cw) = if rw * rh > nw * nh { (rw, rh, true) } else { (nw, nh, false) };
-                // Calculate exact integer dimensions: inches * DPI (no rounding to avoid 0.5mm errors)
-                let target_dpi = self.target_dpi as u32;
-                let w_px = ((pw as f64 * target_dpi as f64) + 0.0001).round() as u32;
-                let h_px = ((ph as f64 * target_dpi as f64) + 0.0001).round() as u32;
-                ((w_px, h_px, rotate_cw))
-            } else {
-                return None;
-            };
-            let print_x = ia_w_px.saturating_sub(print_w_px) / 2;
-            let print_y = ia_h_px.saturating_sub(print_h_px) / 2;
-
-            Some(processor::PageLayout { page_w_px, page_h_px, print_x, print_y, print_w_px, print_h_px, rotate_cw })
-        })();
-
-        let opts = ProcessOptions {
-            input,
-            output: output_path.clone(),
-            input_icc: None,
-            output_icc: self.output_icc.clone(),
-            target_dpi: self.target_dpi as f64,
-            intent: self.intent.to_lcms(),
-            bpc: self.bpc,
-            engine: self.engine.to_proc(),
-            // Force 8-bit for printing (CUPS/img2pdf compatibility), respect UI for export
-            depth: if matches!(target, ProcessTarget::Print { .. }) { 8 } else { if self.depth16 { 16 } else { 8 } },
-            sharpen: self.sharpen,
-            page_layout,
-        };
-        
-        let target_clone = match &target {
-            ProcessTarget::Export(_) => target.clone(),
-            ProcessTarget::Print { temp_path, print_after } => ProcessTarget::Print { 
-                temp_path: temp_path.clone(), 
-                print_after: *print_after 
-            },
-        };
-        
-        let (tx, rx) = mpsc::channel::<Result<(PathBuf, ProcessTarget), String>>();
+        let target_clone = target.clone();
+        let (tx, rx) = mpsc::channel::<Result<(Vec<PathBuf>, ProcessTarget), String>>();
         self.proc_rx = Some(rx);
         self.proc_state = ProcState::Running;
         thread::spawn(move || {
-            let result: Result<(PathBuf, ProcessTarget), String> = processor::process(opts)
-                .map(|_| (output_path, target_clone))
-                .map_err(|e| e.to_string());
+            let mut done = Vec::new();
+            for (idx, placements) in per_page.into_iter().enumerate() {
+                let out = outputs[idx].clone();
+                let opts = processor::CompositePageOptions {
+                    output: out.clone(),
+                    placements,
+                    page_w_px,
+                    page_h_px,
+                    output_icc: output_icc.clone(),
+                    target_dpi,
+                    intent,
+                    bpc,
+                    engine: engine.clone(),
+                    depth,
+                    sharpen,
+                };
+                if let Err(e) = processor::process_composite_page(opts) {
+                    let _ = tx.send(Err(e.to_string()));
+                    return;
+                }
+                done.push(out);
+            }
+            let result: Result<(Vec<PathBuf>, ProcessTarget), String> = Ok((done, target_clone));
             let _ = tx.send(result);
         });
     }
 
     // ── Print to CUPS ─────────────────────────────────────────────────────────
 
-    fn submit_print_job(&mut self, temp_path: &PathBuf) {
+    fn submit_print_jobs(&mut self, temp_paths: &[PathBuf]) {
+        if temp_paths.is_empty() {
+            self.log.push("✗ No pages to print".into());
+            return;
+        }
         let Some(caps) = &self.caps else {
             self.log.push("✗ No printer selected".into());
             return;
@@ -870,110 +1111,69 @@ impl App {
             return;
         };
 
-        // Build lpr command with all CUPS options
-        let mut cmd = std::process::Command::new("lpr");
-        cmd.arg("-P").arg(&printer.name);
+        for (i, temp_path) in temp_paths.iter().enumerate() {
+            let mut cmd = std::process::Command::new("lpr");
+            cmd.arg("-P").arg(&printer.name);
 
-        // Paper size
-        let media = caps.page_sizes.get(self.selected_page_size_idx)
-            .map(|ps| ps.name.clone())
-            .unwrap_or_else(|| "Letter".to_string());
-        cmd.arg("-o").arg(format!("media={}", media));
+            let media = caps.page_sizes.get(self.selected_page_size_idx)
+                .map(|ps| ps.name.clone())
+                .unwrap_or_else(|| "Letter".to_string());
+            cmd.arg("-o").arg(format!("media={}", media));
 
-        // Media type
-        if let Some(media_type) = caps.media_types.get(self.props_media_idx) {
-            cmd.arg("-o").arg(format!("MediaType={}", media_type));
-        }
+            if let Some(media_type) = caps.media_types.get(self.props_media_idx) {
+                cmd.arg("-o").arg(format!("MediaType={}", media_type));
+            }
+            if let Some(input_slot) = caps.input_slots.get(self.props_slot_idx) {
+                cmd.arg("-o").arg(format!("InputSlot={}", input_slot));
+            }
 
-        // Input slot
-        if let Some(input_slot) = caps.input_slots.get(self.props_slot_idx) {
-            cmd.arg("-o").arg(format!("InputSlot={}", input_slot));
-        }
+            cmd.arg("-o").arg("scaling=100");
+            cmd.arg("-o").arg("fit-to-page=false");
 
-        // Prevent CUPS scaling
-        cmd.arg("-o").arg("scaling=100");
-        cmd.arg("-o").arg("fit-to-page=false");
-
-        // All extra options from the modal
-        for opt in &caps.extra_options {
-            if let Some(&idx) = self.extra_option_indices.get(&opt.key) {
-                if let Some((key, _)) = opt.choices.get(idx) {
-                    cmd.arg("-o").arg(format!("{}={}", opt.key, key));
+            for opt in &caps.extra_options {
+                if let Some(&idx) = self.extra_option_indices.get(&opt.key) {
+                    if let Some((key, _)) = opt.choices.get(idx) {
+                        cmd.arg("-o").arg(format!("{}={}", opt.key, key));
+                    }
                 }
             }
-        }
 
-        // Convert TIFF to PDF for CUPS compatibility (CUPS 2.x removed image filters)
-        let pdf_path = temp_path.with_extension("pdf");
-        let img2pdf_result = std::process::Command::new("img2pdf")
-            .arg(temp_path)
-            .arg("--imgsize")
-            .arg(format!("{}dpi", self.target_dpi))
-            .arg("--fit")
-            .arg("exact")
-            .arg("-o")
-            .arg(&pdf_path)
-            .output();
-        
-        let print_path = match img2pdf_result {
-            Ok(output) if output.status.success() => {
-                self.log.push("📄 Converted TIFF to PDF for printing".into());
-                pdf_path
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                self.log.push(format!("⚠ img2pdf failed ({}), trying TIFF directly", stderr));
-                temp_path.clone()
-            }
-            Err(e) => {
-                self.log.push(format!("⚠ img2pdf not available ({}), trying TIFF directly", e));
-                temp_path.clone()
-            }
-        };
+            cmd.arg(temp_path);
 
-        cmd.arg(print_path);
+            match cmd.output() {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if !output.status.success() {
+                        self.log.push(format!("✗ Print failed (page {}): {}", i + 1, stderr));
+                        self.print_job_status = Some(PrintJobStatus {
+                            job_id: 0,
+                            state: PrintJobState::Failed(stderr.to_string()),
+                        });
+                        return;
+                    }
 
-        // Execute lpr and capture job ID
-        match cmd.output() {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                
-                if !output.status.success() {
-                    self.log.push(format!("✗ Print failed: {}", stderr));
+                    let job_id = stdout.lines()
+                        .chain(stderr.lines())
+                        .find_map(|line| {
+                            let re = regex::Regex::new(r"request id is \w+-(\d+)").ok()?;
+                            re.captures(line).and_then(|cap| cap.get(1)).and_then(|m| m.as_str().parse::<u32>().ok())
+                        })
+                        .unwrap_or(0);
+                    self.log.push(format!("📤 Page {} submitted as job #{}", i + 1, job_id));
+                    self.print_job_status = Some(PrintJobStatus {
+                        job_id,
+                        state: PrintJobState::Pending,
+                    });
+                }
+                Err(e) => {
+                    self.log.push(format!("✗ Failed to submit print job: {}", e));
                     self.print_job_status = Some(PrintJobStatus {
                         job_id: 0,
-                        printer_name: printer.name.clone(),
-                        state: PrintJobState::Failed(stderr.to_string()),
+                        state: PrintJobState::Failed(e.to_string()),
                     });
                     return;
                 }
-
-                // Parse job ID from output: "request id is Printer-123 (1 file(s))"
-                let job_id = stdout.lines()
-                    .chain(stderr.lines())
-                    .find_map(|line| {
-                        let re = regex::Regex::new(r"request id is \w+-(\d+)").ok()?;
-                        re.captures(line).and_then(|cap| cap.get(1)).and_then(|m| m.as_str().parse::<u32>().ok())
-                    })
-                    .unwrap_or(0);
-
-                self.log.push(format!("📤 Print job #{} submitted to {}", job_id, printer.name));
-                self.print_job_status = Some(PrintJobStatus {
-                    job_id,
-                    printer_name: printer.name.clone(),
-                    state: PrintJobState::Pending,
-                });
-
-                // Temp files left in /tmp for CUPS to process (cleaned up on reboot)
-            }
-            Err(e) => {
-                self.log.push(format!("✗ Failed to submit print job: {}", e));
-                self.print_job_status = Some(PrintJobStatus {
-                    job_id: 0,
-                    printer_name: printer.name.clone(),
-                    state: PrintJobState::Failed(e.to_string()),
-                });
             }
         }
     }
@@ -1095,8 +1295,8 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 let files = self.image_files.clone();
                 for path in &files {
-                    let is_sel  = self.selected.as_ref()     == Some(path);
-                    let is_hi   = self.highlighted.as_ref()  == Some(path);
+                    let is_staged     = self.staged.as_ref()     == Some(path);
+                    let is_hi         = self.highlighted.as_ref()  == Some(path);
                     let thumb_f = (THUMB_PX as f32 * self.thumb_zoom).round();
 
                     // Aspect-ratio-preserving display size; square placeholder while loading
@@ -1114,13 +1314,13 @@ impl App {
                     let (resp, _) = ui.allocate_painter(cell_size, Sense::click());
                     let painter   = ui.painter_at(resp.rect);
 
-                    let fill = if is_sel { Color32::from_rgb(30, 90, 170) }
+                    let fill = if is_staged { Color32::from_rgb(255, 215, 0) }
                                else if is_hi { Color32::from_rgb(45, 55, 70) }
                                else { Color32::from_gray(40) };
                     painter.rect_filled(resp.rect, 4.0, fill);
-                    if is_sel {
+                    if is_staged {
                         painter.rect_stroke(resp.rect, 4.0,
-                            Stroke::new(1.5, Color32::from_rgb(80, 140, 255)));
+                            Stroke::new(1.5, Color32::from_rgb(160, 100, 0)));
                     } else if is_hi {
                         painter.rect_stroke(resp.rect, 4.0,
                             Stroke::new(1.5, Color32::from_rgb(100, 130, 180)));
@@ -1152,8 +1352,10 @@ impl App {
                         Color32::LIGHT_GRAY,
                     );
 
-                    if resp.clicked()        { self.highlighted = Some(path.clone()); }
-                    if resp.double_clicked() { self.select_image(path.clone()); }
+                    if resp.clicked() {
+                        self.highlighted = Some(path.clone());
+                        self.stage_image(path.clone());
+                    }
                 }
             });
         });
@@ -1161,7 +1363,7 @@ impl App {
 
     // ── Center pane / canvas ──────────────────────────────────────────────────
 
-    fn draw_canvas(&self, ui: &mut egui::Ui) {
+    fn draw_canvas(&mut self, ui: &mut egui::Ui) {
         // Paper dimensions in PostScript points — driven by selected_page_size_idx
         let selected_ps = self.caps.as_ref()
             .and_then(|c| c.page_sizes.get(self.selected_page_size_idx));
@@ -1172,7 +1374,7 @@ impl App {
             .map(|ps| ps.imageable_area)
             .unwrap_or((0.0, 0.0, 612.0, 792.0));
 
-        let (resp, _) = ui.allocate_painter(ui.available_size(), Sense::hover());
+        let (resp, _) = ui.allocate_painter(ui.available_size(), Sense::click());
         let canvas_area = resp.rect;
         let inner = Rect::from_min_size(
             canvas_area.min + Vec2::new(RULER_PX, RULER_PX),
@@ -1208,87 +1410,73 @@ impl App {
         );
         draw_dashed_rect(&painter, ia_rect, Color32::from_rgba_premultiplied(80, 140, 220, 200), 1.5, 6.0);
 
-        // Selected image preview centered in imageable area
-        if let (Some(tex), Some(img_sz)) = (&self.canvas_tex, self.canvas_img_size) {
-            let img_aspect = img_sz[0] as f32 / img_sz[1] as f32;
+        if self.preview_dirty || self.preview_cache_page != Some(self.current_page) {
+            self.rebuild_canvas_texture(ui.ctx());
+        }
+        self.canvas_hit_rects.clear();
+        let (ia_w_px, ia_h_px) = self.imageable_size_px();
+        let sx = ia_rect.width() / ia_w_px.max(1) as f32;
+        let sy = ia_rect.height() / ia_h_px.max(1) as f32;
 
-            match self.print_size_idx {
-                Some(idx) if idx < PRINT_SIZES.len() => {
-                    let (w_in, h_in, _) = PRINT_SIZES[idx];
-                    let ia_w_in = (ia_r - ia_l) / 72.0;
-                    let ia_h_in = (ia_t - ia_b) / 72.0;
-                    let fits_portrait  = w_in <= ia_w_in && h_in <= ia_h_in;
-                    let fits_landscape = h_in <= ia_w_in && w_in <= ia_h_in;
-                    // Choose rect orientation to MATCH the image; only force the other if needed
-                    let (rect_landscape, print_rotated) = if img_aspect > 1.0 {
-                        // Landscape image: prefer landscape rect (h×w), rotate only if forced portrait
-                        if fits_landscape  { (true,  false) } else { (false, true) }
-                    } else {
-                        // Portrait image: prefer portrait rect (w×h), rotate only if forced landscape
-                        if fits_portrait   { (false, false) } else { (true,  true) }
-                    };
-                    let (pw_in, ph_in) = if rect_landscape { (h_in, w_in) } else { (w_in, h_in) };
-                    let rw = pw_in * 72.0 * scale;
-                    let rh = ph_in * 72.0 * scale;
-                    let print_rect = Rect::from_center_size(ia_rect.center(), Vec2::new(rw, rh));
-                    // When image is rotated, use its flipped aspect for letterbox sizing
-                    let eff_aspect = if print_rotated { 1.0 / img_aspect } else { img_aspect };
-                    let (iw, ih) = if rw / rh > eff_aspect {
-                        (rh * eff_aspect, rh)
-                    } else {
-                        (rw, rw / eff_aspect)
-                    };
-                    let img_rect = Rect::from_center_size(ia_rect.center(), Vec2::new(iw, ih));
-                    // Faint yellow outline showing the exact print area
-                    painter.rect_stroke(print_rect, 0.0,
-                        Stroke::new(1.0, Color32::from_rgba_premultiplied(220, 200, 80, 160)));
-                    if print_rotated {
-                        // Draw image rotated 90° CW via custom UV mesh
-                        // 90° CW: TL←BL, TR←TL, BR←TR, BL←BR (original UV)
-                        let mut mesh = egui::epaint::Mesh::with_texture(tex.id());
-                        mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_top(),     uv: Pos2::new(0.0, 1.0), color: Color32::WHITE });
-                        mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_top(),    uv: Pos2::new(0.0, 0.0), color: Color32::WHITE });
-                        mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_bottom(), uv: Pos2::new(1.0, 0.0), color: Color32::WHITE });
-                        mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_bottom(),  uv: Pos2::new(1.0, 1.0), color: Color32::WHITE });
-                        mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
-                        painter.add(egui::Shape::mesh(mesh));
-                    } else {
-                        painter.image(tex.id(), img_rect,
-                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-                    }
+        for item in self.queue.iter().filter(|q| q.page == self.current_page) {
+            let (w_px, h_px) = self.queued_box_px(item);
+            let r = Rect::from_min_size(
+                Pos2::new(
+                    ia_rect.min.x + item.position.x as f32 * sx,
+                    ia_rect.min.y + item.position.y as f32 * sy,
+                ),
+                Vec2::new(w_px as f32 * sx, h_px as f32 * sy),
+            );
+            self.canvas_hit_rects.push((item.id, r));
+
+            let src_size = item.src_size_px.or_else(|| {
+                self.full_images
+                    .get(&item.filepath)
+                    .map(|img| (img.size[0] as u32, img.size[1] as u32))
+            });
+            let img_rect = src_size
+                .map(|(sw, sh)| aspect_fit_rect_in_box(r, sw, sh, item.rotation > 0.0))
+                .unwrap_or(r);
+
+            if let Some(tex) = self.preview_textures.get(&item.filepath) {
+                if item.rotation > 0.0 {
+                    let mut mesh = egui::epaint::Mesh::with_texture(tex.id());
+                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_top(),     uv: Pos2::new(0.0, 1.0), color: Color32::WHITE });
+                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_top(),    uv: Pos2::new(0.0, 0.0), color: Color32::WHITE });
+                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_bottom(), uv: Pos2::new(1.0, 0.0), color: Color32::WHITE });
+                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_bottom(),  uv: Pos2::new(1.0, 1.0), color: Color32::WHITE });
+                    mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+                    painter.add(egui::Shape::mesh(mesh));
+                } else {
+                    painter.image(tex.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
                 }
-                _ => {
-                    // Fit to Page — maximize coverage of imageable area; try both orientations
-                    let ia_w = ia_rect.width();
-                    let ia_h = ia_rect.height();
-                    // Normal orientation
-                    let (nw, nh) = if ia_w / ia_h > img_aspect {
-                        (ia_h * img_aspect, ia_h)
-                    } else {
-                        (ia_w, ia_w / img_aspect)
-                    };
-                    // Rotated 90° (effective aspect = 1/img_aspect)
-                    let rot_aspect = 1.0 / img_aspect;
-                    let (rw, rh) = if ia_w / ia_h > rot_aspect {
-                        (ia_h * rot_aspect, ia_h)
-                    } else {
-                        (ia_w, ia_w * img_aspect)
-                    };
-                    if rw * rh > nw * nh {
-                        // Rotated fills more — draw 90° CW
-                        let img_rect = Rect::from_center_size(ia_rect.center(), Vec2::new(rw, rh));
-                        let mut mesh = egui::epaint::Mesh::with_texture(tex.id());
-                        mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_top(),     uv: Pos2::new(0.0, 1.0), color: Color32::WHITE });
-                        mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_top(),    uv: Pos2::new(0.0, 0.0), color: Color32::WHITE });
-                        mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_bottom(), uv: Pos2::new(1.0, 0.0), color: Color32::WHITE });
-                        mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_bottom(),  uv: Pos2::new(1.0, 1.0), color: Color32::WHITE });
-                        mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
-                        painter.add(egui::Shape::mesh(mesh));
-                    } else {
-                        let img_rect = Rect::from_center_size(ia_rect.center(), Vec2::new(nw, nh));
-                        painter.image(tex.id(), img_rect,
-                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+            } else {
+                painter.rect_filled(r, 0.0, Color32::from_gray(220));
+                painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_gray(120)));
+            }
+
+            let stroke = if Some(item.id) == self.selected_queue_id {
+                Stroke::new(2.0, Color32::from_rgb(90, 180, 255))
+            } else {
+                Stroke::new(1.0, Color32::from_rgba_premultiplied(80, 120, 170, 160))
+            };
+            painter.rect_stroke(r, 0.0, stroke);
+        }
+
+        if resp.clicked() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                if let Some((id, _)) = self
+                    .canvas_hit_rects
+                    .iter()
+                    .rev()
+                    .find(|(_, r)| r.contains(pos))
+                    .copied()
+                {
+                    self.selected_queue_id = Some(id);
+                    if let Some(item) = self.queue.iter().find(|q| q.id == id) {
+                        self.current_page = item.page;
                     }
+                    self.right_tab = RightTab::ImageProperties;
                 }
             }
         }
@@ -1317,7 +1505,7 @@ impl App {
                 .map(|p| p.label.as_str())
                 .unwrap_or("?");
             let dpi = self.target_dpi;
-            format!("{ps}  ·  {dpi} dpi")
+            format!("{ps}  ·  {dpi} dpi  ·  Page {} of {}", self.current_page + 1, self.page_count)
         } else {
             format!("{:.0}×{:.0} pt  ·  {} dpi", paper_w_pt, paper_h_pt, self.target_dpi)
         };
@@ -1332,8 +1520,8 @@ impl App {
 
     fn draw_canvas_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(2.0);
-        ui.vertical_centered(|ui| {
-            let has_image = self.selected_source_image.is_some();
+        ui.horizontal_centered(|ui| {
+            let has_image = !self.queue.is_empty() || self.selected_source_image.is_some();
             let icon = "🔍"; // magnifying glass icon
             let mut btn = egui::Button::new(
                 RichText::new(icon).strong().size(21.0)
@@ -1343,7 +1531,20 @@ impl App {
             }
             if ui.add_enabled(has_image, btn).clicked() {
                 self.softproof_enabled = !self.softproof_enabled;
-                self.rebuild_canvas_texture(ui.ctx());
+                self.mark_preview_dirty();
+            }
+
+            ui.add_space(16.0);
+            let prev = ui.add_enabled(self.current_page > 0, egui::Button::new("◀ Previous Page"));
+            if prev.clicked() {
+                self.current_page = self.current_page.saturating_sub(1);
+                self.mark_preview_dirty();
+            }
+            ui.label(format!("Page {} of {}", self.current_page + 1, self.page_count.max(1)));
+            let next = ui.add_enabled(self.current_page + 1 < self.page_count, egui::Button::new("Next Page ▶"));
+            if next.clicked() {
+                self.current_page = (self.current_page + 1).min(self.page_count.saturating_sub(1));
+                self.mark_preview_dirty();
             }
         });
         ui.add_space(2.0);
@@ -1360,6 +1561,9 @@ impl App {
             );
             ui.selectable_value(
                 &mut self.right_tab, RightTab::ImageProperties, "Image Properties",
+            );
+            ui.selectable_value(
+                &mut self.right_tab, RightTab::ImageQueue, "Image Queue",
             );
         });
         ui.separator();
@@ -1382,6 +1586,9 @@ impl App {
             RightTab::ImageProperties => {
                 self.draw_tab_image(ui);
             }
+            RightTab::ImageQueue => {
+                self.draw_tab_queue(ui);
+            }
         }
     }
 
@@ -1395,6 +1602,8 @@ impl App {
             ui.separator();
 
             let prev_idx = self.printer_idx;
+            let prev_page_size_idx = self.selected_page_size_idx;
+            let prev_dpi = self.target_dpi;
             ui.horizontal(|ui| {
                 let selected_name = self.printers.get(self.printer_idx)
                     .map(|p| p.name.as_str())
@@ -1460,6 +1669,10 @@ impl App {
                         }
                     });
             });
+
+            if self.selected_page_size_idx != prev_page_size_idx || self.target_dpi != prev_dpi {
+                self.relayout_queue();
+            }
 
             // Sharpen
             ui.horizontal(|ui| {
@@ -1530,14 +1743,14 @@ impl App {
             }
 
             if preview_dirty {
-                self.rebuild_canvas_texture(ui.ctx());
+                self.mark_preview_dirty();
             }
 
             ui.add_space(10.0);
 
             
         let is_running = matches!(self.proc_state, ProcState::Running);
-        let has_image = self.selected.is_some();
+        let has_image = !self.queue.is_empty();
 
         // Primary: Print button (dynamic text based on print_to_file)
         let btn_text = if self.print_to_file { "Print to File" } else { "Print" };
@@ -1560,10 +1773,14 @@ impl App {
         if is_running {
             ui.horizontal(|ui| { ui.spinner(); ui.label("Processing…"); });
         } else if !has_image {
-            ui.label(RichText::new("Select an image first").small().weak());
-        } else if let ProcState::Done(ref p) = self.proc_state {
-            let name = p.file_name().unwrap_or_default().to_string_lossy();
-            ui.label(RichText::new(format!("✓ {name}")).small().color(Color32::GREEN));
+            ui.label(RichText::new("Add queued images first").small().weak());
+        } else if let ProcState::Done(ref paths) = self.proc_state {
+            let msg = if let Some(first) = paths.first() {
+                format!("✓ {} page(s): {}", paths.len(), first.file_name().unwrap_or_default().to_string_lossy())
+            } else {
+                "✓ Done".to_string()
+            };
+            ui.label(RichText::new(msg).small().color(Color32::GREEN));
         } else if let ProcState::Failed(ref e) = self.proc_state {
             ui.label(RichText::new(format!("✗ {e}")).small().color(Color32::RED));
         }
@@ -1573,14 +1790,10 @@ impl App {
             ui.add_space(4.0);
             let status_text = match job.state {
                 PrintJobState::Pending => format!("📤 Print Job #{} - Pending", job.job_id),
-                PrintJobState::Processing => format!("⚙️ Print Job #{} - Processing", job.job_id),
-                PrintJobState::Completed => format!("✅ Print Job #{} - Complete", job.job_id),
                 PrintJobState::Failed(ref e) => format!("❌ Print Job #{} - Failed: {}", job.job_id, e),
             };
             let color = match job.state {
                 PrintJobState::Pending => Color32::from_rgb(200, 200, 100),
-                PrintJobState::Processing => Color32::from_rgb(100, 180, 255),
-                PrintJobState::Completed => Color32::from_rgb(100, 220, 100),
                 PrintJobState::Failed(_) => Color32::from_rgb(255, 100, 100),
             };
             ui.label(RichText::new(status_text).small().color(color));
@@ -1643,14 +1856,10 @@ impl App {
             ui.add_space(4.0);
             let status_text = match job.state {
                 PrintJobState::Pending => format!("📤 Print Job #{} - Pending", job.job_id),
-                PrintJobState::Processing => format!("⚙️ Print Job #{} - Processing", job.job_id),
-                PrintJobState::Completed => format!("✅ Print Job #{} - Complete", job.job_id),
                 PrintJobState::Failed(ref e) => format!("❌ Print Job #{} - Failed: {}", job.job_id, e),
             };
             let color = match job.state {
                 PrintJobState::Pending => Color32::from_rgb(200, 200, 100),
-                PrintJobState::Processing => Color32::from_rgb(100, 180, 255),
-                PrintJobState::Completed => Color32::GREEN,
                 PrintJobState::Failed(_) => Color32::RED,
             };
             ui.label(RichText::new(status_text).small().color(color));
@@ -1669,75 +1878,114 @@ impl App {
                     ui.label(RichText::new(entry).small().monospace());
                 }
             });
+
     }
 
     fn draw_tab_image(&mut self, ui: &mut egui::Ui) {
-        // Imageable area in inches (margins already excluded)
-        let (ia_w_in, ia_h_in) = self.caps.as_ref()
-            .and_then(|c| c.page_sizes.get(self.selected_page_size_idx))
-            .map(|ps| {
-                let (l, b, r, t) = ps.imageable_area;
-                ((r - l) / 72.0, (t - b) / 72.0)
-            })
-            .unwrap_or((7.5, 10.0));
-
-        let has_image = self.selected.is_some();
+        let (ia_w_in, ia_h_in) = self.imageable_size_in();
 
         ui.add_space(4.0);
         ui.label(RichText::new("Print Size").strong().size(12.0));
         ui.separator();
 
-        if !has_image {
+        let has_target = self.staged.is_some() || self.selected_queue_id.is_some();
+        if !has_target {
             ui.add_space(8.0);
-            ui.label(RichText::new("Load an image first").weak().italics().size(11.0));
+            ui.label(RichText::new("Stage an image or select one from queue").weak().italics().size(11.0));
             return;
         }
 
-        // Show usable area for reference
-        ui.label(RichText::new(
-            format!("Printable area: {:.2}\" × {:.2}\"", ia_w_in, ia_h_in)
-        ).size(10.0).weak());
+        ui.label(
+            RichText::new(format!("Printable area: {:.2}\" × {:.2}\"", ia_w_in, ia_h_in))
+                .size(10.0)
+                .weak(),
+        );
         ui.add_space(4.0);
 
         egui::ScrollArea::vertical().id_salt("print_sizes").show(ui, |ui| {
             for (idx, &(w, h, label)) in PRINT_SIZES.iter().enumerate() {
                 let (fits, _) = check_size_fit(w, h, ia_w_in, ia_h_in);
-                let is_sel = self.print_size_idx == Some(idx);
-
-                let (text_color, hover_text) = if !fits {
-                    (Color32::from_rgb(200, 60, 60), Some("Too large for the printable area"))
-                } else if is_sel {
-                    (Color32::from_rgb(110, 210, 110), None)
+                let row_text = RichText::new(label).size(13.0).color(if fits {
+                    Color32::from_gray(210)
                 } else {
-                    (Color32::from_gray(210), None)
-                };
-
-                let row_text = RichText::new(label).size(13.0).color(text_color);
-
-                let resp = ui.add_enabled(fits, egui::SelectableLabel::new(is_sel, row_text));
-                if let Some(tip) = hover_text { resp.clone().on_disabled_hover_text(tip); }
+                    Color32::from_rgb(200, 60, 60)
+                });
+                let resp = ui.add_enabled(fits, egui::SelectableLabel::new(false, row_text));
+                if !fits {
+                    resp.clone().on_disabled_hover_text("Too large for the printable area");
+                }
                 if resp.clicked() {
-                    self.print_size_idx = Some(idx);
+                    if self.staged.is_some() {
+                        let _ = self.enqueue_staged_with_idx(idx);
+                    } else {
+                        self.update_selected_queue_size_idx(idx);
+                    }
                 }
             }
 
             ui.separator();
+            if ui.selectable_label(false, RichText::new("Fit to Page").size(13.0)).clicked() {
+                if self.staged.is_some() {
+                    let _ = self.enqueue_staged_with_idx(FIT_PAGE_IDX);
+                } else {
+                    self.update_selected_queue_size_idx(FIT_PAGE_IDX);
+                }
+            }
+        });
+    }
 
-            // Fit to Page
-            let is_fit = self.print_size_idx == Some(FIT_PAGE_IDX);
-            let fit_text = RichText::new("Fit to Page").size(13.0)
-                .color(if is_fit { Color32::from_rgb(110, 210, 110) } else { Color32::from_gray(210) });
-            if ui.selectable_label(is_fit, fit_text).clicked() {
-                self.print_size_idx = Some(FIT_PAGE_IDX);
+    fn draw_tab_queue(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        ui.label(RichText::new("Queued Images").strong().size(12.0));
+        ui.separator();
+
+        if self.queue.is_empty() {
+            ui.label(RichText::new("Queue is empty").weak().italics().size(11.0));
+            return;
+        }
+
+        let mut delete_id: Option<Uuid> = None;
+        let rows: Vec<(Uuid, PathBuf, usize)> = self
+            .queue
+            .iter()
+            .map(|q| (q.id, q.filepath.clone(), q.page))
+            .collect();
+        egui::ScrollArea::vertical().id_salt("queue_list").show(ui, |ui| {
+            for (id, path, page) in &rows {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+
+                ui.horizontal(|ui| {
+                    let sel = self.selected_queue_id == Some(*id);
+                    let lbl = format!("{}  (P{})", name, *page + 1);
+                    if ui.selectable_label(sel, lbl).clicked() {
+                        self.selected_queue_id = Some(*id);
+                        self.current_page = *page;
+                        self.right_tab = RightTab::ImageProperties;
+                    }
+                    if ui.small_button("✕").clicked() {
+                        delete_id = Some(*id);
+                    }
+                });
             }
         });
 
+        if let Some(id) = delete_id {
+            self.queue.retain(|q| q.id != id);
+            if self.selected_queue_id == Some(id) {
+                self.selected_queue_id = None;
+            }
+            self.relayout_queue();
+        }
     }
 
     // ── Printer Properties modal ──────────────────────────────────────────────
 
     fn show_printer_props(&mut self, ctx: &Context) {
         let Some(caps) = self.caps.clone() else { self.show_props = false; return };
+        let prev_page_size = self.selected_page_size_idx;
 
         // Calculate dynamic size based on content and screen
         let num_extra = caps.extra_options.len();
@@ -1896,6 +2144,10 @@ impl App {
                     });
                 });
             });
+
+        if self.selected_page_size_idx != prev_page_size {
+            self.relayout_queue();
+        }
     }
 
     // ── Print Confirmation Modal ──────────────────────────────────────────────
@@ -1904,7 +2156,8 @@ impl App {
         let Some(caps) = self.caps.clone() else { self.show_print_confirm = false; return };
         let printer_name = self.printers.get(self.printer_idx).map(|p| p.name.clone());
         let Some(printer_name) = printer_name else { self.show_print_confirm = false; return };
-        let Some(temp_path) = self.pending_print_path.clone() else { self.show_print_confirm = false; return };
+        if self.pending_print_paths.is_empty() { self.show_print_confirm = false; return };
+        let temp_paths = self.pending_print_paths.clone();
 
         let screen = ctx.screen_rect();
         let width = (screen.width() * 0.30).clamp(320.0, 480.0);
@@ -1934,6 +2187,9 @@ impl App {
                     .unwrap_or("—");
                 ui.label(RichText::new("Paper:").small().weak());
                 ui.label(paper);
+                ui.add_space(4.0);
+                ui.label(RichText::new("Pages:").small().weak());
+                ui.label(format!("{}", temp_paths.len()));
                 ui.add_space(4.0);
 
                 // Media type
@@ -1982,9 +2238,10 @@ impl App {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Cancel").clicked() {
                             self.show_print_confirm = false;
-                            self.pending_print_path = None;
-                            // Clean up temp file
-                            let _ = std::fs::remove_file(&temp_path);
+                            for p in &temp_paths {
+                                let _ = std::fs::remove_file(p);
+                            }
+                            self.pending_print_paths.clear();
                         }
                         
                         let print_btn = ui.add(egui::Button::new(
@@ -1992,8 +2249,8 @@ impl App {
                         ));
                         if print_btn.clicked() {
                             self.show_print_confirm = false;
-                            self.submit_print_job(&temp_path);
-                            self.pending_print_path = None;
+                            self.submit_print_jobs(&temp_paths);
+                            self.pending_print_paths.clear();
                         }
                     });
                 });
@@ -2035,10 +2292,10 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.pump(ctx);
 
-        // INSERT key loads the highlighted image onto the canvas
+        // INSERT key stages the highlighted image in Image Properties
         if ctx.input(|i| i.key_pressed(egui::Key::Insert)) {
             if let Some(path) = self.highlighted.clone() {
-                self.select_image(path);
+                self.stage_image(path);
             }
         }
 
@@ -2344,7 +2601,7 @@ fn is_image(path: &std::path::Path) -> bool {
     )
 }
 
-fn load_thumb(path: PathBuf, size: u32, tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>)>) {
+fn load_thumb(path: PathBuf, size: u32, tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>, LoadKind)>) {
     if let Ok(img) = image::open(&path) {
         let thumb = img.thumbnail(size, size).into_rgb8();
         let w = thumb.width() as usize;
@@ -2353,13 +2610,13 @@ fn load_thumb(path: PathBuf, size: u32, tx: Sender<(PathBuf, ColorImage, Option<
             .chunks_exact(3)
             .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
             .collect();
-        let _ = tx.send((path, ColorImage { size: [w, h], pixels }, None));
+        let _ = tx.send((path, ColorImage { size: [w, h], pixels }, None, LoadKind::Thumb));
     } else {
         // Signal failure by sending an empty 1×1 magenta image
         let _ = tx.send((path, ColorImage {
             size: [1, 1],
             pixels: vec![Color32::from_rgb(200, 0, 80)],
-        }, None));
+        }, None, LoadKind::Thumb));
     }
 }
 
