@@ -18,7 +18,7 @@ enum CliEngine {
     Mks,
     /// Classic Lanczos3
     Lanczos3,
-    /// Iterative 1.1x step upscaling (Fusion-style)
+    /// Iterative 1.1x step upscaling
     #[value(name = "iterative-step")]
     IterativeStep,
     /// Elliptical Weighted Average with Robidoux coefficients
