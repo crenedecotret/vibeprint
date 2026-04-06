@@ -50,6 +50,81 @@ enum Engine {
     Iterative,
     Lanczos3,
 }
+
+fn apply_preview_transform(
+    monitor_profile_data: &[u8],
+    source_profile_data: Option<&[u8]>,
+    output_icc_path: Option<&PathBuf>,
+    pixels: &mut [u8],
+    intent: lcms2::Intent,
+    bpc: bool,
+    softproof_enabled: bool,
+) -> Option<()> {
+    use lcms2::{Flags, PixelFormat, Profile, Transform};
+
+    let source_profile = if let Some(src_data) = source_profile_data {
+        Profile::new_icc(src_data).unwrap_or_else(|_| Profile::new_srgb())
+    } else {
+        Profile::new_srgb()
+    };
+
+    let monitor_profile = Profile::new_icc(monitor_profile_data).ok()?;
+    let flags = if bpc {
+        Flags::BLACKPOINT_COMPENSATION | Flags::NO_CACHE
+    } else {
+        Flags::NO_CACHE
+    };
+
+    if softproof_enabled {
+        let output_profile = if let Some(path) = output_icc_path {
+            let bytes = std::fs::read(path).ok()?;
+            Profile::new_icc(&bytes).ok()?
+        } else if let Some(src_data) = source_profile_data {
+            Profile::new_icc(src_data).unwrap_or_else(|_| Profile::new_srgb())
+        } else {
+            Profile::new_srgb()
+        };
+
+        let to_output = Transform::new_flags(
+            &source_profile,
+            PixelFormat::RGB_8,
+            &output_profile,
+            PixelFormat::RGB_8,
+            intent,
+            flags,
+        )
+        .ok()?;
+
+        let mut output_space = vec![0u8; pixels.len()];
+        let src = pixels.to_vec();
+        to_output.transform_pixels(&src, &mut output_space);
+
+        let to_monitor = Transform::new_flags(
+            &output_profile,
+            PixelFormat::RGB_8,
+            &monitor_profile,
+            PixelFormat::RGB_8,
+            intent,
+            flags,
+        )
+        .ok()?;
+        to_monitor.transform_pixels(&output_space, pixels);
+        return Some(());
+    }
+
+    let to_monitor = Transform::new_flags(
+        &source_profile,
+        PixelFormat::RGB_8,
+        &monitor_profile,
+        PixelFormat::RGB_8,
+        intent,
+        flags,
+    )
+    .ok()?;
+    let src = pixels.to_vec();
+    to_monitor.transform_pixels(&src, pixels);
+    Some(())
+}
 impl Engine {
     const ALL: &'static [Engine] = &[Engine::Mks, Engine::RobidouxEwa, Engine::Iterative, Engine::Lanczos3];
     fn label(&self) -> &'static str {
@@ -174,6 +249,8 @@ struct App {
     thumb_tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>)>,
     thumb_rx: Receiver<(PathBuf, ColorImage, Option<Vec<u8>>)>,
     selected: Option<PathBuf>,
+    selected_embedded_icc: Option<Vec<u8>>,
+    selected_source_image: Option<ColorImage>,
     highlighted: Option<PathBuf>,
     canvas_tex: Option<egui::TextureHandle>,
     print_size_idx: Option<usize>,
@@ -208,6 +285,7 @@ struct App {
     output_icc: Option<PathBuf>,
     intent: Intent,
     bpc: bool,
+    softproof_enabled: bool,
 
     // ── Output ──
     output_dir: PathBuf,
@@ -286,6 +364,8 @@ impl App {
             thumb_tx,
             thumb_rx,
             selected: None,
+            selected_embedded_icc: None,
+            selected_source_image: None,
             highlighted: None,
             canvas_tex: None,
             print_size_idx: None,
@@ -316,6 +396,7 @@ impl App {
             output_icc: saved_icc,
             intent: saved_intent,
             bpc: s.bpc.unwrap_or(true),
+            softproof_enabled: false,
 
             output_dir: saved_out_dir,
             print_to_file: false,
@@ -433,6 +514,8 @@ impl App {
 
     fn select_image(&mut self, path: PathBuf) {
         self.selected = Some(path.clone());
+        self.selected_embedded_icc = None;
+        self.selected_source_image = None;
         self.canvas_tex = None;
         self.canvas_img_size = None;
         self.print_size_idx = None;
@@ -453,6 +536,48 @@ impl App {
                 let _ = tx.send((path, ColorImage { size, pixels }, embedded_icc));
             }
         });
+    }
+
+    fn rebuild_canvas_texture(&mut self, ctx: &Context) {
+        let (Some(path), Some(mut ci)) = (self.selected.clone(), self.selected_source_image.clone()) else {
+            self.canvas_tex = None;
+            self.canvas_img_size = None;
+            return;
+        };
+
+        let size = ci.size;
+        if let Some(ref monitor_profile) = self.monitor_icc_profile {
+            let mut pixel_bytes: Vec<u8> = ci
+                .pixels
+                .iter()
+                .flat_map(|c| [c.r(), c.g(), c.b()])
+                .collect();
+
+            if apply_preview_transform(
+                monitor_profile,
+                self.selected_embedded_icc.as_deref(),
+                self.output_icc.as_ref(),
+                &mut pixel_bytes,
+                self.intent.to_lcms(),
+                self.bpc,
+                self.softproof_enabled,
+            )
+            .is_some()
+            {
+                ci.pixels = pixel_bytes
+                    .chunks_exact(3)
+                    .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
+                    .collect();
+            } else {
+                self.log.push("✗ Color transform failed".into());
+            }
+        }
+
+        let name = path.to_string_lossy().to_string();
+        let tex = ctx.load_texture(&name, ci, egui::TextureOptions::LINEAR);
+        self.canvas_tex = Some(tex.clone());
+        self.canvas_img_size = Some(size);
+        self.thumbs.insert(path, ThumbState::Ready(tex));
     }
 
     // ── Printer caps sync ──────────────────────────────────────────────────────
@@ -502,44 +627,10 @@ impl App {
             let name = path.to_string_lossy().to_string();
             if self.selected.as_ref() == Some(&path) {
                 let size = ci.size;
-                
-                // Apply monitor ICC profile for color-accurate display (silent)
-                if let Some(ref monitor_profile) = self.monitor_icc_profile {
-                    // Convert ColorImage pixels to bytes for lcms2
-                    let mut pixel_bytes: Vec<u8> = ci.pixels
-                        .iter()
-                        .flat_map(|c| vec![c.r(), c.g(), c.b()])
-                        .collect();
-                    
-                    let pixel_count = pixel_bytes.len() / 3;
-                    
-                    // Apply color transform with embedded ICC as source and app's intent/BPC
-                    match monitor_icc::apply_monitor_profile(
-                        monitor_profile, 
-                        embedded_icc.as_deref(),
-                        &mut pixel_bytes,
-                        self.intent.to_lcms(),
-                        self.bpc
-                    ) {
-                        Some(_) => {
-                            // Convert back to ColorImage
-                            ci.pixels = pixel_bytes
-                                .chunks_exact(3)
-                                .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
-                                .collect();
-                        }
-                        None => {
-                            self.log.push("✗ Color transform failed".into());
-                        }
-                    }
-                } else {
-                    self.log.push("⚠ No monitor profile available for canvas".into());
-                }
-                
-                let tex = ctx.load_texture(&name, ci, egui::TextureOptions::LINEAR);
-                self.canvas_tex = Some(tex.clone());
+                self.selected_embedded_icc = embedded_icc;
+                self.selected_source_image = Some(ci.clone());
                 self.canvas_img_size = Some(size);
-                self.thumbs.insert(path, ThumbState::Ready(tex));
+                self.rebuild_canvas_texture(ctx);
             } else {
                 let tex = ctx.load_texture(&name, ci, egui::TextureOptions::LINEAR);
                 self.thumbs.insert(path, ThumbState::Ready(tex));
@@ -1210,6 +1301,16 @@ impl App {
         draw_ruler_h(&painter, canvas_area, paper_origin.x, paper_px_w, scale, RULER_PX, m_left, m_right);
         draw_ruler_v(&painter, canvas_area, paper_origin.y, paper_px_h, scale, RULER_PX, m_top, m_bottom);
 
+        if self.softproof_enabled {
+            painter.text(
+                Pos2::new(canvas_area.max.x - 12.0, canvas_area.min.y + RULER_PX + 8.0),
+                egui::Align2::RIGHT_TOP,
+                "Softproof",
+                egui::FontId::proportional(16.0),
+                Color32::from_rgb(220, 90, 90),
+            );
+        }
+
         // Status overlay (page size + DPI)
         let info = if let Some(caps) = &self.caps {
             let ps = caps.page_sizes.get(self.selected_page_size_idx)
@@ -1227,6 +1328,25 @@ impl App {
             egui::FontId::proportional(11.0),
             Color32::from_gray(160),
         );
+    }
+
+    fn draw_canvas_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(2.0);
+        ui.vertical_centered(|ui| {
+            let has_image = self.selected_source_image.is_some();
+            let icon = "🔍"; // magnifying glass icon
+            let mut btn = egui::Button::new(
+                RichText::new(icon).strong().size(21.0)
+            ).min_size(Vec2::new(48.0, 36.0));
+            if self.softproof_enabled {
+                btn = btn.fill(Color32::from_rgb(60, 120, 200));
+            }
+            if ui.add_enabled(has_image, btn).clicked() {
+                self.softproof_enabled = !self.softproof_enabled;
+                self.rebuild_canvas_texture(ui.ctx());
+            }
+        });
+        ui.add_space(2.0);
     }
 
     // ── Right pane / sidebar ──────────────────────────────────────────────────
@@ -1268,6 +1388,7 @@ impl App {
     fn draw_tab_printer(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().id_salt("tab_printer_scroll").show(ui, |ui| {
             ui.add_space(6.0);
+            let mut preview_dirty = false;
 
             // ── Block A: Hardware ─────────────────────────────────────────────
             ui.label(RichText::new("Hardware & Properties").strong().size(12.0));
@@ -1379,14 +1500,17 @@ impl App {
                         .pick_file()
                     {
                         self.output_icc = Some(p);
+                        preview_dirty = true;
                     }
                 }
                 if self.output_icc.is_some() && ui.small_button("✕").clicked() {
                     self.output_icc = None;
+                    preview_dirty = true;
                 }
             });
 
             // Intent
+            let prev_intent = self.intent;
             ui.horizontal(|ui| {
                 ui.label("Intent:");
                 egui::ComboBox::from_id_salt("intent_cb")
@@ -1397,6 +1521,17 @@ impl App {
                         ui.selectable_value(&mut self.intent, Intent::Saturation, Intent::Saturation.label());
                     });
             });
+            if self.intent != prev_intent {
+                preview_dirty = true;
+            }
+
+            if ui.checkbox(&mut self.bpc, "Black Point Compensation").changed() {
+                preview_dirty = true;
+            }
+
+            if preview_dirty {
+                self.rebuild_canvas_texture(ui.ctx());
+            }
 
             ui.add_space(10.0);
 
@@ -1966,7 +2101,14 @@ impl eframe::App for App {
             .show(ctx, |ui| self.draw_right(ui));
 
         egui::CentralPanel::default()
-            .show(ctx, |ui| self.draw_canvas(ui));
+            .show(ctx, |ui| {
+                let toolbar_h = 42.0_f32;
+                let canvas_h = (ui.available_height() - toolbar_h).max(0.0);
+                ui.allocate_ui(Vec2::new(ui.available_width(), canvas_h), |ui| {
+                    self.draw_canvas(ui);
+                });
+                self.draw_canvas_toolbar(ui);
+            });
     }
 }
 
