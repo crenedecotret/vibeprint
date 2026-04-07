@@ -27,11 +27,11 @@ fn load_output_profile(
         }
         None => {
             if default_wide_when_unset {
-                let profile = load_wide_working_profile()?;
+                let profile = load_prophoto_working_profile()?;
                 let bytes = profile
                     .icc()
-                    .context("failed to serialize wide-gamut working profile")?;
-                return Ok((profile, bytes, "wide-gamut working RGB (default)".to_string()));
+                    .context("failed to serialize ProPhoto working profile")?;
+                return Ok((profile, bytes, "ProPhoto RGB D50 (Linear)".to_string()));
             }
             match passthrough_icc {
                 Some(icc_bytes) => {
@@ -62,7 +62,7 @@ fn load_input_profile(
     }
 }
 
-fn load_wide_working_profile() -> Result<lcms2::Profile> {
+fn load_prophoto_working_profile() -> Result<lcms2::Profile> {
     let wp = lcms2::CIExyY {
         x: 0.3457,
         y: 0.3585,
@@ -88,18 +88,18 @@ fn load_wide_working_profile() -> Result<lcms2::Profile> {
 
     let curve = lcms2::ToneCurve::new(1.0);
     let mut profile = lcms2::Profile::new_rgb(&wp, &primaries, &[&curve, &curve, &curve])
-        .context("failed to create wide-gamut working RGB profile")?;
+        .context("failed to create ProPhoto RGB working profile")?;
 
     let mut desc = lcms2::MLU::new(1);
-    desc.set_text_ascii("VibePrint Wide Gamut Linear D50 RGB", lcms2::Locale::new("en_US"));
+    desc.set_text_ascii("ProPhoto RGB D50 (Linear)", lcms2::Locale::new("en_US"));
     if !profile.write_tag(lcms2::TagSignature::ProfileDescriptionTag, lcms2::Tag::MLU(&desc)) {
-        bail!("failed to set wide-gamut profile description tag");
+        bail!("failed to set ProPhoto profile description tag");
     }
 
     let mut copyright = lcms2::MLU::new(1);
     copyright.set_text_ascii("No copyright, use freely", lcms2::Locale::new("en_US"));
     if !profile.write_tag(lcms2::TagSignature::CopyrightTag, lcms2::Tag::MLU(&copyright)) {
-        bail!("failed to set wide-gamut profile copyright tag");
+        bail!("failed to set ProPhoto profile copyright tag");
     }
 
     Ok(profile)
@@ -116,7 +116,7 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
             None,
             opts.default_wide_output_when_unset,
         )?;
-    let working_profile = load_wide_working_profile()?;
+    let working_profile = load_prophoto_working_profile()?;
 
     let intent_name = match opts.intent {
         lcms2::Intent::Perceptual             => "Perceptual",
@@ -363,7 +363,7 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         }
         None => {
             if opts.default_wide_output_when_unset {
-                println!("No output ICC specified, using wide-gamut working RGB (default).");
+                println!("No output ICC specified, using ProPhoto RGB D50 (Linear) (default).");
             } else if embedded_icc.is_some() {
                 println!("No output ICC specified, using embedded profile (passthrough).");
             } else {
@@ -407,7 +407,7 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         icc_filename,
     );
 
-    let working_profile = load_wide_working_profile()?;
+    let working_profile = load_prophoto_working_profile()?;
 
     let final_working_image = if let Some(ref layout) = opts.page_layout {
         let placed_source = if layout.rotate_cw {
