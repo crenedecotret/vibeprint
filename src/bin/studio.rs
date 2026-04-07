@@ -1113,33 +1113,60 @@ impl App {
         };
 
         for (i, temp_path) in temp_paths.iter().enumerate() {
-            let mut cmd = std::process::Command::new("lpr");
-            cmd.arg("-P").arg(&printer.name);
-
+            let mut cmd = std::process::Command::new("sh");
+            cmd.arg("-c");
+            
+            // Build the LPR options string
             let media = caps.page_sizes.get(self.selected_page_size_idx)
                 .map(|ps| ps.name.clone())
                 .unwrap_or_else(|| "Letter".to_string());
-            cmd.arg("-o").arg(format!("media={}", media));
-
+            
+            let mut lpr_opts = format!("-o media={}", media);
+            
             if let Some(media_type) = caps.media_types.get(self.props_media_idx) {
-                cmd.arg("-o").arg(format!("MediaType={}", media_type));
+                lpr_opts.push_str(&format!(" -o MediaType={}", media_type));
             }
             if let Some(input_slot) = caps.input_slots.get(self.props_slot_idx) {
-                cmd.arg("-o").arg(format!("InputSlot={}", input_slot));
+                lpr_opts.push_str(&format!(" -o InputSlot={}", input_slot));
             }
-
-            cmd.arg("-o").arg("scaling=100");
-            cmd.arg("-o").arg("fit-to-page=false");
-
+            
+            lpr_opts.push_str(" -o scaling=100 -o fit-to-page=false");
+            
+            // Add color and other options from modal
             for opt in &caps.extra_options {
+                if opt.key == "print-scaling" {
+                    continue;
+                }
                 if let Some(&idx) = self.extra_option_indices.get(&opt.key) {
                     if let Some((key, _)) = opt.choices.get(idx) {
-                        cmd.arg("-o").arg(format!("{}={}", opt.key, key));
+                        // Skip grayscale options
+                        let key_lower = key.to_lowercase();
+                        if key_lower.contains("gray") || key_lower.contains("mono") || key_lower.contains("bw") {
+                            continue;
+                        }
+                        lpr_opts.push_str(&format!(" -o {}={}", opt.key, key));
                     }
                 }
             }
+            
+            // Use ImageMagick to convert to PDF and pipe to LPR
+            let shell_cmd = format!(
+                "magick {} pdf:- | lpr -P {} {} 2>/dev/null || convert {} pdf:- | lpr -P {} {}",
+                temp_path.display(),
+                &printer.name,
+                lpr_opts,
+                temp_path.display(),
+                &printer.name,
+                lpr_opts
+            );
+            
+            cmd.arg(&shell_cmd);
 
-            cmd.arg(temp_path);
+            // Log the LPR command for debugging
+            let args: Vec<String> = cmd.get_args()
+                .map(|s| s.to_string_lossy().to_string())
+                .collect();
+            self.log.push(format!("LPR: lpr {}", args.join(" ")));
 
             match cmd.output() {
                 Ok(output) => {
