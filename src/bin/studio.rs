@@ -1096,7 +1096,7 @@ impl App {
                     page_w_px,
                     page_h_px,
                     output_icc: output_icc.clone(),
-                    default_wide_output_when_unset: matches!(target, ProcessTarget::Export),
+                    default_wide_output_when_unset: false,
                     target_dpi,
                     intent,
                     bpc,
@@ -1644,7 +1644,7 @@ impl App {
                 let icc_label = self.output_icc.as_ref()
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Built-in ProPhoto RGB D50 (Linear)".into());
+                    .unwrap_or_else(|| "sRGB".into());
                 ui.add(egui::Label::new(
                     RichText::new(&icc_label).small().monospace()
                 ).truncate());
