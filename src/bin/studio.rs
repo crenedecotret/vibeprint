@@ -2335,30 +2335,11 @@ fn submit_print_jobs_sync(
             .as_secs();
         let pid = std::process::id();
 
-        // Step 1: Convert 16-bit TIFF to 8-bit TIFF with ICC preservation
-        let tiff_8bit_path = format!("/tmp/vibeprint_{}_{}_8bit.tif", timestamp, pid);
+        // Use the 16-bit TIFF directly (Ghostscript can handle it)
         let temp_path_q = shell_quote(&temp_path.display().to_string());
-        let tiff_8bit_q = shell_quote(&tiff_8bit_path);
-
-        // Convert 16-bit to 8-bit, ImageMagick should preserve embedded ICC
-        let to_8bit_cmd = format!(
-            "magick {} -depth 8 -define tiff:bits-per-sample=8 -compress zip {}",
-            temp_path_q, tiff_8bit_q
-        );
-
-        let tiff_output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&to_8bit_cmd)
-            .output()
-            .map_err(|e| format!("Failed to run ImageMagick for 8-bit: {}", e))?;
-
-        if !tiff_output.status.success() {
-            let stderr = String::from_utf8_lossy(&tiff_output.stderr);
-            return Err(format!("8-bit conversion failed (page {}): {}", i + 1, stderr));
-        }
         let _ = log_tx.send(format!("Page {}: Converting to PDF...", i + 1));
 
-        // Step 2: Convert TIFF to PDF using Ghostscript with color preservation
+        // Step 1: Convert TIFF to PDF using Ghostscript with color preservation
         let pdf_path = format!("/tmp/vibeprint_{}_{}.pdf", timestamp, pid);
         let pdf_q = shell_quote(&pdf_path);
 
@@ -2368,7 +2349,7 @@ fn submit_print_jobs_sync(
         // -dVERBOSE provides progress output for high-DPI conversions
         let gs_cmd = format!(
             "tiff2ps {} | gs -dVERBOSE -o {} -sDEVICE=pdfwrite -sColorConversionStrategy=LeaveColorUnchanged -dNOTRANSPARENCY -",
-            tiff_8bit_q, pdf_q
+            temp_path_q, pdf_q
         );
 
         let gs_output = std::process::Command::new("sh")
