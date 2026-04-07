@@ -23,6 +23,10 @@ const RULER_PX:     f32  = 22.0;
 const FIT_PAGE_IDX: usize = 15; // sentinel index = "Fit to Page"
 const QUEUE_SPACING_IN: f32 = 0.25;
 
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\"'\"'"))
+}
+
 /// Standard print sizes (width × height in inches, label).  Width is always the shorter side.
 const PRINT_SIZES: &[(f32, f32, &str)] = &[
     (24.0, 36.0, "24 × 36"),
@@ -337,6 +341,7 @@ struct App {
     // ── Printing ──
     show_print_confirm: bool,
     pending_print_paths: Vec<PathBuf>,
+    print_rx: Option<Receiver<Result<(), String>>>,
 }
 
 impl App {
@@ -452,6 +457,7 @@ impl App {
 
             show_print_confirm: false,
             pending_print_paths: Vec::new(),
+            print_rx: None,
         };
         
         // Log monitor ICC status (silent - only log errors)
@@ -973,6 +979,21 @@ impl App {
         if matches!(self.proc_state, ProcState::Running) {
             ctx.request_repaint();
         }
+
+        // Print job result
+        if let Some(rx) = &self.print_rx {
+            if let Ok(result) = rx.try_recv() {
+                match result {
+                    Ok(()) => {
+                        self.log.push("✓ Print jobs submitted successfully".into());
+                    }
+                    Err(e) => {
+                        self.log.push(format!("✗ Print failed: {}", e));
+                    }
+                }
+                self.print_rx = None;
+            }
+        }
     }
 
     // ── Start processing ──────────────────────────────────────────────────────
@@ -1040,12 +1061,9 @@ impl App {
         let intent = self.intent.to_lcms();
         let bpc = self.bpc;
         let engine = self.engine.to_proc();
-        let depth = if matches!(target, ProcessTarget::Print) {
-            8
-        } else if self.depth16 {
-            16
-        } else {
-            8
+        let depth = match target {
+            ProcessTarget::Export => if self.depth16 { 16 } else { 8 },
+            ProcessTarget::Print => 16,
         };
         let sharpen = self.sharpen;
 
@@ -1080,104 +1098,6 @@ impl App {
             let result: Result<(Vec<PathBuf>, ProcessTarget), String> = Ok((done, target_clone));
             let _ = tx.send(result);
         });
-    }
-
-    // ── Print to CUPS ─────────────────────────────────────────────────────────
-
-    fn submit_print_jobs(&mut self, temp_paths: &[PathBuf]) {
-        if temp_paths.is_empty() {
-            self.log.push("✗ No pages to print".into());
-            return;
-        }
-        let Some(caps) = &self.caps else {
-            self.log.push("✗ No printer selected".into());
-            return;
-        };
-        let Some(printer) = self.printers.get(self.printer_idx) else {
-            self.log.push("✗ No printer selected".into());
-            return;
-        };
-
-        for (i, temp_path) in temp_paths.iter().enumerate() {
-            let mut cmd = std::process::Command::new("sh");
-            cmd.arg("-c");
-            
-            // Build the LPR options string
-            let media = caps.page_sizes.get(self.selected_page_size_idx)
-                .map(|ps| ps.name.clone())
-                .unwrap_or_else(|| "Letter".to_string());
-            
-            let mut lpr_opts = format!("-o media={}", media);
-            
-            if let Some(media_type) = caps.media_types.get(self.props_media_idx) {
-                lpr_opts.push_str(&format!(" -o MediaType={}", media_type));
-            }
-            if let Some(input_slot) = caps.input_slots.get(self.props_slot_idx) {
-                lpr_opts.push_str(&format!(" -o InputSlot={}", input_slot));
-            }
-            
-            lpr_opts.push_str(" -o scaling=100 -o fit-to-page=false");
-            
-            // Add color and other options from modal
-            for opt in &caps.extra_options {
-                if opt.key == "print-scaling" {
-                    continue;
-                }
-                if let Some(&idx) = self.extra_option_indices.get(&opt.key) {
-                    if let Some((key, _)) = opt.choices.get(idx) {
-                        // Skip grayscale options
-                        let key_lower = key.to_lowercase();
-                        if key_lower.contains("gray") || key_lower.contains("mono") || key_lower.contains("bw") {
-                            continue;
-                        }
-                        lpr_opts.push_str(&format!(" -o {}={}", opt.key, key));
-                    }
-                }
-            }
-            
-            // Use ImageMagick to convert to PDF and pipe to LPR
-            let shell_cmd = format!(
-                "magick {} pdf:- | lpr -P {} {} 2>/dev/null || convert {} pdf:- | lpr -P {} {}",
-                temp_path.display(),
-                &printer.name,
-                lpr_opts,
-                temp_path.display(),
-                &printer.name,
-                lpr_opts
-            );
-            
-            cmd.arg(&shell_cmd);
-
-            // Log the LPR command for debugging
-            let args: Vec<String> = cmd.get_args()
-                .map(|s| s.to_string_lossy().to_string())
-                .collect();
-            self.log.push(format!("LPR: lpr {}", args.join(" ")));
-
-            match cmd.output() {
-                Ok(output) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if !output.status.success() {
-                        self.log.push(format!("✗ Print failed (page {}): {}", i + 1, stderr));
-                        return;
-                    }
-
-                    let job_id = stdout.lines()
-                        .chain(stderr.lines())
-                        .find_map(|line| {
-                            let re = regex::Regex::new(r"request id is \w+-(\d+)").ok()?;
-                            re.captures(line).and_then(|cap| cap.get(1)).and_then(|m| m.as_str().parse::<u32>().ok())
-                        })
-                        .unwrap_or(0);
-                    self.log.push(format!("📤 Page {} submitted as job #{}", i + 1, job_id));
-                }
-                Err(e) => {
-                    self.log.push(format!("✗ Failed to submit print job: {}", e));
-                    return;
-                }
-            }
-        }
     }
 
     // ── Left pane ─────────────────────────────────────────────────────────────
@@ -2216,7 +2136,31 @@ impl App {
                         ));
                         if print_btn.clicked() {
                             self.show_print_confirm = false;
-                            self.submit_print_jobs(&temp_paths);
+                            // Spawn print job in background thread
+                            let temp_paths_clone = temp_paths.clone();
+                            let (tx, rx) = mpsc::channel::<Result<(), String>>();
+                            self.print_rx = Some(rx);
+                            self.log.push("Submitting print jobs...".into());
+                            let caps = self.caps.clone();
+                            let printer_idx = self.printer_idx;
+                            let printers = self.printers.clone();
+                            let selected_page_size_idx = self.selected_page_size_idx;
+                            let props_media_idx = self.props_media_idx;
+                            let props_slot_idx = self.props_slot_idx;
+                            let extra_option_indices = self.extra_option_indices.clone();
+                            thread::spawn(move || {
+                                let result = submit_print_jobs_sync(
+                                    &temp_paths_clone,
+                                    caps,
+                                    printer_idx,
+                                    &printers,
+                                    selected_page_size_idx,
+                                    props_media_idx,
+                                    props_slot_idx,
+                                    &extra_option_indices,
+                                );
+                                let _ = tx.send(result);
+                            });
                             self.pending_print_paths.clear();
                         }
                     });
@@ -2337,6 +2281,102 @@ impl eframe::App for App {
 }
 
 // ── Standalone helpers ────────────────────────────────────────────────────────
+
+/// Print job submission (sync version for background thread)
+fn submit_print_jobs_sync(
+    temp_paths: &[PathBuf],
+    caps: Option<PrinterCaps>,
+    printer_idx: usize,
+    printers: &[PrinterInfo],
+    selected_page_size_idx: usize,
+    props_media_idx: usize,
+    props_slot_idx: usize,
+    extra_option_indices: &HashMap<String, usize>,
+) -> Result<(), String> {
+    if temp_paths.is_empty() {
+        return Err("No pages to print".into());
+    }
+    let caps = caps.ok_or("No printer selected")?;
+    let printer = printers.get(printer_idx).ok_or("No printer selected")?;
+
+    for (i, temp_path) in temp_paths.iter().enumerate() {
+        // Generate unique temp file paths
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let pid = std::process::id();
+
+        // Step 1: Convert 16-bit TIFF to 8-bit TIFF with ICC preservation
+        let tiff_8bit_path = format!("/tmp/vibeprint_{}_{}_8bit.tif", timestamp, pid);
+        let temp_path_q = shell_quote(&temp_path.display().to_string());
+        let tiff_8bit_q = shell_quote(&tiff_8bit_path);
+
+        // Convert 16-bit to 8-bit, ImageMagick should preserve embedded ICC
+        let to_8bit_cmd = format!(
+            "magick {} -depth 8 -define tiff:bits-per-sample=8 -compress zip {}",
+            temp_path_q, tiff_8bit_q
+        );
+
+        let tiff_output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&to_8bit_cmd)
+            .output()
+            .map_err(|e| format!("Failed to run ImageMagick for 8-bit: {}", e))?;
+
+        if !tiff_output.status.success() {
+            let stderr = String::from_utf8_lossy(&tiff_output.stderr);
+            return Err(format!("8-bit conversion failed (page {}): {}", i + 1, stderr));
+        }
+
+        // Step 2: Convert TIFF to PDF using Ghostscript with color preservation
+        let pdf_path = format!("/tmp/vibeprint_{}_{}.pdf", timestamp, pid);
+        let pdf_q = shell_quote(&pdf_path);
+
+        // Use tiff2ps piped to Ghostscript to convert TIFF to PDF with color preservation
+        // -sColorConversionStrategy=LeaveColorUnchanged prevents color conversion
+        // -dNOTRANSPARENCY flattens any transparency
+        let gs_cmd = format!(
+            "tiff2ps {} | gs -o {} -sDEVICE=pdfwrite -sColorConversionStrategy=LeaveColorUnchanged -dNOTRANSPARENCY -",
+            tiff_8bit_q, pdf_q
+        );
+
+        let gs_output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&gs_cmd)
+            .output()
+            .map_err(|e| format!("Failed to run Ghostscript: {}", e))?;
+
+        if !gs_output.status.success() {
+            let stderr = String::from_utf8_lossy(&gs_output.stderr);
+            return Err(format!("PDF conversion failed (page {}): {}", i + 1, stderr));
+        }
+
+        // Send PDF via LPR (no media options needed, just the file)
+        let printer_q = shell_quote(&printer.name);
+        let lpr_cmd = format!("lpr -P {} {}", printer_q, pdf_q);
+
+        let lpr_result = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&lpr_cmd)
+            .output();
+
+        match lpr_result {
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                
+                if !output.status.success() {
+                    return Err(format!("Print failed (page {}): {}", i + 1, stderr));
+                }
+            }
+            Err(e) => {
+                return Err(format!("Failed to submit print job: {}", e));
+            }
+        }
+    }
+    
+    Ok(())
+}
 
 /// Recursively render one directory node in the folder tree.
 /// Reads children from disk only when expanded; depth-limited to 8.
