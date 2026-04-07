@@ -302,6 +302,11 @@ struct App {
     selected_page_size_idx: usize,
     extra_option_indices: HashMap<String, usize>,
 
+    // ── Border override ──
+    reported_border_in: f32,   // Original printer-reported border (max of L/R/T/B margins)
+    user_border_in: f32,       // User-defined border (>= reported_border_in)
+    border_edit_string: String, // Persistent edit string for border input field
+
     // ── Engine settings ──
     engine: Engine,
     sharpen: u8,
@@ -428,6 +433,11 @@ impl App {
             props_slot_idx: 0,
             selected_page_size_idx: 0,
             extra_option_indices: HashMap::new(),
+
+            // ── Border override ──
+            reported_border_in: 0.25,
+            user_border_in: 0.25,
+            border_edit_string: format!("{:.3}", 0.25),
 
             engine: saved_engine,
             sharpen: s.sharpen.unwrap_or(5),
@@ -671,15 +681,33 @@ impl App {
         self.full_images.get(path)
     }
 
-    fn imageable_size_in(&self) -> (f32, f32) {
+    /// Calculate the maximum border from printer's imageable area for current page size
+    fn calc_reported_border(&self) -> f32 {
         self.caps
             .as_ref()
             .and_then(|c| c.page_sizes.get(self.selected_page_size_idx))
             .map(|ps| {
                 let (l, b, r, t) = ps.imageable_area;
-                ((r - l) / 72.0, (t - b) / 72.0)
+                let (pw, ph) = ps.paper_size;
+                let left = l / 72.0;
+                let right = (pw - r) / 72.0;
+                let bottom = b / 72.0;
+                let top = (ph - t) / 72.0;
+                left.max(right).max(bottom).max(top)
             })
-            .unwrap_or((7.5, 10.0))
+            .unwrap_or(0.25)
+    }
+
+    fn imageable_size_in(&self) -> (f32, f32) {
+        let (pw, ph) = self.caps
+            .as_ref()
+            .and_then(|c| c.page_sizes.get(self.selected_page_size_idx))
+            .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
+            .unwrap_or((8.5, 11.0)); // Default Letter size
+        
+        let w = (pw - 2.0 * self.user_border_in).max(0.1);
+        let h = (ph - 2.0 * self.user_border_in).max(0.1);
+        (w, h)
     }
 
     fn imageable_size_px(&self) -> (u32, u32) {
@@ -689,6 +717,28 @@ impl App {
             (w_in * dpi).round().max(1.0) as u32,
             (h_in * dpi).round().max(1.0) as u32,
         )
+    }
+
+    fn max_imageable_size_px(&self) -> (u32, u32) {
+        let (pw, ph) = self.caps
+            .as_ref()
+            .and_then(|c| c.page_sizes.get(self.selected_page_size_idx))
+            .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
+            .unwrap_or((8.5, 11.0));
+        let w = (pw - 2.0 * self.reported_border_in).max(0.1);
+        let h = (ph - 2.0 * self.reported_border_in).max(0.1);
+        let dpi = self.target_dpi as f32;
+        (
+            (w * dpi).round().max(1.0) as u32,
+            (h * dpi).round().max(1.0) as u32,
+        )
+    }
+
+    fn border_offset_px(&self) -> (u32, u32) {
+        let dpi = self.target_dpi as f32;
+        let diff_in = self.user_border_in - self.reported_border_in;
+        let offset = (diff_in * dpi).round().max(0.0) as u32;
+        (offset, offset)
     }
 
     fn queued_box_px(&self, qi: &QueuedImage) -> (u32, u32) {
@@ -867,10 +917,19 @@ impl App {
                 self.extra_option_indices.insert(opt.key.clone(), opt.default_idx);
             }
             self.caps = Some(caps.clone());
+            
+            // Recalculate reported border and reset user border to match
+            self.reported_border_in = self.calc_reported_border();
+            self.user_border_in = self.reported_border_in;
+            self.border_edit_string = format!("{:.3}", self.user_border_in);
+            
             self.relayout_queue();
         } else {
             self.caps = None;
             self.extra_option_indices.clear();
+            self.reported_border_in = 0.25;
+            self.user_border_in = 0.25;
+            self.border_edit_string = format!("{:.3}", self.user_border_in);
             self.relayout_queue();
         }
     }
@@ -1027,7 +1086,8 @@ impl App {
             return;
         }
 
-        let (page_w_px, page_h_px) = self.imageable_size_px();
+        let (page_w_px, page_h_px) = self.max_imageable_size_px();
+        let (offset_x, offset_y) = self.border_offset_px();
         let max_page = self.queue.iter().map(|q| q.page).max().unwrap_or(0);
         let mut per_page: Vec<Vec<processor::PagePlacement>> = vec![Vec::new(); max_page.saturating_add(1)];
         for q in &self.queue {
@@ -1035,8 +1095,8 @@ impl App {
             per_page[q.page].push(processor::PagePlacement {
                 input: q.filepath.clone(),
                 input_icc: q.source_icc.clone(),
-                dest_x_px: q.position.x,
-                dest_y_px: q.position.y,
+                dest_x_px: q.position.x + offset_x,
+                dest_y_px: q.position.y + offset_y,
                 dest_w_px: w,
                 dest_h_px: h,
                 rotate_cw: q.rotation > 0.0,
@@ -1307,9 +1367,14 @@ impl App {
         let (paper_w_pt, paper_h_pt) = selected_ps
             .map(|ps| ps.paper_size)
             .unwrap_or((612.0_f32, 792.0_f32));
-        let (ia_l, ia_b, ia_r, ia_t) = selected_ps
-            .map(|ps| ps.imageable_area)
-            .unwrap_or((0.0, 0.0, 612.0, 792.0));
+        // Calculate user-adjusted imageable area in points
+        let user_border_pt = self.user_border_in * 72.0; // Convert inches to points
+        let (ia_l, ia_b, ia_r, ia_t) = (
+            user_border_pt,                           // left
+            user_border_pt,                           // bottom  
+            paper_w_pt - user_border_pt,              // right
+            paper_h_pt - user_border_pt               // top
+        );
 
         let (resp, _) = ui.allocate_painter(ui.available_size(), Sense::click());
         let canvas_area = resp.rect;
@@ -1586,7 +1651,55 @@ impl App {
                 });
             }
 
-            // ── Print to file ───────────────────────────────────────────
+            // ---- Border ----
+            ui.horizontal(|ui| {
+                ui.label("Border:");
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.border_edit_string)
+                        .desired_width(60.0)
+                        .font(egui::FontId::proportional(12.0)),
+                );
+                
+                // Update edit string when gaining focus to show current value
+                if resp.gained_focus() {
+                    self.border_edit_string = format!("{:.3}", self.user_border_in);
+                }
+                
+                // Apply changes when losing focus
+                if resp.lost_focus() {
+                    if let Ok(v) = self.border_edit_string.parse::<f32>() {
+                        // Calculate maximum border (25% of smaller paper dimension)
+                        let (paper_w_in, paper_h_in) = self.caps
+                            .as_ref()
+                            .and_then(|c| c.page_sizes.get(self.selected_page_size_idx))
+                            .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
+                            .unwrap_or((8.5, 11.0));
+                        let max_border = (paper_w_in.min(paper_h_in) * 0.25).max(self.reported_border_in);
+                        
+                        let new_border = v.clamp(self.reported_border_in, max_border);
+                        if (new_border - self.user_border_in).abs() > 0.0001 {
+                            self.user_border_in = new_border;
+                            self.border_edit_string = format!("{:.3}", self.user_border_in);
+                            self.relayout_queue();
+                        } else if (v - self.user_border_in).abs() > 0.0001 {
+                            // Update edit string to show clamped value if user tried to exceed limits
+                            self.border_edit_string = format!("{:.3}", self.user_border_in);
+                        }
+                    } else {
+                        // Reset to current value if invalid input
+                        self.border_edit_string = format!("{:.3}", self.user_border_in);
+                    }
+                }
+                
+                if ui.small_button("✖").on_hover_text("Reset to printer default").clicked() {
+                    self.user_border_in = self.reported_border_in;
+                    self.border_edit_string = format!("{:.3}", self.user_border_in);
+                    self.relayout_queue();
+                }
+                ui.label("in");
+            });
+
+            // ---- Print to file ----───────────────────────────────────────────
             ui.checkbox(&mut self.print_to_file, "Print to file");
 
             ui.add_space(10.0);
@@ -1608,6 +1721,16 @@ impl App {
             });
 
             if self.selected_page_size_idx != prev_page_size_idx {
+                // Recalculate reported border for new page size, but preserve user border
+                // if it's still >= the new reported minimum
+                let new_reported = self.calc_reported_border();
+                self.reported_border_in = new_reported;
+                // Ensure user border respects the new minimum
+                if self.user_border_in < new_reported {
+                    self.user_border_in = new_reported;
+                }
+                // Update edit string to reflect any changes
+                self.border_edit_string = format!("{:.3}", self.user_border_in);
                 self.relayout_queue();
             }
 
