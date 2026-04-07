@@ -342,6 +342,7 @@ struct App {
     show_print_confirm: bool,
     pending_print_paths: Vec<PathBuf>,
     print_rx: Option<Receiver<Result<(), String>>>,
+    print_log_rx: Option<Receiver<String>>,
 }
 
 impl App {
@@ -458,6 +459,7 @@ impl App {
             show_print_confirm: false,
             pending_print_paths: Vec::new(),
             print_rx: None,
+            print_log_rx: None,
         };
         
         // Log monitor ICC status (silent - only log errors)
@@ -985,6 +987,13 @@ impl App {
             ctx.request_repaint();
         }
 
+        // Print job log messages
+        if let Some(rx) = &self.print_log_rx {
+            while let Ok(msg) = rx.try_recv() {
+                self.log.push(msg);
+            }
+        }
+
         // Print job result
         if let Some(rx) = &self.print_rx {
             if let Ok(result) = rx.try_recv() {
@@ -997,6 +1006,7 @@ impl App {
                     }
                 }
                 self.print_rx = None;
+                self.print_log_rx = None;
             }
         }
     }
@@ -2151,7 +2161,9 @@ impl App {
                             // Spawn print job in background thread
                             let temp_paths_clone = temp_paths.clone();
                             let (tx, rx) = mpsc::channel::<Result<(), String>>();
+                            let (log_tx, log_rx) = mpsc::channel::<String>();
                             self.print_rx = Some(rx);
+                            self.print_log_rx = Some(log_rx);
                             self.log.push("Submitting print jobs...".into());
                             let caps = self.caps.clone();
                             let printer_idx = self.printer_idx;
@@ -2170,6 +2182,7 @@ impl App {
                                     props_media_idx,
                                     props_slot_idx,
                                     &extra_option_indices,
+                                    &log_tx,
                                 );
                                 let _ = tx.send(result);
                             });
@@ -2300,10 +2313,11 @@ fn submit_print_jobs_sync(
     caps: Option<PrinterCaps>,
     printer_idx: usize,
     printers: &[PrinterInfo],
-    selected_page_size_idx: usize,
-    props_media_idx: usize,
-    props_slot_idx: usize,
-    extra_option_indices: &HashMap<String, usize>,
+    _selected_page_size_idx: usize,
+    _props_media_idx: usize,
+    _props_slot_idx: usize,
+    _extra_option_indices: &HashMap<String, usize>,
+    log_tx: &Sender<String>,
 ) -> Result<(), String> {
     if temp_paths.is_empty() {
         return Err("No pages to print".into());
@@ -2312,6 +2326,8 @@ fn submit_print_jobs_sync(
     let printer = printers.get(printer_idx).ok_or("No printer selected")?;
 
     for (i, temp_path) in temp_paths.iter().enumerate() {
+        let _ = log_tx.send(format!("Processing page {} of {}...", i + 1, temp_paths.len()));
+        
         // Generate unique temp file paths
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2340,6 +2356,7 @@ fn submit_print_jobs_sync(
             let stderr = String::from_utf8_lossy(&tiff_output.stderr);
             return Err(format!("8-bit conversion failed (page {}): {}", i + 1, stderr));
         }
+        let _ = log_tx.send(format!("Page {}: Converting to PDF...", i + 1));
 
         // Step 2: Convert TIFF to PDF using Ghostscript with color preservation
         let pdf_path = format!("/tmp/vibeprint_{}_{}.pdf", timestamp, pid);
@@ -2348,8 +2365,9 @@ fn submit_print_jobs_sync(
         // Use tiff2ps piped to Ghostscript to convert TIFF to PDF with color preservation
         // -sColorConversionStrategy=LeaveColorUnchanged prevents color conversion
         // -dNOTRANSPARENCY flattens any transparency
+        // -dVERBOSE provides progress output for high-DPI conversions
         let gs_cmd = format!(
-            "tiff2ps {} | gs -o {} -sDEVICE=pdfwrite -sColorConversionStrategy=LeaveColorUnchanged -dNOTRANSPARENCY -",
+            "tiff2ps {} | gs -dVERBOSE -o {} -sDEVICE=pdfwrite -sColorConversionStrategy=LeaveColorUnchanged -dNOTRANSPARENCY -",
             tiff_8bit_q, pdf_q
         );
 
@@ -2363,6 +2381,7 @@ fn submit_print_jobs_sync(
             let stderr = String::from_utf8_lossy(&gs_output.stderr);
             return Err(format!("PDF conversion failed (page {}): {}", i + 1, stderr));
         }
+        let _ = log_tx.send(format!("Page {}: Sending to printer...", i + 1));
 
         // Send PDF via LPR (no media options needed, just the file)
         let printer_q = shell_quote(&printer.name);
