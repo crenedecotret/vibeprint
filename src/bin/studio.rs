@@ -1644,7 +1644,7 @@ impl App {
                 let icc_label = self.output_icc.as_ref()
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "embedded / sRGB".into());
+                    .unwrap_or_else(|| "Built-in ProPhoto RGB D50 (Linear)".into());
                 ui.add(egui::Label::new(
                     RichText::new(&icc_label).small().monospace()
                 ).truncate());
@@ -1657,7 +1657,7 @@ impl App {
                         preview_dirty = true;
                     }
                 }
-                if self.output_icc.is_some() && ui.small_button("✕").clicked() {
+                if self.output_icc.is_some() && ui.small_button("✖").clicked() {
                     self.output_icc = None;
                     preview_dirty = true;
                 }
@@ -1882,7 +1882,7 @@ impl App {
                         self.current_page = *page;
                         self.right_tab = RightTab::ImageProperties;
                     }
-                    if ui.small_button("✕").clicked() {
+                    if ui.small_button("✖").clicked() {
                         delete_id = Some(*id);
                     }
                 });
