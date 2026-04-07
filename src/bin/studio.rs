@@ -212,18 +212,6 @@ enum ProcessTarget {
     Print,
 }
 
-#[derive(Clone)]
-struct PrintJobStatus {
-    job_id: u32,
-    state: PrintJobState,
-}
-
-#[derive(Clone, PartialEq)]
-enum PrintJobState {
-    Pending,
-    Failed(String),
-}
-
 // ── Persistent settings ───────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -349,7 +337,6 @@ struct App {
     // ── Printing ──
     show_print_confirm: bool,
     pending_print_paths: Vec<PathBuf>,
-    print_job_status: Option<PrintJobStatus>,
 }
 
 impl App {
@@ -465,7 +452,6 @@ impl App {
 
             show_print_confirm: false,
             pending_print_paths: Vec::new(),
-            print_job_status: None,
         };
         
         // Log monitor ICC status (silent - only log errors)
@@ -1174,10 +1160,6 @@ impl App {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     if !output.status.success() {
                         self.log.push(format!("✗ Print failed (page {}): {}", i + 1, stderr));
-                        self.print_job_status = Some(PrintJobStatus {
-                            job_id: 0,
-                            state: PrintJobState::Failed(stderr.to_string()),
-                        });
                         return;
                     }
 
@@ -1189,17 +1171,9 @@ impl App {
                         })
                         .unwrap_or(0);
                     self.log.push(format!("📤 Page {} submitted as job #{}", i + 1, job_id));
-                    self.print_job_status = Some(PrintJobStatus {
-                        job_id,
-                        state: PrintJobState::Pending,
-                    });
                 }
                 Err(e) => {
                     self.log.push(format!("✗ Failed to submit print job: {}", e));
-                    self.print_job_status = Some(PrintJobStatus {
-                        job_id: 0,
-                        state: PrintJobState::Failed(e.to_string()),
-                    });
                     return;
                 }
             }
@@ -1812,20 +1786,6 @@ impl App {
         } else if let ProcState::Failed(ref e) = self.proc_state {
             ui.label(RichText::new(format!("✗ {e}")).small().color(Color32::RED));
         }
-
-        // Print job status
-        if let Some(ref job) = self.print_job_status {
-            ui.add_space(4.0);
-            let status_text = match job.state {
-                PrintJobState::Pending => format!("📤 Print Job #{} - Pending", job.job_id),
-                PrintJobState::Failed(ref e) => format!("❌ Print Job #{} - Failed: {}", job.job_id, e),
-            };
-            let color = match job.state {
-                PrintJobState::Pending => Color32::from_rgb(200, 200, 100),
-                PrintJobState::Failed(_) => Color32::from_rgb(255, 100, 100),
-            };
-            ui.label(RichText::new(status_text).small().color(color));
-        }
         });
     }
 
@@ -1879,19 +1839,6 @@ impl App {
         });
 
         ui.add_space(4.0);
-
-        if let Some(ref job) = self.print_job_status {
-            ui.add_space(4.0);
-            let status_text = match job.state {
-                PrintJobState::Pending => format!("📤 Print Job #{} - Pending", job.job_id),
-                PrintJobState::Failed(ref e) => format!("❌ Print Job #{} - Failed: {}", job.job_id, e),
-            };
-            let color = match job.state {
-                PrintJobState::Pending => Color32::from_rgb(200, 200, 100),
-                PrintJobState::Failed(_) => Color32::RED,
-            };
-            ui.label(RichText::new(status_text).small().color(color));
-        }
 
         // ── Log (at the bottom) ───────────────────────────────────────────────
         ui.add_space(12.0);
@@ -2196,12 +2143,6 @@ impl App {
             .fixed_size([width, 0.0])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("Ready to Print").size(18.0).strong());
-                    ui.add_space(8.0);
-                });
-
-                ui.separator();
                 ui.add_space(4.0);
 
                 // Printer info
@@ -2258,8 +2199,6 @@ impl App {
                 }
 
                 ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(4.0);
 
                 // Buttons
                 ui.horizontal(|ui| {
