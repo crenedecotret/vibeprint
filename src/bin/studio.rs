@@ -980,6 +980,11 @@ impl App {
             ctx.request_repaint();
         }
 
+        // Keep UI updating while print job is running
+        if self.print_rx.is_some() {
+            ctx.request_repaint();
+        }
+
         // Print job result
         if let Some(rx) = &self.print_rx {
             if let Ok(result) = rx.try_recv() {
@@ -1592,7 +1597,7 @@ impl App {
                     });
             });
 
-            if self.selected_page_size_idx != prev_page_size_idx || self.target_dpi != prev_dpi {
+            if self.selected_page_size_idx != prev_page_size_idx {
                 self.relayout_queue();
             }
 
@@ -1613,6 +1618,10 @@ impl App {
                         }
                     });
             });
+
+            if self.target_dpi != prev_dpi {
+                self.relayout_queue();
+            }
 
             ui.add_space(10.0);
 
@@ -1672,6 +1681,7 @@ impl App {
 
             
         let is_running = matches!(self.proc_state, ProcState::Running);
+        let is_printing = self.print_rx.is_some();
         let has_image = !self.queue.is_empty();
 
         // Primary: Print button (dynamic text based on print_to_file)
@@ -1682,7 +1692,7 @@ impl App {
         .min_size(Vec2::new(ui.available_width(), 36.0))
         .fill(Color32::from_rgb(60, 120, 200));
 
-        if ui.add_enabled(has_image && !is_running, print_btn).clicked() {
+        if ui.add_enabled(has_image && !is_running && !is_printing, print_btn).clicked() {
             if self.print_to_file {
                 self.start_process_export();
             } else {
@@ -1694,6 +1704,8 @@ impl App {
 
         if is_running {
             ui.horizontal(|ui| { ui.spinner(); ui.label("Processing…"); });
+        } else if is_printing {
+            ui.horizontal(|ui| { ui.spinner(); ui.label("Printing…"); });
         } else if !has_image {
             ui.label(RichText::new("Add queued images first").small().weak());
         } else if let ProcState::Done(ref paths) = self.proc_state {
