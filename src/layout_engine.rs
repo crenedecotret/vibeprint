@@ -270,8 +270,12 @@ fn choose_orientation_for_flow_with_state(
         return (pref_w_px, pref_h_px, pref_rotate);
     }
 
-    let fallback_w = pref_w_px.min(page_w_px.max(1));
-    let fallback_h = pref_h_px.min(page_h_px.max(1));
+    // Fallback: scale to fit page while preserving aspect ratio
+    let page_w = page_w_px.max(1) as f32;
+    let page_h = page_h_px.max(1) as f32;
+    let scale = (page_w / pref_w_px as f32).min(page_h / pref_h_px as f32).min(1.0);
+    let fallback_w = (pref_w_px as f32 * scale).round().max(1.0) as u32;
+    let fallback_h = (pref_h_px as f32 * scale).round().max(1.0) as u32;
     (fallback_w, fallback_h, pref_rotate)
 }
 

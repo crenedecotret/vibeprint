@@ -50,6 +50,45 @@ const PRINT_SIZES: &[(f32, f32, &str)] = &[
 
 // ── Small types ───────────────────────────────────────────────────────────────
 
+#[derive(Clone, Debug)]
+struct IccProfileEntry {
+    path: PathBuf,
+    description: String,
+    date: String,
+    source: IccProfileSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum IccProfileSource {
+    System,
+    User,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IccProfileFilter {
+    All,
+    System,
+    User,
+}
+
+impl IccProfileEntry {
+    fn file_name(&self) -> String {
+        self.path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Unknown")
+            .to_string()
+    }
+
+    fn location(&self) -> String {
+        self.path
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("")
+            .to_string()
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Engine {
     Mks,
@@ -72,6 +111,117 @@ fn aspect_fit_rect_in_box(box_rect: Rect, src_w: u32, src_h: u32, rotate_cw: boo
     };
 
     Rect::from_center_size(box_rect.center(), Vec2::new(w, h))
+}
+
+fn extract_file_date(path: &PathBuf) -> String {
+    use chrono::{DateTime, Local, Utc};
+    
+    if let Ok(metadata) = std::fs::metadata(path) {
+        if let Ok(modified) = metadata.modified() {
+            let datetime: DateTime<Utc> = modified.into();
+            let local_datetime = datetime.with_timezone(&Local);
+            return local_datetime.format("%d %b %Y").to_string();
+        }
+    }
+    "Unknown".to_string()
+}
+
+fn scan_icc_directories(tx: Sender<Vec<IccProfileEntry>>) {
+    let mut profiles = Vec::new();
+
+    // Standard Linux ICC profile directories (system)
+    let system_dirs = vec![
+        PathBuf::from("/usr/share/color/icc"),
+        PathBuf::from("/usr/local/share/color/icc"),
+    ];
+
+    // User-local directories
+    let mut user_dirs = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        user_dirs.push(home.join(".local/share/color/icc"));
+        user_dirs.push(home.join(".local/share/icc"));
+        user_dirs.push(home.join(".color/icc"));
+    }
+
+    // Scan system directories
+    for dir in system_dirs {
+        scan_directory(&dir, IccProfileSource::System, &mut profiles);
+    }
+
+    // Scan user directories
+    for dir in user_dirs {
+        scan_directory(&dir, IccProfileSource::User, &mut profiles);
+    }
+
+    // Sort by description for consistent ordering
+    profiles.sort_by(|a, b| a.description.to_lowercase().cmp(&b.description.to_lowercase()));
+
+    let _ = tx.send(profiles);
+}
+
+fn scan_directory(dir: &PathBuf, source: IccProfileSource, profiles: &mut Vec<IccProfileEntry>) {
+    use lcms2::Profile;
+
+    if !dir.exists() {
+        return;
+    }
+
+    if let Ok(read) = std::fs::read_dir(dir) {
+        for entry in read.flatten() {
+            let path = entry.path();
+            let extension = path.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_lowercase());
+
+            if extension.as_deref() != Some("icc") && extension.as_deref() != Some("icm") {
+                continue;
+            }
+
+            // Try to extract the internal profile description and date
+            let (description, date) = if let Ok(bytes) = std::fs::read(&path) {
+                if let Ok(profile) = Profile::new_icc(&bytes) {
+                    // Try to get the profile description tag
+                    let desc = profile
+                        .info(lcms2::InfoType::Description, lcms2::Locale::none())
+                        .unwrap_or_else(|| {
+                            // Fallback to filename if description extraction fails
+                            path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("Unknown")
+                                .to_string()
+                        });
+
+                    // Try to get creation date from ICC profile metadata
+                    // Note: lcms2 doesn't provide direct access to creation date, so we fall back to file date
+                    let file_date = extract_file_date(&path);
+                    (desc, file_date)
+                } else {
+                    // Fallback to filename if profile loading fails
+                    let desc = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Unknown")
+                        .to_string();
+                    let file_date = extract_file_date(&path);
+                    (desc, file_date)
+                }
+            } else {
+                // Fallback to filename if file read fails
+                let desc = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                let file_date = extract_file_date(&path);
+                (desc, file_date)
+            };
+
+            profiles.push(IccProfileEntry {
+                path,
+                description,
+                date,
+                source,
+            });
+        }
+    }
 }
 
 fn apply_preview_transform(
@@ -314,7 +464,7 @@ struct App {
     target_dpi: u32,
 
     // ── Color management ──
-    output_icc: Option<PathBuf>,
+    output_icc: Option<IccProfileEntry>,
     intent: Intent,
     bpc: bool,
     softproof_enabled: bool,
@@ -348,6 +498,14 @@ struct App {
     pending_print_paths: Vec<PathBuf>,
     print_rx: Option<Receiver<Result<(), String>>>,
     print_log_rx: Option<Receiver<String>>,
+
+    // ── ICC Picker Modal ──
+    show_icc_picker: bool,
+    icc_profiles: Vec<IccProfileEntry>,
+    icc_filter_text: String,
+    icc_profile_filter: IccProfileFilter,
+    icc_scan_pending: bool,
+    icc_scan_rx: Option<Receiver<Vec<IccProfileEntry>>>,
 }
 
 impl App {
@@ -373,9 +531,27 @@ impl App {
             .unwrap_or(out_dir);
 
         // Restore output ICC (fall back to None if file missing)
-        let saved_icc: Option<PathBuf> = s.output_icc.as_deref()
+        let saved_icc: Option<IccProfileEntry> = s.output_icc.as_deref()
             .map(PathBuf::from)
-            .filter(|p| p.is_file());
+            .filter(|p| p.is_file())
+            .map(|path| {
+                // Try to extract description from the saved ICC file
+                let (description, date) = if let Ok(bytes) = std::fs::read(&path) {
+                    if let Ok(profile) = lcms2::Profile::new_icc(&bytes) {
+                        let desc = profile.info(lcms2::InfoType::Description, lcms2::Locale::none())
+                            .unwrap_or_else(|| path.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string());
+                        let d = extract_file_date(&path);
+                        (desc, d)
+                    } else {
+                        (path.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string(),
+                         extract_file_date(&path))
+                    }
+                } else {
+                    (path.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string(),
+                     extract_file_date(&path))
+                };
+                IccProfileEntry { path, description, date, source: IccProfileSource::User }
+            });
 
         let saved_engine = match s.engine.as_deref() {
             Some("lanczos3")  => Engine::Lanczos3,
@@ -470,6 +646,13 @@ impl App {
             pending_print_paths: Vec::new(),
             print_rx: None,
             print_log_rx: None,
+
+            show_icc_picker: false,
+            icc_profiles: Vec::new(),
+            icc_filter_text: String::new(),
+            icc_profile_filter: IccProfileFilter::All,
+            icc_scan_pending: false,
+            icc_scan_rx: None,
         };
         
         // Log monitor ICC status (silent - only log errors)
@@ -630,7 +813,7 @@ impl App {
                 if apply_preview_transform(
                     monitor_profile,
                     src_icc,
-                    self.output_icc.as_ref(),
+                    self.output_icc.as_ref().map(|e| &e.path),
                     &mut pixel_bytes,
                     self.intent.to_lcms(),
                     self.bpc,
@@ -1046,6 +1229,18 @@ impl App {
             ctx.request_repaint();
         }
 
+        // Check for ICC scan completion
+        if self.icc_scan_pending {
+            if let Some(ref rx) = self.icc_scan_rx {
+                if let Ok(profiles) = rx.try_recv() {
+                    self.icc_profiles = profiles;
+                    self.icc_scan_pending = false;
+                    self.icc_scan_rx = None;
+                    self.show_icc_picker = true; // Open modal after scan completes
+                }
+            }
+        }
+
         // Print job log messages
         if let Some(rx) = &self.print_log_rx {
             while let Ok(msg) = rx.try_recv() {
@@ -1131,7 +1326,7 @@ impl App {
             })
             .collect();
 
-        let output_icc = self.output_icc.clone();
+        let output_icc = self.output_icc.as_ref().map(|e| e.path.clone());
         let target_dpi = self.target_dpi as f64;
         let intent = self.intent.to_lcms();
         let bpc = self.bpc;
@@ -1765,20 +1960,21 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label("Output ICC:");
                 let icc_label = self.output_icc.as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().into_owned())
+                    .map(|e| e.description.clone())
                     .unwrap_or_else(|| "sRGB".into());
                 ui.add(egui::Label::new(
                     RichText::new(&icc_label).small().monospace()
                 ).truncate());
-                if ui.small_button("…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new()
-                        .add_filter("ICC Profile", &["icc", "icm"])
-                        .pick_file()
-                    {
-                        self.output_icc = Some(p);
-                        preview_dirty = true;
-                    }
+                if self.icc_scan_pending {
+                    ui.label("Scanning...");
+                } else if ui.small_button("…").clicked() {
+                    // Start ICC scan before opening modal
+                    let (tx, rx) = mpsc::channel::<Vec<IccProfileEntry>>();
+                    self.icc_scan_rx = Some(rx);
+                    self.icc_scan_pending = true;
+                    self.icc_profiles.clear();
+                    self.icc_filter_text.clear();
+                    thread::spawn(move || scan_icc_directories(tx));
                 }
                 if self.output_icc.is_some() && ui.small_button("✖").clicked() {
                     self.output_icc = None;
@@ -2315,6 +2511,203 @@ impl App {
                 });
             });
     }
+
+    // ── ICC Profile Picker Modal ───────────────────────────────────────────────
+
+    fn show_icc_picker(&mut self, ctx: &Context) {
+        let screen = ctx.screen_rect();
+        let width = (screen.width() * 0.50).clamp(600.0, 900.0);
+        let height = (screen.height() * 0.70).clamp(500.0, 700.0);
+
+        egui::Window::new("Select ICC Profile")
+            .collapsible(false)
+            .resizable(false)
+            .min_size([width, height])
+            .max_size([width, height])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+
+                // Profile filter radio buttons
+                ui.horizontal(|ui| {
+                    ui.label("Show:");
+                    ui.radio_value(&mut self.icc_profile_filter, IccProfileFilter::All, "All profiles");
+                    ui.radio_value(&mut self.icc_profile_filter, IccProfileFilter::System, "System level profiles");
+                    ui.radio_value(&mut self.icc_profile_filter, IccProfileFilter::User, "User profiles");
+                });
+
+                ui.add_space(8.0);
+
+                // Search/filter input
+                ui.horizontal(|ui| {
+                    ui.label("Filter:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.icc_filter_text)
+                            .hint_text("Search profiles...")
+                            .desired_width(f32::INFINITY)
+                    );
+                });
+
+                ui.add_space(8.0);
+
+                // Profile list
+                let filter_lower = self.icc_filter_text.to_lowercase();
+                let filtered: Vec<&IccProfileEntry> = self.icc_profiles
+                    .iter()
+                    .filter(|p| {
+                        // Filter by location (radio button selection)
+                        let location_match = match self.icc_profile_filter {
+                            IccProfileFilter::All => true,
+                            IccProfileFilter::System => p.source == IccProfileSource::System,
+                            IccProfileFilter::User => p.source == IccProfileSource::User,
+                        };
+
+                        // Filter by text search
+                        let text_match = filter_lower.is_empty()
+                            || p.description.to_lowercase().contains(&filter_lower)
+                            || p.file_name().to_lowercase().contains(&filter_lower)
+                            || p.location().to_lowercase().contains(&filter_lower);
+
+                        location_match && text_match
+                    })
+                    .collect();
+
+                let mut selected_path: Option<PathBuf> = None;
+
+                // Calculate scroll area height to prevent window resizing
+                // Account for header, radio buttons, filter, and footer
+                let scroll_height = height - 200.0; // Reserve space for UI elements
+
+                egui::ScrollArea::vertical()
+                    .max_height(scroll_height)
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        if filtered.is_empty() {
+                            ui.centered_and_justified(|ui| {
+                                if self.icc_profiles.is_empty() {
+                                    ui.label("No ICC profiles found in standard directories.");
+                                } else {
+                                    ui.label("No profiles match your filter.");
+                                }
+                            });
+                        } else {
+                            use egui_extras::{TableBuilder, Column};
+
+                            // Calculate fixed column widths based on modal width
+                            let table_width = ui.available_width();
+                            let desc_width = table_width * 0.50;
+                            let loc_width = table_width * 0.35;
+                            let file_width = table_width * 0.15;
+
+                            TableBuilder::new(ui)
+                                .striped(true)
+                                .resizable(true)
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .column(Column::initial(desc_width))
+                                .column(Column::initial(loc_width))
+                                .column(Column::initial(file_width))
+                                .column(Column::remainder())
+                                .header(20.0, |mut header| {
+                                    header.col(|ui| {
+                                        ui.strong("Description");
+                                    });
+                                    header.col(|ui| {
+                                        ui.strong("Location");
+                                    });
+                                    header.col(|ui| {
+                                        ui.strong("Filename");
+                                    });
+                                    header.col(|ui| {
+                                        ui.strong("Date");
+                                    });
+                                })
+                                .body(|mut body| {
+                                    for profile in filtered {
+                                        body.row(22.0, |mut row| {
+                                            row.col(|ui| {
+                                                if ui.selectable_label(false, &profile.description).clicked() {
+                                                    selected_path = Some(profile.path.clone());
+                                                }
+                                            });
+                                            row.col(|ui| {
+                                                ui.add(egui::Label::new(
+                                                    RichText::new(&profile.location())
+                                                        .weak()
+                                                ).truncate());
+                                            });
+                                            row.col(|ui| {
+                                                ui.add(egui::Label::new(
+                                                    RichText::new(profile.file_name())
+                                                        .monospace()
+                                                        .weak()
+                                                ).truncate());
+                                            });
+                                            row.col(|ui| {
+                                                ui.label(
+                                                    RichText::new(&profile.date)
+                                                        .weak()
+                                                );
+                                            });
+                                        });
+                                    }
+                                });
+                        }
+                    });
+
+                // Apply selection outside the closure to avoid borrow issues
+                if let Some(path) = selected_path {
+                    // Find the full entry with description
+                    if let Some(entry) = self.icc_profiles.iter().find(|e| e.path == path) {
+                        self.output_icc = Some(entry.clone());
+                    } else {
+                        // Fallback: create entry without description (shouldn't happen)
+                        let date = extract_file_date(&path);
+                        let description = path.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string();
+                        self.output_icc = Some(IccProfileEntry { path, description, date, source: IccProfileSource::User });
+                    }
+                    self.show_icc_picker = false;
+                    self.mark_preview_dirty();
+                }
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // Browse button for non-standard locations
+                ui.horizontal(|ui| {
+                    if ui.button("Browse for File...").clicked() {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter("ICC Profile", &["icc", "icm"])
+                            .pick_file()
+                        {
+                            // Extract description from the selected file
+                            let date = extract_file_date(&p);
+                            let description = if let Ok(bytes) = std::fs::read(&p) {
+                                if let Ok(profile) = lcms2::Profile::new_icc(&bytes) {
+                                    profile.info(lcms2::InfoType::Description, lcms2::Locale::none())
+                                        .unwrap_or_else(|| p.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string())
+                                } else {
+                                    p.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string()
+                                }
+                            } else {
+                                p.file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string()
+                            };
+                            self.output_icc = Some(IccProfileEntry { path: p, description, date, source: IccProfileSource::User });
+                            self.show_icc_picker = false;
+                            self.mark_preview_dirty();
+                        }
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            self.show_icc_picker = false;
+                            self.icc_scan_rx = None;
+                            self.icc_scan_pending = false;
+                        }
+                    });
+                });
+            });
+    }
 }
 
 impl eframe::App for App {
@@ -2341,7 +2734,7 @@ impl eframe::App for App {
             sharpen:   Some(self.sharpen),
             depth16:   Some(self.depth16),
             target_dpi: Some(self.target_dpi),
-            output_icc: self.output_icc.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            output_icc: self.output_icc.as_ref().map(|e| e.path.to_string_lossy().into_owned()),
             intent:    Some(intent_str.into()),
             bpc:       Some(self.bpc),
             output_dir: Some(self.output_dir.to_string_lossy().into_owned()),
@@ -2360,6 +2753,7 @@ impl eframe::App for App {
 
         if self.show_props { self.show_printer_props(ctx); }
         if self.show_print_confirm { self.show_print_confirm(ctx); }
+        if self.show_icc_picker { self.show_icc_picker(ctx); }
 
         // Show splash screen during printer discovery
         if !self.discovery_complete {
