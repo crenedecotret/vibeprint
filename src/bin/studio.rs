@@ -511,10 +511,14 @@ struct App {
     icc_scan_rx: Option<Receiver<Vec<IccProfileEntry>>>,
     icc_auto_switch_pending: bool,
     saved_icc_filter_for_restore: IccProfileFilter,
+
+    // ── CLI auto-load ──
+    auto_enqueue_path: Option<PathBuf>,
+    auto_enqueue_pending: bool,
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, auto_image_path: Option<PathBuf>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
@@ -667,13 +671,28 @@ impl App {
             icc_scan_rx: None,
             icc_auto_switch_pending: false,
             saved_icc_filter_for_restore: saved_icc_filter,
+
+            auto_enqueue_path: None,
+            auto_enqueue_pending: false,
         };
         
         // Log monitor ICC status (silent - only log errors)
         if app.monitor_icc_profile.is_none() {
             app.log.push("⚠ No monitor ICC profile found".into());
         }
-        
+
+        // Handle CLI auto-load image
+        if let Some(path) = auto_image_path {
+            if path.exists() && is_image(&path) {
+                app.log.push(format!("Auto-loading image: {}", path.display()));
+                app.auto_enqueue_path = Some(path.clone());
+                app.auto_enqueue_pending = true;
+                app.stage_image(path);
+            } else {
+                app.log.push(format!("⚠ CLI image path not found or not an image: {}", path.display()));
+            }
+        }
+
         app.scan_dir();
         app
     }
@@ -766,7 +785,10 @@ impl App {
         self.staged_embedded_icc = None;
         self.staged_source_image = None;
         self.staged_img_size = None;
-        self.right_tab = RightTab::ImageProperties;
+        // Only switch to ImageProperties tab if not auto-loading from CLI
+        if !self.auto_enqueue_pending {
+            self.right_tab = RightTab::ImageProperties;
+        }
 
         // Send a full-res load via the thumb channel with embedded ICC extraction
         let tx = self.thumb_tx.clone();
@@ -1160,6 +1182,15 @@ impl App {
                         self.staged_embedded_icc = embedded_icc;
                         self.staged_source_image = Some(ci);
                         self.staged_img_size = Some(size);
+
+                        // Auto-enqueue if CLI provided image path
+                        if self.auto_enqueue_pending && self.auto_enqueue_path.as_ref() == Some(&path) {
+                            if self.enqueue_staged_with_idx(FIT_PAGE_IDX) {
+                                self.log.push(format!("Auto-enqueued with 'Fit to Page': {}", path.display()));
+                            }
+                            self.auto_enqueue_path = None;
+                            self.auto_enqueue_pending = false;
+                        }
                     } else {
                         self.full_images.insert(path.clone(), ci.clone());
                         self.embedded_icc_by_path.insert(path.clone(), embedded_icc);
@@ -3484,6 +3515,34 @@ fn draw_ruler_v(
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() -> eframe::Result<()> {
+    // Parse CLI arguments for optional image path
+    let args: Vec<String> = std::env::args().collect();
+    let auto_image_path = if args.len() > 1 {
+        let arg = &args[1];
+        if arg == "--help" || arg == "-h" {
+            println!("VibePrint Studio - Image Printing Application");
+            println!("Usage: studio --image IMAGE_PATH");
+            println!();
+            println!("Options:");
+            println!("  --image PATH      Path to image file to auto-load with 'Fit to Page'");
+            println!("  --help, -h        Show this help message");
+            std::process::exit(0);
+        } else if arg == "--image" {
+            if args.len() > 2 {
+                Some(PathBuf::from(&args[2]))
+            } else {
+                eprintln!("Error: --image requires a path argument");
+                std::process::exit(1);
+            }
+        } else {
+            eprintln!("Error: Unknown argument '{}'", arg);
+            eprintln!("Use --help for usage information");
+            std::process::exit(1);
+        }
+    } else {
+        None
+    };
+
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("VibePrint Studio")
@@ -3495,6 +3554,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "VibePrint Studio",
         opts,
-        Box::new(|cc| Ok(Box::new(App::new(cc)) as Box<dyn eframe::App>)),
+        Box::new(|cc| Ok(Box::new(App::new(cc, auto_image_path)) as Box<dyn eframe::App>)),
     )
 }
