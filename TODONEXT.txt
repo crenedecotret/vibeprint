@@ -1,9 +1,0 @@
-"I'm back. Look at the current state of studio.rs and the PPD parsing logic. You were mid-task when the quota hit. Please resume the implementation of the Printer Properties modal and the Engine Sidebar."
-
-Windsurf will then:
-
-Re-scan your files.
-
-See the unfinished brackets or logic.
-
-Cross-reference with its previous "Thought" process (which is usually saved in the conversation history).
