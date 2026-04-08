@@ -77,7 +77,7 @@ fn unset_output_icc_can_default_to_wide_profile() -> Result<()> {
         .unwrap_or_default();
     assert_eq!(
         desc,
-        "VibePrint Wide Gamut Linear D50 RGB",
+        "ProPhoto RGB D50 (Linear)",
         "embedded default-wide ICC description mismatch"
     );
 

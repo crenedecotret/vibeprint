@@ -381,6 +381,7 @@ struct Settings {
     intent:        Option<String>,
     bpc:           Option<bool>,
     output_dir:    Option<String>,
+    user_border_in: Option<f32>,
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -486,6 +487,7 @@ struct App {
     // ── Saved-settings restoration ──
     pending_printer_name: Option<String>,
     pending_page_size_name: Option<String>,
+    pending_user_border_in: Option<f32>,
 
     // ── Splash screen ──
     discovery_complete: bool,
@@ -506,6 +508,7 @@ struct App {
     icc_profile_filter: IccProfileFilter,
     icc_scan_pending: bool,
     icc_scan_rx: Option<Receiver<Vec<IccProfileEntry>>>,
+    icc_auto_switch_pending: bool,
 }
 
 impl App {
@@ -637,6 +640,7 @@ impl App {
 
             pending_printer_name: s.printer_name,
             pending_page_size_name: s.page_size_name,
+            pending_user_border_in: s.user_border_in,
 
             discovery_complete: false,
 
@@ -650,9 +654,10 @@ impl App {
             show_icc_picker: false,
             icc_profiles: Vec::new(),
             icc_filter_text: String::new(),
-            icc_profile_filter: IccProfileFilter::All,
+            icc_profile_filter: IccProfileFilter::System,
             icc_scan_pending: false,
             icc_scan_rx: None,
+            icc_auto_switch_pending: false,
         };
         
         // Log monitor ICC status (silent - only log errors)
@@ -1101,9 +1106,19 @@ impl App {
             }
             self.caps = Some(caps.clone());
             
-            // Recalculate reported border and reset user border to match
+            // Recalculate reported border
             self.reported_border_in = self.calc_reported_border();
-            self.user_border_in = self.reported_border_in;
+            // Restore saved user border if valid, otherwise use reported border
+            self.user_border_in = if let Some(saved) = self.pending_user_border_in {
+                if saved >= self.reported_border_in {
+                    saved
+                } else {
+                    self.reported_border_in
+                }
+            } else {
+                self.reported_border_in
+            };
+            self.pending_user_border_in = None;
             self.border_edit_string = format!("{:.3}", self.user_border_in);
             
             self.relayout_queue();
@@ -1236,6 +1251,8 @@ impl App {
                     self.icc_profiles = profiles;
                     self.icc_scan_pending = false;
                     self.icc_scan_rx = None;
+                    self.icc_profile_filter = IccProfileFilter::All; // Start with All for window sizing
+                    self.icc_auto_switch_pending = true; // Auto-switch to System after one frame
                     self.show_icc_picker = true; // Open modal after scan completes
                 }
             }
@@ -2138,10 +2155,34 @@ impl App {
         );
         ui.add_space(4.0);
 
+        // Determine the currently selected size index for queued images
+        let selected_size_idx = if self.staged.is_some() {
+            None // No highlighting for staged images
+        } else if let Some(qi) = self.selected_queue() {
+            if qi.fit_to_page {
+                Some(FIT_PAGE_IDX)
+            } else {
+                let (qw, qh) = qi.size.as_inches();
+                // Find matching size index with approximate comparison
+                PRINT_SIZES.iter().enumerate().find_map(|(i, &(w, h, _))| {
+                    if (qw - w).abs() < 0.001 && (qh - h).abs() < 0.001 {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+            }
+        } else {
+            None
+        };
+
         egui::ScrollArea::vertical().id_salt("print_sizes").show(ui, |ui| {
             for (idx, &(w, h, label)) in PRINT_SIZES.iter().enumerate() {
                 let (fits, _) = check_size_fit(w, h, ia_w_in, ia_h_in);
-                let row_text = RichText::new(label).size(13.0).color(if fits {
+                let is_selected = selected_size_idx == Some(idx);
+                let row_text = RichText::new(label).size(13.0).color(if is_selected {
+                    Color32::from_rgb(100, 200, 100) // Green highlight for selected size
+                } else if fits {
                     Color32::from_gray(210)
                 } else {
                     Color32::from_rgb(200, 60, 60)
@@ -2160,7 +2201,13 @@ impl App {
             }
 
             ui.separator();
-            if ui.selectable_label(false, RichText::new("Fit to Page").size(13.0)).clicked() {
+            let is_fit_to_page_selected = selected_size_idx == Some(FIT_PAGE_IDX);
+            let fit_text = RichText::new("Fit to Page").size(13.0).color(if is_fit_to_page_selected {
+                Color32::from_rgb(100, 200, 100) // Green highlight for selected fit-to-page
+            } else {
+                Color32::from_gray(210)
+            });
+            if ui.selectable_label(false, fit_text).clicked() {
                 if self.staged.is_some() {
                     let _ = self.enqueue_staged_with_idx(FIT_PAGE_IDX);
                 } else {
@@ -2515,6 +2562,12 @@ impl App {
     // ── ICC Profile Picker Modal ───────────────────────────────────────────────
 
     fn show_icc_picker(&mut self, ctx: &Context) {
+        // Auto-switch from All to System after first frame (for proper window sizing)
+        if self.icc_auto_switch_pending {
+            self.icc_profile_filter = IccProfileFilter::System;
+            self.icc_auto_switch_pending = false;
+        }
+
         let screen = ctx.screen_rect();
         let width = (screen.width() * 0.50).clamp(600.0, 900.0);
         let height = (screen.height() * 0.70).clamp(500.0, 700.0);
@@ -2738,6 +2791,7 @@ impl eframe::App for App {
             intent:    Some(intent_str.into()),
             bpc:       Some(self.bpc),
             output_dir: Some(self.output_dir.to_string_lossy().into_owned()),
+            user_border_in: Some(self.user_border_in),
         });
     }
 
@@ -2748,6 +2802,16 @@ impl eframe::App for App {
         if ctx.input(|i| i.key_pressed(egui::Key::Insert)) {
             if let Some(path) = self.highlighted.clone() {
                 self.stage_image(path);
+            }
+        }
+
+        // DELETE key removes the selected queue item and returns to Printer Settings
+        if ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
+            if let Some(id) = self.selected_queue_id {
+                self.queue.retain(|q| q.id != id);
+                self.selected_queue_id = None;
+                self.right_tab = RightTab::PrinterSettings;
+                self.relayout_queue();
             }
         }
 
@@ -2839,7 +2903,7 @@ fn submit_print_jobs_sync(
     if temp_paths.is_empty() {
         return Err("No pages to print".into());
     }
-    let caps = caps.ok_or("No printer selected")?;
+    let _caps = caps.ok_or("No printer selected")?;
     let printer = printers.get(printer_idx).ok_or("No printer selected")?;
 
     for (i, temp_path) in temp_paths.iter().enumerate() {
