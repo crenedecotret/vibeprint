@@ -461,6 +461,7 @@ impl App {
             placed_w_px: 0,
             placed_h_px: 0,
             src_size_px: Some(src_size),
+            crop_enabled: false,
         });
         self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
         self.state.selected = Some(path.clone());
@@ -739,6 +740,38 @@ impl App {
         let mut per_page: Vec<Vec<processor::PagePlacement>> = vec![Vec::new(); max_page.saturating_add(1)];
         for q in &self.state.queue {
             let (w, h) = self.queued_box_px(q);
+            // Calculate crop UVs if cropping is enabled - use processor-specific function
+            let (crop_u0, crop_v0, crop_u1, crop_v1) = if let Some((src_w, src_h)) = q.src_size_px {
+                // Use the same rotation logic as the layout engine
+                let will_rotate = vibeprint::layout_engine::should_rotate_for_full_page(
+                    q.src_size_px, w, h
+                );
+                let uvs = crate::utils::calc_crop_uv_for_processor(
+                    w as f32,
+                    h as f32,
+                    src_w,
+                    src_h,
+                    will_rotate,
+                    q.crop_enabled,
+                );
+                // Debug: log the crop UVs and check if they would be detected as crop
+                if q.crop_enabled {
+                    let has_crop = (uvs.2 - uvs.0) < 0.999 || (uvs.3 - uvs.1) < 0.999;
+                    self.state.log.push(format!("Debug: crop UVs: {:.3},{:.3},{:.3},{:.3} rot={} src={}x{} box={}x{} has_crop={}", 
+                        uvs.0, uvs.1, uvs.2, uvs.3, will_rotate, src_w, src_h, w, h, has_crop));
+                }
+                uvs
+            } else {
+                (0.0, 0.0, 1.0, 1.0)
+            };
+
+            // Use the same rotation logic as the layout engine for consistency
+            let will_rotate = vibeprint::layout_engine::should_rotate_for_full_page(
+                q.src_size_px, w, h
+            );
+            // Always log rotation and crop state for debugging
+            self.state.log.push(format!("Debug: queue item - rotation={:.1} crop={} will_rotate={}", 
+                q.rotation, q.crop_enabled, will_rotate));
             per_page[q.page].push(processor::PagePlacement {
                 input: q.filepath.clone(),
                 input_icc: q.source_icc.clone(),
@@ -746,7 +779,11 @@ impl App {
                 dest_y_px: q.position.y + offset_y,
                 dest_w_px: w,
                 dest_h_px: h,
-                rotate_cw: q.rotation > 0.0,
+                rotate_cw: will_rotate,
+                crop_u0,
+                crop_v0,
+                crop_u1,
+                crop_v1,
             });
         }
 

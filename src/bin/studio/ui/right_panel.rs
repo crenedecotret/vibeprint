@@ -438,6 +438,39 @@ impl App {
                     self.update_selected_queue_size_idx(FIT_PAGE_IDX);
                 }
             }
+
+            // Crop Image checkbox - disabled when Fit to Page is selected
+            ui.add_space(8.0);
+            let is_fit_to_page = selected_size_idx == Some(FIT_PAGE_IDX);
+
+            let mut crop_enabled = self.selected_queue()
+                .map(|q| q.crop_enabled)
+                .unwrap_or(false);
+
+            // Disable crop when Fit to Page is selected
+            let crop_response = ui.add_enabled(
+                !is_fit_to_page,
+                egui::Checkbox::new(&mut crop_enabled, "Crop Image")
+            );
+
+            if !is_fit_to_page && crop_response.changed() {
+                if let Some(item) = self.selected_queue_mut() {
+                    item.crop_enabled = crop_enabled;
+                    self.mark_preview_dirty();
+                }
+            }
+
+            if is_fit_to_page && crop_enabled {
+                // Auto-disable crop when fit to page is selected
+                if let Some(item) = self.selected_queue_mut() {
+                    item.crop_enabled = false;
+                    self.mark_preview_dirty();
+                }
+            }
+
+            if is_fit_to_page {
+                ui.label(RichText::new("Crop disabled for Fit to Page").weak().size(10.0));
+            }
         });
     }
 

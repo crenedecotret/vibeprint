@@ -156,15 +156,42 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         let input_profile = load_input_profile(p.input_icc.as_ref(), embedded_icc.as_deref())?;
 
         let (ow, oh) = (img16.width(), img16.height());
-        let s = if p.rotate_cw {
-            (p.dest_w_px as f64 / oh as f64).min(p.dest_h_px as f64 / ow as f64)
-        } else {
-            (p.dest_w_px as f64 / ow as f64).min(p.dest_h_px as f64 / oh as f64)
-        };
-        let new_w = ((ow as f64 * s).round().max(1.0)) as u32;
-        let new_h = ((oh as f64 * s).round().max(1.0)) as u32;
 
-        let resized = resize_rgb16(&img16, new_w, new_h, &opts.engine);
+        // Apply crop if specified (crop_u0/v0/u1/v1 are in 0-1 range)
+        let has_crop = (p.crop_u1 - p.crop_u0) < 0.999 || (p.crop_v1 - p.crop_v0) < 0.999;
+        eprintln!("Debug: crop UVs {:.3},{:.3},{:.3},{:.3} has_crop={} orig_size={}x{}", 
+            p.crop_u0, p.crop_v0, p.crop_u1, p.crop_v1, has_crop, ow, oh);
+        let cropped_img = if has_crop {
+            // Calculate crop region in pixels
+            let crop_x = ((ow as f64 * p.crop_u0 as f64).round() as u32).min(ow - 1);
+            let crop_y = ((oh as f64 * p.crop_v0 as f64).round() as u32).min(oh - 1);
+            let crop_w = ((ow as f64 * (p.crop_u1 - p.crop_u0) as f64).round() as u32).max(1).min(ow - crop_x);
+            let crop_h = ((oh as f64 * (p.crop_v1 - p.crop_v0) as f64).round() as u32).max(1).min(oh - crop_y);
+
+            eprintln!("Debug: crop region {}x{} at ({},{}) size {}x{}", crop_w, crop_h, crop_x, crop_y, crop_w, crop_h);
+
+            let cropped = image::imageops::crop_imm(&img16, crop_x, crop_y, crop_w, crop_h);
+            let result = cropped.to_image();
+            eprintln!("Debug: cropped image size: {}x{}", result.width(), result.height());
+            result
+        } else {
+            eprintln!("Debug: no crop applied, using original image");
+            img16.clone()
+        };
+
+        let (cw, ch) = (cropped_img.width(), cropped_img.height());
+        eprintln!("Debug: after crop: {}x{} (dest box: {}x{})", cw, ch, p.dest_w_px, p.dest_h_px);
+        let s = if p.rotate_cw {
+            (p.dest_w_px as f64 / ch as f64).min(p.dest_h_px as f64 / cw as f64)
+        } else {
+            (p.dest_w_px as f64 / cw as f64).min(p.dest_h_px as f64 / ch as f64)
+        };
+        let new_w = ((cw as f64 * s).round().max(1.0)) as u32;
+        let new_h = ((ch as f64 * s).round().max(1.0)) as u32;
+
+        eprintln!("Debug: scaling factor {:.3} -> {}x{}", s, new_w, new_h);
+        let resized = resize_rgb16(&cropped_img, new_w, new_h, &opts.engine);
+        eprintln!("Debug: after resize: {}x{}", resized.width(), resized.height());
         let radius_px = ((opts.target_dpi as u64 * 100) / 720) as f64 / 100.0;
         let sharpened = if opts.sharpen > 0 {
             let sigma = ((radius_px as u64 * 100) / 2) as f64 / 100.0;
@@ -181,15 +208,21 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
             opts.intent,
             opts.bpc,
         )?;
+        eprintln!("Debug: after ICC transform: {}x{}", transformed.width(), transformed.height());
         let placed = if p.rotate_cw {
-            rotate_90_cw_rgb16(&transformed)
+            eprintln!("Debug: applying 90° CW rotation");
+            let rotated = rotate_90_cw_rgb16(&transformed);
+            eprintln!("Debug: after rotation: {}x{}", rotated.width(), rotated.height());
+            rotated
         } else {
+            eprintln!("Debug: no rotation applied");
             transformed
         };
 
         let (pw, ph) = (placed.width(), placed.height());
         let cx = p.dest_x_px + p.dest_w_px.saturating_sub(pw) / 2;
         let cy = p.dest_y_px + p.dest_h_px.saturating_sub(ph) / 2;
+        eprintln!("Debug: compositing at ({},{}) on page, placed size: {}x{}", cx, cy, pw, ph);
         composite_rgb16(&mut page, &placed, cx, cy);
 
         let _ = source_dpi;
@@ -273,6 +306,11 @@ pub struct PagePlacement {
     pub dest_w_px: u32,
     pub dest_h_px: u32,
     pub rotate_cw: bool,
+    // Crop UVs: which portion of source image to use (0-1 range)
+    pub crop_u0: f32,
+    pub crop_v0: f32,
+    pub crop_u1: f32,
+    pub crop_v1: f32,
 }
 
 pub struct CompositePageOptions {
@@ -1123,7 +1161,7 @@ fn dpi_to_rational(dpi: f64) -> (u32, u32) {
 
 /// Rotate an Rgb16Image 90° clockwise.
 /// New dimensions: new_w = orig_h, new_h = orig_w.
-/// Mapping: new(nx, ny) = old(ny, orig_h - 1 - nx)
+/// Mapping: new(nx, ny) = old(w-1-ny, nx)
 fn rotate_90_cw_rgb16(img: &Rgb16Image) -> Rgb16Image {
     let (w, h) = (img.width(), img.height());
     let new_w = h;
@@ -1132,8 +1170,9 @@ fn rotate_90_cw_rgb16(img: &Rgb16Image) -> Rgb16Image {
     let mut dst = vec![0u16; (new_w * new_h * 3) as usize];
     for ny in 0..new_h {
         for nx in 0..new_w {
-            let ox = ny;
-            let oy = h - 1 - nx;
+            // For 90° CW rotation: new(nx, ny) = old(w-1-ny, nx)
+            let ox = w - 1 - ny;
+            let oy = nx;
             let si = ((oy * w + ox) * 3) as usize;
             let di = ((ny * new_w + nx) * 3) as usize;
             dst[di]     = src[si];

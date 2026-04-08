@@ -23,6 +23,113 @@ pub(crate) fn aspect_fit_rect_in_box(box_rect: Rect, src_w: u32, src_h: u32, rot
     Rect::from_center_size(box_rect.center(), Vec2::new(w, h))
 }
 
+/// Calculate UV coordinates for cropping an image to fill a box (display path).
+/// Returns (u0, v0, u1, v1) where (0,0) is top-left and (1,1) is bottom-right of source.
+/// When crop is false, returns full image (0,0,1,1).
+/// When crop is true, returns centered crop that minimally fills the target box.
+/// This is for the display path where UVs are used for texture sampling with rotation.
+pub(crate) fn calc_crop_uv(
+    box_w: f32,
+    box_h: f32,
+    src_w: u32,
+    src_h: u32,
+    rotate_cw: bool,
+    crop_enabled: bool,
+) -> (f32, f32, f32, f32) {
+    if !crop_enabled {
+        return (0.0, 0.0, 1.0, 1.0);
+    }
+
+    let sw = src_w.max(1) as f32;
+    let sh = src_h.max(1) as f32;
+    
+    // Use rotated aspect if the image will be rotated
+    let src_aspect = if rotate_cw { sh / sw } else { sw / sh };
+    let box_aspect = box_w / box_h;
+
+    if box_aspect > src_aspect {
+        // Box is wider than source (after rotation) - need to crop top/bottom of rotated image
+        if rotate_cw {
+            // After rotation, "top/bottom" of rotated image correspond to original left/right
+            // Effective source dimensions after rotation: width=sh, height=sw
+            // Need to crop effective height to: sh / box_aspect
+            let crop_sw = sh / box_aspect; // Width of original to keep (becomes rotated height)
+            let crop_ratio = crop_sw / sw; // < 1.0
+            let u_margin = (1.0 - crop_ratio) / 2.0;
+            (u_margin, 0.0, 1.0 - u_margin, 1.0)
+        } else {
+            // Normal case - crop top/bottom of original
+            // Target height = sw / box_aspect (so that sw/height = box_aspect)
+            let crop_sh = sw / box_aspect; // Height of cropped region in source pixels
+            let crop_ratio = crop_sh / sh; // < 1.0
+            let v_margin = (1.0 - crop_ratio) / 2.0;
+            (0.0, v_margin, 1.0, 1.0 - v_margin)
+        }
+    } else {
+        // Box is taller than source (after rotation) - need to crop left/right of rotated image
+        if rotate_cw {
+            // After rotation, "left/right" of rotated image correspond to original top/bottom
+            // Effective source dimensions after rotation: width=sh, height=sw
+            // Need to crop effective width to: sw * box_aspect
+            let crop_sh = sw * box_aspect; // Height of original to keep (becomes rotated width)
+            let crop_ratio = crop_sh / sh; // < 1.0
+            let v_margin = (1.0 - crop_ratio) / 2.0;
+            (0.0, v_margin, 1.0, 1.0 - v_margin)
+        } else {
+            // Normal case - crop left/right of original
+            // Target width = sh * box_aspect (so that width/sh = box_aspect)
+            let crop_sw = sh * box_aspect; // Width of cropped region in source pixels
+            let crop_ratio = crop_sw / sw; // < 1.0
+            let u_margin = (1.0 - crop_ratio) / 2.0;
+            (u_margin, 0.0, 1.0 - u_margin, 1.0)
+        }
+    }
+}
+
+/// Calculate UV coordinates for cropping an image before rotation (processor path).
+/// Returns (u0, v0, u1, v1) where (0,0) is top-left and (1,1) is bottom-right of source.
+/// This crops the original image so that after rotation it will fill the target box.
+/// This is for the processor path where the image is cropped first, then rotated.
+pub(crate) fn calc_crop_uv_for_processor(
+    box_w: f32,
+    box_h: f32,
+    src_w: u32,
+    src_h: u32,
+    rotate_cw: bool,
+    crop_enabled: bool,
+) -> (f32, f32, f32, f32) {
+    if !crop_enabled {
+        return (0.0, 0.0, 1.0, 1.0);
+    }
+
+    if !rotate_cw {
+        // No rotation - use the same calculation as display path
+        return calc_crop_uv(box_w, box_h, src_w, src_h, false, true);
+    }
+
+    // For processor path with rotation:
+    // 1. Calculate what crop is needed on the ROTATED image to fill the box
+    // 2. Transform those UVs back to the original image
+    //
+    // When the image is rotated 90° CW, its dimensions become (src_h, src_w)
+    // We need calc_crop_uv to calculate crop on this rotated image, so we
+    // pass swapped source dimensions with rotate_cw=false
+    let (rot_u0, rot_v0, rot_u1, rot_v1) = calc_crop_uv(
+        box_w, box_h, src_h, src_w, false, true,
+    );
+
+    // Transform rotated UVs back to original image UVs
+    // For 90° CW rotation: new(nx, ny) = old(w-1-ny, nx)
+    // Inverse: old(ox, oy) = new(ny, w-1-nx)
+    // In UV space: orig_u = 1.0 - rotated_v, orig_v = rotated_u
+    let orig_u0 = 1.0 - rot_v1;
+    let orig_v0 = rot_u0;
+    let orig_u1 = 1.0 - rot_v0;
+    let orig_v1 = rot_u1;
+
+    (orig_u0, orig_v0, orig_u1, orig_v1)
+}
+
 /// Check if a file is an image
 pub(crate) fn is_image(path: &std::path::Path) -> bool {
     matches!(

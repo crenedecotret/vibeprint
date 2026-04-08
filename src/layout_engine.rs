@@ -44,6 +44,7 @@ pub struct QueuedImage {
     pub placed_w_px: u32,
     pub placed_h_px: u32,
     pub src_size_px: Option<(u32, u32)>,
+    pub crop_enabled: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -373,7 +374,7 @@ fn packing_capacity(
     cols.saturating_mul(rows).max(1)
 }
 
-fn should_rotate_for_full_page(
+pub fn should_rotate_for_full_page(
     src_size_px: Option<(u32, u32)>,
     page_w_px: u32,
     page_h_px: u32,
@@ -416,6 +417,7 @@ mod tests {
             placed_w_px: 0,
             placed_h_px: 0,
             src_size_px: Some(src),
+            crop_enabled: false,
         }
     }
 
@@ -436,6 +438,7 @@ mod tests {
             placed_w_px: 0,
             placed_h_px: 0,
             src_size_px: Some(src),
+            crop_enabled: false,
         }
     }
 

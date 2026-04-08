@@ -81,21 +81,67 @@ impl App {
                     .get(&item.filepath)
                     .map(|img| (img.size[0] as u32, img.size[1] as u32))
             });
-            let img_rect = src_size
-                .map(|(sw, sh)| aspect_fit_rect_in_box(r, sw, sh, item.rotation > 0.0))
-                .unwrap_or(r);
+            let img_rect = if item.crop_enabled {
+                // When cropping, fill the entire cell (no letterboxing)
+                r
+            } else {
+                // When not cropping, aspect-fit with letterboxing
+                src_size
+                    .map(|(sw, sh)| aspect_fit_rect_in_box(r, sw, sh, item.rotation > 0.0))
+                    .unwrap_or(r)
+            };
 
             if let Some(tex) = self.state.preview_textures.get(&item.filepath) {
+                // Calculate crop UVs
+                let (u0, v0, u1, v1) = src_size.map(|(sw, sh)| {
+                    crate::utils::calc_crop_uv(
+                        r.width(),
+                        r.height(),
+                        sw,
+                        sh,
+                        item.rotation > 0.0,
+                        item.crop_enabled,
+                    )
+                }).unwrap_or((0.0, 0.0, 1.0, 1.0));
+
+                // Adjust UVs for rotation
+                // After 90° CW rotation:
+                // - Original top-left (u0,v0) appears at screen bottom-left
+                // - Original top-right (u1,v0) appears at screen top-left
+                // - Original bottom-right (u1,v1) appears at screen top-right
+                // - Original bottom-left (u0,v1) appears at screen bottom-right
+                //
+                // For mesh drawing, we assign UVs to screen corners:
+                // - Screen top-left gets original top-right (u1, v0)
+                // - Screen top-right gets original bottom-right (u1, v1)
+                // - Screen bottom-right gets original bottom-left (u0, v1)
+                // - Screen bottom-left gets original top-left (u0, v0)
+                let (uv_lt, uv_rt, uv_rb, uv_lb) = if item.rotation > 0.0 {
+                    (
+                        Pos2::new(u1, v0), // screen top-left <- original top-right
+                        Pos2::new(u1, v1), // screen top-right <- original bottom-right
+                        Pos2::new(u0, v1), // screen bottom-right <- original bottom-left
+                        Pos2::new(u0, v0), // screen bottom-left <- original top-left
+                    )
+                } else {
+                    (
+                        Pos2::new(u0, v0), // screen top-left <- original top-left
+                        Pos2::new(u1, v0), // screen top-right <- original top-right
+                        Pos2::new(u1, v1), // screen bottom-right <- original bottom-right
+                        Pos2::new(u0, v1), // screen bottom-left <- original bottom-left
+                    )
+                };
+
                 if item.rotation > 0.0 {
                     let mut mesh = egui::epaint::Mesh::with_texture(tex.id());
-                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_top(), uv: Pos2::new(0.0, 1.0), color: Color32::WHITE });
-                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_top(), uv: Pos2::new(0.0, 0.0), color: Color32::WHITE });
-                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_bottom(), uv: Pos2::new(1.0, 0.0), color: Color32::WHITE });
-                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_bottom(), uv: Pos2::new(1.0, 1.0), color: Color32::WHITE });
+                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_top(), uv: uv_lt, color: Color32::WHITE });
+                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_top(), uv: uv_rt, color: Color32::WHITE });
+                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_bottom(), uv: uv_rb, color: Color32::WHITE });
+                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_bottom(), uv: uv_lb, color: Color32::WHITE });
                     mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
                     painter.add(egui::Shape::mesh(mesh));
                 } else {
-                    painter.image(tex.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                    painter.image(tex.id(), img_rect, Rect::from_min_max(uv_lt, uv_rb), Color32::WHITE);
                 }
             } else {
                 painter.rect_filled(r, 0.0, Color32::from_gray(220));
