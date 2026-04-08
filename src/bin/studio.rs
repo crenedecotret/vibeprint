@@ -382,6 +382,7 @@ struct Settings {
     bpc:           Option<bool>,
     output_dir:    Option<String>,
     user_border_in: Option<f32>,
+    icc_filter:    Option<String>,
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -509,6 +510,7 @@ struct App {
     icc_scan_pending: bool,
     icc_scan_rx: Option<Receiver<Vec<IccProfileEntry>>>,
     icc_auto_switch_pending: bool,
+    saved_icc_filter_for_restore: IccProfileFilter,
 }
 
 impl App {
@@ -566,6 +568,12 @@ impl App {
             Some("perceptual") => Intent::Perceptual,
             Some("saturation") => Intent::Saturation,
             _                  => Intent::Relative,
+        };
+        let saved_icc_filter = match s.icc_filter.as_deref() {
+            Some("all")    => IccProfileFilter::All,
+            Some("system") => IccProfileFilter::System,
+            Some("user")   => IccProfileFilter::User,
+            _              => IccProfileFilter::System, // Default to System
         };
 
         let mut app = Self {
@@ -654,10 +662,11 @@ impl App {
             show_icc_picker: false,
             icc_profiles: Vec::new(),
             icc_filter_text: String::new(),
-            icc_profile_filter: IccProfileFilter::System,
+            icc_profile_filter: saved_icc_filter,
             icc_scan_pending: false,
             icc_scan_rx: None,
             icc_auto_switch_pending: false,
+            saved_icc_filter_for_restore: saved_icc_filter,
         };
         
         // Log monitor ICC status (silent - only log errors)
@@ -1251,8 +1260,12 @@ impl App {
                     self.icc_profiles = profiles;
                     self.icc_scan_pending = false;
                     self.icc_scan_rx = None;
-                    self.icc_profile_filter = IccProfileFilter::All; // Start with All for window sizing
-                    self.icc_auto_switch_pending = true; // Auto-switch to System after one frame
+                    // Save the user's preferred filter for restoration
+                    self.saved_icc_filter_for_restore = self.icc_profile_filter;
+                    // Start with All for window sizing
+                    self.icc_profile_filter = IccProfileFilter::All;
+                    // Restore saved filter after one frame
+                    self.icc_auto_switch_pending = true;
                     self.show_icc_picker = true; // Open modal after scan completes
                 }
             }
@@ -2562,9 +2575,9 @@ impl App {
     // ── ICC Profile Picker Modal ───────────────────────────────────────────────
 
     fn show_icc_picker(&mut self, ctx: &Context) {
-        // Auto-switch from All to System after first frame (for proper window sizing)
+        // Auto-switch to saved filter after first frame (for proper window sizing)
         if self.icc_auto_switch_pending {
-            self.icc_profile_filter = IccProfileFilter::System;
+            self.icc_profile_filter = self.saved_icc_filter_for_restore;
             self.icc_auto_switch_pending = false;
         }
 
@@ -2584,9 +2597,45 @@ impl App {
                 // Profile filter radio buttons
                 ui.horizontal(|ui| {
                     ui.label("Show:");
+                    let previous_filter = self.icc_profile_filter;
                     ui.radio_value(&mut self.icc_profile_filter, IccProfileFilter::All, "All profiles");
                     ui.radio_value(&mut self.icc_profile_filter, IccProfileFilter::System, "System level profiles");
                     ui.radio_value(&mut self.icc_profile_filter, IccProfileFilter::User, "User profiles");
+                    if previous_filter != self.icc_profile_filter {
+                        let printer_name = self.printers.get(self.printer_idx).map(|p| p.name.clone());
+                        let engine_str = match self.engine {
+                            Engine::Lanczos3     => "lanczos3",
+                            Engine::Iterative    => "iterative",
+                            Engine::RobidouxEwa  => "robidoux",
+                            Engine::Mks          => "mks",
+                        };
+                        let intent_str = match self.intent {
+                            Intent::Perceptual  => "perceptual",
+                            Intent::Saturation  => "saturation",
+                            Intent::Relative    => "relative",
+                        };
+                        save_settings(&Settings {
+                            current_dir:   Some(self.current_dir.to_string_lossy().into_owned()),
+                            printer_name,
+                            page_size_name: self.caps.as_ref()
+                                .and_then(|c| c.page_sizes.get(self.selected_page_size_idx))
+                                .map(|ps| ps.name.clone()),
+                            engine:        Some(engine_str.into()),
+                            sharpen:       Some(self.sharpen),
+                            depth16:       Some(self.depth16),
+                            target_dpi:    Some(self.target_dpi),
+                            output_icc:    self.output_icc.as_ref().map(|e| e.path.to_string_lossy().into_owned()),
+                            intent:        Some(intent_str.into()),
+                            bpc:           Some(self.bpc),
+                            output_dir:    Some(self.output_dir.to_string_lossy().into_owned()),
+                            user_border_in: Some(self.user_border_in),
+                            icc_filter:    Some(match self.icc_profile_filter {
+                                IccProfileFilter::All => "all",
+                                IccProfileFilter::System => "system",
+                                IccProfileFilter::User => "user",
+                            }.to_string()),
+                        });
+                    }
                 });
 
                 ui.add_space(8.0);
@@ -2776,6 +2825,11 @@ impl eframe::App for App {
             Intent::Saturation  => "saturation",
             Intent::Relative    => "relative",
         };
+        let icc_filter_str = match self.icc_profile_filter {
+            IccProfileFilter::All => "all",
+            IccProfileFilter::System => "system",
+            IccProfileFilter::User => "user",
+        };
         let printer_name = self.printers.get(self.printer_idx).map(|p| p.name.clone());
         save_settings(&Settings {
             current_dir:   Some(self.current_dir.to_string_lossy().into_owned()),
@@ -2792,6 +2846,7 @@ impl eframe::App for App {
             bpc:       Some(self.bpc),
             output_dir: Some(self.output_dir.to_string_lossy().into_owned()),
             user_border_in: Some(self.user_border_in),
+            icc_filter: Some(icc_filter_str.into()),
         });
     }
 
