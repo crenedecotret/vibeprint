@@ -47,5 +47,4 @@ cargo build --release --no-default-features
 
 # Output binaries
 Located in /target/release/:
-vibeprint - Command-line tool
-studio - GUI application
+vibeprint (Command-line tool)    studio (GUI application)
