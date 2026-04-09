@@ -1,4 +1,6 @@
-Vibeprint Studio is an ICC aware print layout engine
+Vibeprint Studio is an ICC aware print layout engine build entirely in RUST.
+
+This was entirely vibe coded. I havent writen a line of code in 30 years.
 
 
 Please Note: Monitor ICC profile will not load under wayland (for now). It uses specific X11 specific APIs
