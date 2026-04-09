@@ -17,11 +17,6 @@ sudo apt install \
     ghostscript \
     libtiff-tools
 
-# For monitor ICC detection (optional feature)
-sudo apt install \
-    libx11-dev \
-    libxrandr-dev
-
 
 # FEDORA Core dependencies
 sudo dnf install \
@@ -31,9 +26,3 @@ sudo dnf install \
     libXrandr libXrandr-devel \
     ghostscript \
     libtiff-tools
-
-# For monitor ICC detection (optional feature)
-sudo dnf install \
-    libX11-devel \
-    libXrandr-devel
-
