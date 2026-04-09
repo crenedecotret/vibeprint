@@ -179,7 +179,7 @@ impl App {
 
         let screen = ctx.screen_rect();
         let width = (screen.width() * 0.30).clamp(320.0, 480.0);
-        let scale = (screen.height() / 1080.0).clamp(0.7, 1.5);
+        let scale = (screen.height() / 1080.0).clamp(1.0, 1.5);
         let btn_size = [90.0 * scale, 30.0 * scale];
 
         egui::Window::new(RichText::new("Confirm Print").strong().color(Color32::WHITE))
@@ -299,7 +299,7 @@ impl App {
         let screen = ctx.screen_rect();
         let width = (screen.width() * 0.50).clamp(600.0, 900.0);
         let height = (screen.height() * 0.70).clamp(500.0, 700.0);
-        let scale = (screen.height() / 1080.0).clamp(0.7, 1.5);
+        let scale = (screen.height() / 1080.0).clamp(1.0, 1.5);
         let btn_size = [90.0 * scale, 30.0 * scale];
 
         egui::Window::new("Select ICC Profile")
@@ -535,7 +535,7 @@ impl App {
         let screen = ctx.screen_rect();
         let width = (screen.width() * 0.90).clamp(800.0, 1400.0);
         let height = (screen.height() * 0.90).clamp(700.0, 1000.0);
-        let scale = (screen.height() / 1080.0).clamp(0.7, 1.5);
+        let scale = (screen.height() / 1080.0).clamp(1.0, 1.5);
         let btn_size = [90.0 * scale, 30.0 * scale];
 
         egui::Window::new("Crop Editor")
