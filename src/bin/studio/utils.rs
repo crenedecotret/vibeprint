@@ -441,7 +441,7 @@ pub(crate) fn draw_tree_node(
             let arrow = if is_expanded { "▼" } else { "▶" };
             let resp = ui.add(
                 egui::Label::new(
-                    RichText::new(arrow).size(9.0).color(Color32::from_gray(140))
+                    RichText::new(arrow).size(14.0).color(Color32::from_gray(140))
                 ).sense(Sense::click())
             ).on_hover_cursor(egui::CursorIcon::PointingHand);
             if resp.clicked() {

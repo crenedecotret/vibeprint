@@ -33,7 +33,7 @@ impl App {
         let addr_resp = ui.add(
             egui::TextEdit::singleline(&mut self.state.addr_bar)
                 .desired_width(ui.available_width())
-                .font(egui::FontId::proportional(11.0))
+                .font(egui::FontId::proportional(14.0))
                 .hint_text("Path…"),
         );
         if addr_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -104,11 +104,12 @@ impl App {
                 else { format!("📂 {cur_name}  · {n} image{}", if n == 1 { "" } else { "s" }) }
             ).size(10.5).weak());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("+").on_hover_text("Larger thumbnails").clicked() {
+                let btn_size = Vec2::new(24.0, 22.0);
+                if ui.add(egui::Button::new("+").min_size(btn_size)).on_hover_text("Larger thumbnails").clicked() {
                     self.state.thumb_zoom = (self.state.thumb_zoom + 0.25).min(3.0);
                     self.reload_thumbs();
                 }
-                if ui.small_button("−").on_hover_text("Smaller thumbnails").clicked() {
+                if ui.add(egui::Button::new("−").min_size(btn_size)).on_hover_text("Smaller thumbnails").clicked() {
                     self.state.thumb_zoom = (self.state.thumb_zoom - 0.25).max(0.5);
                     self.reload_thumbs();
                 }
@@ -174,7 +175,7 @@ impl App {
                         Pos2::new(resp.rect.min.x + 2.0, resp.rect.min.y + disp_h + 1.0),
                         egui::Align2::LEFT_TOP,
                         if name.len() > 12 { &name[..12] } else { name.as_ref() },
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(14.0),
                         Color32::LIGHT_GRAY,
                     );
 

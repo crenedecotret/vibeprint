@@ -179,6 +179,8 @@ impl App {
 
         let screen = ctx.screen_rect();
         let width = (screen.width() * 0.30).clamp(320.0, 480.0);
+        let scale = (screen.height() / 1080.0).clamp(0.7, 1.5);
+        let btn_size = [120.0 * scale, 40.0 * scale];
 
         egui::Window::new(RichText::new("Confirm Print").strong().color(Color32::WHITE))
             .collapsible(false)
@@ -188,17 +190,17 @@ impl App {
             .show(ctx, |ui| {
                 ui.add_space(4.0);
 
-                ui.label(RichText::new("Printer:").small().weak());
+                ui.label(RichText::new("Printer:").weak());
                 ui.label(&printer_name);
                 ui.add_space(4.0);
 
                 let paper = caps.page_sizes.get(self.state.selected_page_size_idx)
                     .map(|p| p.label.as_str())
                     .unwrap_or("—");
-                ui.label(RichText::new("Paper:").small().weak());
+                ui.label(RichText::new("Paper:").weak());
                 ui.label(paper);
                 ui.add_space(4.0);
-                ui.label(RichText::new("Pages:").small().weak());
+                ui.label(RichText::new("Pages:").weak());
                 ui.label(format!("{}", temp_paths.len()));
                 ui.add_space(4.0);
 
@@ -206,7 +208,7 @@ impl App {
                     let media = caps.media_types.get(self.state.props_media_idx)
                         .map(|m| m.as_str())
                         .unwrap_or("—");
-                    ui.label(RichText::new("Media Type:").small().weak());
+                    ui.label(RichText::new("Media Type:").weak());
                     ui.label(media);
                     ui.add_space(4.0);
                 }
@@ -215,14 +217,14 @@ impl App {
                     let slot = caps.input_slots.get(self.state.props_slot_idx)
                         .map(|s| s.as_str())
                         .unwrap_or("—");
-                    ui.label(RichText::new("Input Slot:").small().weak());
+                    ui.label(RichText::new("Input Slot:").weak());
                     ui.label(slot);
                     ui.add_space(4.0);
                 }
 
                 if !caps.extra_options.is_empty() {
                     ui.add_space(4.0);
-                    ui.label(RichText::new("Additional Options:").small().weak());
+                    ui.label(RichText::new("Additional Options:").weak());
                     egui::ScrollArea::vertical()
                         .max_height(80.0)
                         .show(ui, |ui| {
@@ -240,17 +242,10 @@ impl App {
 
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Cancel").clicked() {
-                            self.state.show_print_confirm = false;
-                            for p in &temp_paths {
-                                let _ = std::fs::remove_file(p);
-                            }
-                            self.state.pending_print_paths.clear();
-                        }
-                        
-                        let print_btn = ui.add(egui::Button::new(
-                            RichText::new("Print").strong().color(Color32::WHITE)
-                        ));
+                        let print_btn = ui.add_sized(
+                            btn_size,
+                            egui::Button::new(RichText::new("Print").strong().color(Color32::WHITE))
+                        );
                         if print_btn.clicked() {
                             self.state.show_print_confirm = false;
                             let temp_paths_clone = temp_paths.clone();
@@ -282,6 +277,14 @@ impl App {
                             });
                             self.state.pending_print_paths.clear();
                         }
+                        
+                        if ui.add_sized(btn_size, egui::Button::new("Cancel")).clicked() {
+                            self.state.show_print_confirm = false;
+                            for p in &temp_paths {
+                                let _ = std::fs::remove_file(p);
+                            }
+                            self.state.pending_print_paths.clear();
+                        }
                     });
                 });
             });
@@ -296,6 +299,8 @@ impl App {
         let screen = ctx.screen_rect();
         let width = (screen.width() * 0.50).clamp(600.0, 900.0);
         let height = (screen.height() * 0.70).clamp(500.0, 700.0);
+        let scale = (screen.height() / 1080.0).clamp(0.7, 1.5);
+        let btn_size = [120.0 * scale, 40.0 * scale];
 
         egui::Window::new("Select ICC Profile")
             .collapsible(false)
@@ -472,7 +477,7 @@ impl App {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button("Browse for File...").clicked() {
+                    if ui.add_sized(btn_size, egui::Button::new("Browse for File...")).clicked() {
                         if let Some(p) = rfd::FileDialog::new()
                             .add_filter("ICC Profile", &["icc", "icm"])
                             .pick_file()
@@ -495,7 +500,7 @@ impl App {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
+                        if ui.add_sized(btn_size, egui::Button::new("Close")).clicked() {
                             self.state.show_icc_picker = false;
                             self.state.icc_scan_rx = None;
                             self.state.icc_scan_pending = false;
@@ -528,13 +533,15 @@ impl App {
         let q_src_size_px = q.src_size_px;
 
         let screen = ctx.screen_rect();
-        let width = (screen.width() * 0.70).clamp(600.0, 1000.0);
-        let height = (screen.height() * 0.80).clamp(500.0, 800.0);
+        let width = (screen.width() * 0.90).clamp(800.0, 1400.0);
+        let height = (screen.height() * 0.90).clamp(700.0, 1000.0);
+        let scale = (screen.height() / 1080.0).clamp(0.7, 1.5);
+        let btn_size = [120.0 * scale, 40.0 * scale];
 
         egui::Window::new("Crop Editor")
             .collapsible(false)
-            .resizable(false)
-            .fixed_size([width, height])
+            .resizable(true)
+            .default_size([width, height])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.add_space(8.0);
@@ -636,10 +643,11 @@ impl App {
                 let preview_aspect = img_w / img_h;
 
                 // Central panel for image display
+                let available_width = ui.available_width() - 16.0; // Small margin
                 let available_height = ui.available_height() - 80.0; // Reserve space for buttons
                 let image_rect = Rect::from_min_size(
                     ui.cursor().min,
-                    Vec2::new(width - 32.0, available_height),
+                    Vec2::new(available_width, available_height),
                 );
 
                 // Calculate display size to fit image_rect while maintaining aspect ratio
@@ -883,14 +891,29 @@ impl App {
                 // Buttons
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Cancel").clicked() {
+                        // Apply button (rightmost due to right_to_left layout)
+                        let apply_btn = ui.add_sized(
+                            btn_size,
+                            egui::Button::new(RichText::new("Apply").strong().color(Color32::WHITE)).fill(Color32::from_rgb(60, 120, 200))
+                        );
+                        if apply_btn.clicked() {
+                            // Save UVs to queue item
+                            if let Some(item) = self.state.queue.iter_mut().find(|qi| qi.id == queue_id) {
+                                let (u0, v0, u1, v1) = self.state.crop_editor_uv;
+                                item.crop_u0 = Some(u0);
+                                item.crop_v0 = Some(v0);
+                                item.crop_u1 = Some(u1);
+                                item.crop_v1 = Some(v1);
+                                self.relayout_queue();
+                            }
                             self.state.show_crop_editor = false;
                             // Clean up the temporary texture
                             let tex_name: std::path::PathBuf = format!("crop_preview_{}", q_filepath_str).into();
                             self.state.preview_textures.remove(&tex_name);
                         }
 
-                        if ui.button("Reset").clicked() {
+                        // Reset button (middle)
+                        if ui.add_sized(btn_size, egui::Button::new("Reset")).clicked() {
                             // Reset to auto-calculated centered crop
                             // For rotated images, swap dimensions so crop is calculated correctly
                             // on the original image (will be rotated to match target aspect)
@@ -915,22 +938,22 @@ impl App {
                             self.state.crop_editor_center = ((u0 + u1) / 2.0, (v0 + v1) / 2.0);
                         }
 
-                        let apply_btn = ui.add(egui::Button::new(RichText::new("Apply").strong().color(Color32::WHITE)).fill(Color32::from_rgb(60, 120, 200)));
-                        if apply_btn.clicked() {
-                            // Save UVs to queue item
-                            if let Some(item) = self.state.queue.iter_mut().find(|qi| qi.id == queue_id) {
-                                let (u0, v0, u1, v1) = self.state.crop_editor_uv;
-                                item.crop_u0 = Some(u0);
-                                item.crop_v0 = Some(v0);
-                                item.crop_u1 = Some(u1);
-                                item.crop_v1 = Some(v1);
-                                self.relayout_queue();
-                            }
+                        // Cancel button (leftmost due to right_to_left layout)
+                        if ui.add_sized(btn_size, egui::Button::new("Cancel")).clicked() {
                             self.state.show_crop_editor = false;
                             // Clean up the temporary texture
                             let tex_name: std::path::PathBuf = format!("crop_preview_{}", q_filepath_str).into();
                             self.state.preview_textures.remove(&tex_name);
                         }
+
+                        ui.add_space(20.0);
+
+                        // Instruction text on the left
+                        ui.label(
+                            egui::RichText::new("Please use the scroll wheel and mouse to select your crop.")
+                                .color(Color32::from_gray(200))
+                                .size(14.0)
+                        );
                     });
                 });
             });
