@@ -45,6 +45,10 @@ pub struct QueuedImage {
     pub placed_h_px: u32,
     pub src_size_px: Option<(u32, u32)>,
     pub crop_enabled: bool,
+    pub crop_u0: Option<f32>,
+    pub crop_v0: Option<f32>,
+    pub crop_u1: Option<f32>,
+    pub crop_v1: Option<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -418,6 +422,10 @@ mod tests {
             placed_h_px: 0,
             src_size_px: Some(src),
             crop_enabled: false,
+            crop_u0: None,
+            crop_v0: None,
+            crop_u1: None,
+            crop_v1: None,
         }
     }
 
@@ -439,6 +447,10 @@ mod tests {
             placed_h_px: 0,
             src_size_px: Some(src),
             crop_enabled: false,
+            crop_u0: None,
+            crop_v0: None,
+            crop_u1: None,
+            crop_v1: None,
         }
     }
 

@@ -75,6 +75,7 @@ impl eframe::App for App {
         if self.state.show_props { self.show_printer_props(ctx); }
         if self.state.show_print_confirm { self.show_print_confirm(ctx); }
         if self.state.show_icc_picker { self.show_icc_picker(ctx); }
+        if self.state.show_crop_editor { self.show_crop_editor(ctx); }
 
         // Show splash screen during printer discovery
         if !self.state.discovery_complete {

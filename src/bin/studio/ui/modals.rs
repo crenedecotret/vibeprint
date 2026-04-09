@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, Context, RichText};
+use eframe::egui::{self, Color32, Context, Pos2, Rect, RichText, Sense, Vec2};
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 
@@ -499,6 +499,437 @@ impl App {
                             self.state.show_icc_picker = false;
                             self.state.icc_scan_rx = None;
                             self.state.icc_scan_pending = false;
+                        }
+                    });
+                });
+            });
+    }
+
+    pub(crate) fn show_crop_editor(&mut self, ctx: &Context) {
+        let Some(queue_id) = self.state.crop_editor_queue_id else {
+            self.state.show_crop_editor = false;
+            return;
+        };
+
+        let Some(q) = self.state.queue.iter().find(|qi| qi.id == queue_id).cloned() else {
+            self.state.show_crop_editor = false;
+            return;
+        };
+
+        let Some(full_image) = self.state.full_images.get(&q.filepath).cloned() else {
+            self.state.show_crop_editor = false;
+            return;
+        };
+
+        // Extract data needed inside closure before borrowing
+        let q_filepath_str = q.filepath.to_string_lossy().to_string();
+        let q_fit_to_page = q.fit_to_page;
+        let q_size = q.size;
+        let q_src_size_px = q.src_size_px;
+
+        let screen = ctx.screen_rect();
+        let width = (screen.width() * 0.70).clamp(600.0, 1000.0);
+        let height = (screen.height() * 0.80).clamp(500.0, 800.0);
+
+        egui::Window::new("Crop Editor")
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size([width, height])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+
+                // Get target aspect ratio from print size
+                // IMPORTANT: Calculate what rotation the layout engine WILL decide
+                // based on current source image vs target box, not what it WAS
+                let (ia_w_in, ia_h_in) = self.imageable_size_in();
+                let (w_in, h_in) = if q_fit_to_page {
+                    (ia_w_in, ia_h_in)
+                } else {
+                    q_size.as_inches()
+                };
+
+                // Calculate if layout engine will rotate - same logic as layout_engine.rs
+                let src_w = if let Some((sw, _sh)) = q_src_size_px {
+                    sw as f32
+                } else {
+                    full_image.size[0] as f32
+                };
+                let src_h = if let Some((_sw, sh)) = q_src_size_px {
+                    sh as f32
+                } else {
+                    full_image.size[1] as f32
+                };
+
+                // Determine image orientation and orient print size to match
+                // (same logic as layout_engine.rs choose_orientation_for_flow_with_state)
+                let src_landscape = src_w > src_h;
+                let (oriented_w, oriented_h) = if src_landscape {
+                    (h_in, w_in)  // Swap for landscape images
+                } else {
+                    (w_in, h_in)  // Keep as-is for portrait images
+                };
+
+                // Now calculate if rotation is needed within the oriented box
+                let fitted_area_no_rotate = {
+                    let s = (oriented_w / src_w).min(oriented_h / src_h);
+                    let fw = src_w * s;
+                    let fh = src_h * s;
+                    fw * fh
+                };
+                let fitted_area_rotate = {
+                    let s = (oriented_w / src_h).min(oriented_h / src_w);
+                    let fw = src_h * s;
+                    let fh = src_w * s;
+                    fw * fh
+                };
+                let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+
+                let (target_w, target_h) = if will_rotate {
+                    (oriented_h, oriented_w)
+                } else {
+                    (oriented_w, oriented_h)
+                };
+                let target_aspect = target_w / target_h;
+
+                // Downsample image for preview if too large
+                let max_preview_dim = 1024;
+                let (img_w, img_h) = (full_image.size[0] as f32, full_image.size[1] as f32);
+                let scale = (max_preview_dim as f32 / img_w.max(img_h)).min(1.0);
+
+                // Load/create preview texture once and cache it
+                let tex_name = format!("crop_preview_{}", q_filepath_str);
+                let tex_name_path: std::path::PathBuf = tex_name.clone().into();
+                let tex = if let Some(tex) = self.state.preview_textures.get(&tex_name_path) {
+                    tex.clone()
+                } else {
+                    let preview_img = if scale < 1.0 {
+                        let preview_w = (img_w * scale) as u32;
+                        let preview_h = (img_h * scale) as u32;
+                        let rgb_img = image::RgbImage::from_raw(
+                            full_image.size[0] as u32,
+                            full_image.size[1] as u32,
+                            full_image.pixels.iter().flat_map(|p| [p.r(), p.g(), p.b()]).collect()
+                        ).unwrap_or_else(|| image::RgbImage::new(full_image.size[0] as u32, full_image.size[1] as u32));
+
+                        let resized = image::imageops::resize(
+                            &rgb_img,
+                            preview_w,
+                            preview_h,
+                            image::imageops::FilterType::Lanczos3,
+                        );
+
+                        eframe::egui::ColorImage {
+                            size: [preview_w as usize, preview_h as usize],
+                            pixels: resized.into_raw().chunks_exact(3).map(|p| {
+                                Color32::from_rgb(p[0], p[1], p[2])
+                            }).collect(),
+                        }
+                    } else {
+                        full_image.clone()
+                    };
+                    let tex = ctx.load_texture(&tex_name, preview_img, egui::TextureOptions::LINEAR);
+                    self.state.preview_textures.insert(tex_name_path, tex.clone());
+                    tex
+                };
+
+                let preview_aspect = img_w / img_h;
+
+                // Central panel for image display
+                let available_height = ui.available_height() - 80.0; // Reserve space for buttons
+                let image_rect = Rect::from_min_size(
+                    ui.cursor().min,
+                    Vec2::new(width - 32.0, available_height),
+                );
+
+                // Calculate display size to fit image_rect while maintaining aspect ratio
+                let rect_aspect = image_rect.width() / image_rect.height();
+                let (display_w, display_h) = if preview_aspect > rect_aspect {
+                    (image_rect.width(), image_rect.width() / preview_aspect)
+                } else {
+                    (image_rect.height() * preview_aspect, image_rect.height())
+                };
+
+                let image_display_rect = Rect::from_center_size(
+                    image_rect.center(),
+                    Vec2::new(display_w, display_h),
+                );
+
+                // Draw the image
+                let painter = ui.painter_at(image_rect);
+                painter.image(tex.id(), image_display_rect, Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)), Color32::WHITE);
+
+                // Calculate crop window rect in display coordinates
+                let (u0, v0, u1, v1) = self.state.crop_editor_uv;
+                let crop_w = (u1 - u0) * display_w;
+                let crop_h = (v1 - v0) * display_h;
+                let crop_rect = Rect::from_min_size(
+                    image_display_rect.min + Vec2::new(u0 * display_w, v0 * display_h),
+                    Vec2::new(crop_w, crop_h),
+                );
+
+                // Draw dimmed overlay outside crop (4 rectangles: top, bottom, left, right)
+                let overlay_color = Color32::from_rgba_premultiplied(0, 0, 0, 180);
+                // Top
+                painter.rect_filled(Rect::from_min_max(image_display_rect.min, Pos2::new(image_display_rect.max.x, crop_rect.min.y)), 0.0, overlay_color);
+                // Bottom
+                painter.rect_filled(Rect::from_min_max(Pos2::new(image_display_rect.min.x, crop_rect.max.y), image_display_rect.max), 0.0, overlay_color);
+                // Left
+                painter.rect_filled(Rect::from_min_max(Pos2::new(image_display_rect.min.x, crop_rect.min.y), Pos2::new(crop_rect.min.x, crop_rect.max.y)), 0.0, overlay_color);
+                // Right
+                painter.rect_filled(Rect::from_min_max(Pos2::new(crop_rect.max.x, crop_rect.min.y), Pos2::new(image_display_rect.max.x, crop_rect.max.y)), 0.0, overlay_color);
+
+                // Draw crop window outline with thicker border
+                painter.rect_stroke(crop_rect, 0.0, egui::Stroke::new(3.0, Color32::WHITE));
+
+                // Draw corner resize handle (bottom-right) - larger and more visible
+                let handle_size = 16.0;
+                let handle_rect = Rect::from_min_size(
+                    Pos2::new(crop_rect.max.x - handle_size, crop_rect.max.y - handle_size),
+                    Vec2::new(handle_size, handle_size),
+                );
+                let handle_color = if self.state.crop_editor_resizing {
+                    Color32::from_rgb(100, 200, 255)
+                } else {
+                    Color32::WHITE
+                };
+                painter.rect_filled(handle_rect, 3.0, handle_color);
+                painter.rect_stroke(handle_rect, 3.0, egui::Stroke::new(2.0, Color32::BLACK));
+                // Draw diagonal lines to indicate resize direction
+                let line_offset = 4.0;
+                painter.line_segment(
+                    [handle_rect.min + Vec2::new(line_offset, handle_size - line_offset),
+                     handle_rect.max - Vec2::new(line_offset, line_offset)],
+                    egui::Stroke::new(2.0, Color32::BLACK)
+                );
+
+                // Get pointer position for interactions
+                let pointer_pos = ui.input(|i| i.pointer.latest_pos());
+
+                // 1. RESIZE HANDLE INTERACTION
+                // Expand interaction area slightly beyond visual handle for easier grabbing
+                let handle_interact_rect = handle_rect.expand(4.0);
+                let handle_sense = Sense::click_and_drag();
+                let handle_response = ui.allocate_rect(handle_interact_rect, handle_sense);
+
+                if handle_response.dragged() {
+                    if !self.state.crop_editor_resizing {
+                        self.state.crop_editor_resizing = true;
+                        self.state.crop_editor_resize_start_pos = pointer_pos;
+                        self.state.crop_editor_resize_start_uv = Some(self.state.crop_editor_uv);
+                    }
+
+                    if let Some(start_pos) = self.state.crop_editor_resize_start_pos {
+                        if let Some(start_uv) = self.state.crop_editor_resize_start_uv {
+                            let current_pos = pointer_pos.unwrap_or(start_pos);
+                            let delta = current_pos - start_pos;
+
+                            // Calculate resize - using diagonal drag with aspect ratio maintained
+                            // Positive delta (drag down-right) = grow, negative = shrink
+                            let delta_pixels = (delta.x + delta.y * target_aspect) / 2.0;
+
+                            // Convert pixel delta to UV delta based on current crop display size
+                            let (su0, sv0, su1, sv1) = start_uv;
+                            let start_crop_w_pixels = (su1 - su0) * display_w;
+                            let uv_per_pixel = (su1 - su0) / start_crop_w_pixels.max(1.0);
+                            let delta_u = delta_pixels * uv_per_pixel;
+
+                            let current_crop_w = su1 - su0;
+                            let _current_crop_h = sv1 - sv0;
+
+                            // Grow/shrink from center while maintaining aspect
+                            let new_crop_w = (current_crop_w + delta_u).max(0.05).min(1.0);
+                            let new_crop_h = new_crop_w / target_aspect;
+
+                            let center_u = (su0 + su1) / 2.0;
+                            let center_v = (sv0 + sv1) / 2.0;
+
+                            // Calculate new bounds centered on same point
+                            let mut new_u0 = center_u - new_crop_w / 2.0;
+                            let mut new_v0 = center_v - new_crop_h / 2.0;
+                            let mut new_u1 = new_u0 + new_crop_w;
+                            let mut new_v1 = new_v0 + new_crop_h;
+
+                            // Clamp to image bounds
+                            if new_u0 < 0.0 {
+                                new_u0 = 0.0;
+                                new_u1 = new_crop_w;
+                            }
+                            if new_u1 > 1.0 {
+                                new_u1 = 1.0;
+                                new_u0 = 1.0 - new_crop_w;
+                            }
+                            if new_v0 < 0.0 {
+                                new_v0 = 0.0;
+                                new_v1 = new_crop_h;
+                            }
+                            if new_v1 > 1.0 {
+                                new_v1 = 1.0;
+                                new_v0 = 1.0 - new_crop_h;
+                            }
+
+                            self.state.crop_editor_uv = (new_u0, new_v0, new_u1, new_v1);
+                            // Update center and zoom for consistent scroll wheel behavior
+                            self.state.crop_editor_center = ((new_u0 + new_u1) / 2.0, (new_v0 + new_v1) / 2.0);
+                            // Calculate zoom as ratio of current to default dimension
+                            let current_w = new_u1 - new_u0;
+                            self.state.crop_editor_zoom = current_w / self.state.crop_editor_default_w;
+                        }
+                    }
+                } else {
+                    self.state.crop_editor_resizing = false;
+                    self.state.crop_editor_resize_start_pos = None;
+                    self.state.crop_editor_resize_start_uv = None;
+                }
+
+                // 2. CROP WINDOW DRAG INTERACTION
+                if !self.state.crop_editor_resizing {
+                    let crop_sense = Sense::click_and_drag();
+                    let crop_response = ui.allocate_rect(crop_rect, crop_sense);
+
+                    if crop_response.dragged() {
+                        if !self.state.crop_editor_dragging {
+                            self.state.crop_editor_dragging = true;
+                            self.state.crop_editor_drag_start = pointer_pos;
+                            self.state.crop_editor_drag_start_uv = Some(self.state.crop_editor_uv);
+                        }
+
+                        if let Some(start_pos) = self.state.crop_editor_drag_start {
+                            if let Some(start_uv) = self.state.crop_editor_drag_start_uv {
+                                let current_pos = pointer_pos.unwrap_or(start_pos);
+                                let delta = current_pos - start_pos;
+                                let delta_uv = Vec2::new(delta.x / display_w, delta.y / display_h);
+                                let (su0, sv0, su1, sv1) = start_uv;
+
+                                let crop_w_uv = su1 - su0;
+                                let crop_h_uv = sv1 - sv0;
+
+                                // Calculate new position clamped to image bounds
+                                let new_u0 = (su0 + delta_uv.x).max(0.0).min(1.0 - crop_w_uv);
+                                let new_v0 = (sv0 + delta_uv.y).max(0.0).min(1.0 - crop_h_uv);
+                                let new_u1 = new_u0 + crop_w_uv;
+                                let new_v1 = new_v0 + crop_h_uv;
+
+                                self.state.crop_editor_uv = (new_u0, new_v0, new_u1, new_v1);
+                                // Update center position for zoom operations
+                                self.state.crop_editor_center = ((new_u0 + new_u1) / 2.0, (new_v0 + new_v1) / 2.0);
+                            }
+                        }
+                    } else {
+                        self.state.crop_editor_dragging = false;
+                        self.state.crop_editor_drag_start = None;
+                        self.state.crop_editor_drag_start_uv = None;
+                    }
+
+                }
+
+                // 3. MOUSE WHEEL ZOOM (when hovering over image)
+                let image_sense = Sense::hover();
+                let image_response = ui.allocate_rect(image_rect, image_sense);
+
+                if image_response.hovered() && !self.state.crop_editor_dragging && !self.state.crop_editor_resizing {
+                    let scroll_delta = ui.input(|i| i.raw_scroll_delta);
+                    if scroll_delta.y != 0.0 {
+                        let zoom_delta = 1.0 + (scroll_delta.y * 0.001).clamp(-0.5, 0.5);
+                        let (center_u, center_v) = self.state.crop_editor_center;
+
+                        // Get the default dimensions stored at editor open time
+                        let default_w = self.state.crop_editor_default_w;
+                        let default_h = self.state.crop_editor_default_h;
+
+                        // Update zoom level and calculate new dimensions
+                        let new_zoom = (self.state.crop_editor_zoom * zoom_delta).max(0.05);
+                        self.state.crop_editor_zoom = new_zoom;
+
+                        // Scale from default dimensions (always maintain aspect ratio)
+                        let mut new_w = default_w * new_zoom;
+                        let mut new_h = default_h * new_zoom;
+
+                        // Clamp to image bounds while maintaining aspect ratio
+                        // If we hit a bound, scale both dimensions proportionally
+                        let max_w = center_u.min(1.0 - center_u) * 2.0; // Max width that fits at center
+                        let max_h = center_v.min(1.0 - center_v) * 2.0; // Max height that fits at center
+
+                        let scale_w = if new_w > max_w { max_w / new_w } else { 1.0 };
+                        let scale_h = if new_h > max_h { max_h / new_h } else { 1.0 };
+                        let scale = scale_w.min(scale_h);
+
+                        new_w *= scale;
+                        new_h *= scale;
+
+                        // Enforce minimum size
+                        if new_w < 0.05 {
+                            let min_scale = 0.05 / new_w;
+                            new_w = 0.05;
+                            new_h *= min_scale;
+                        }
+
+                        // Calculate final bounds centered on current center
+                        let half_w = new_w / 2.0;
+                        let half_h = new_h / 2.0;
+                        let new_u0 = (center_u - half_w).max(0.0);
+                        let new_v0 = (center_v - half_h).max(0.0);
+                        let new_u1 = (new_u0 + new_w).min(1.0);
+                        let new_v1 = (new_v0 + new_h).min(1.0);
+
+                        self.state.crop_editor_uv = (new_u0, new_v0, new_u1, new_v1);
+                    }
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // Buttons
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.state.show_crop_editor = false;
+                            // Clean up the temporary texture
+                            let tex_name: std::path::PathBuf = format!("crop_preview_{}", q_filepath_str).into();
+                            self.state.preview_textures.remove(&tex_name);
+                        }
+
+                        if ui.button("Reset").clicked() {
+                            // Reset to auto-calculated centered crop
+                            // For rotated images, swap dimensions so crop is calculated correctly
+                            // on the original image (will be rotated to match target aspect)
+                            let (calc_w, calc_h) = if will_rotate {
+                                (target_h, target_w)
+                            } else {
+                                (target_w, target_h)
+                            };
+                            let auto_uv = if let Some((sw, sh)) = q_src_size_px {
+                                crate::utils::calc_crop_uv(
+                                    calc_w, calc_h, sw, sh, false, true, None,
+                                )
+                            } else {
+                                (0.0, 0.0, 1.0, 1.0)
+                            };
+                            self.state.crop_editor_uv = auto_uv;
+                            // Reset default dimensions, zoom and center to match the auto-calculated crop
+                            let (u0, v0, u1, v1) = auto_uv;
+                            self.state.crop_editor_default_w = u1 - u0;
+                            self.state.crop_editor_default_h = v1 - v0;
+                            self.state.crop_editor_zoom = 1.0;
+                            self.state.crop_editor_center = ((u0 + u1) / 2.0, (v0 + v1) / 2.0);
+                        }
+
+                        let apply_btn = ui.add(egui::Button::new(RichText::new("Apply").strong().color(Color32::WHITE)).fill(Color32::from_rgb(60, 120, 200)));
+                        if apply_btn.clicked() {
+                            // Save UVs to queue item
+                            if let Some(item) = self.state.queue.iter_mut().find(|qi| qi.id == queue_id) {
+                                let (u0, v0, u1, v1) = self.state.crop_editor_uv;
+                                item.crop_u0 = Some(u0);
+                                item.crop_v0 = Some(v0);
+                                item.crop_u1 = Some(u1);
+                                item.crop_v1 = Some(v1);
+                                self.relayout_queue();
+                            }
+                            self.state.show_crop_editor = false;
+                            // Clean up the temporary texture
+                            let tex_name: std::path::PathBuf = format!("crop_preview_{}", q_filepath_str).into();
+                            self.state.preview_textures.remove(&tex_name);
                         }
                     });
                 });

@@ -93,14 +93,23 @@ impl App {
 
             if let Some(tex) = self.state.preview_textures.get(&item.filepath) {
                 // Calculate crop UVs
+                let stored_uv = match (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1) {
+                    (Some(u0), Some(v0), Some(u1), Some(v1)) => Some((u0, v0, u1, v1)),
+                    _ => None,
+                };
+                // When we have stored UVs, don't rotate them in calc_crop_uv - the canvas
+                // handles rotation manually by remapping UVs to screen corners below.
+                // Only pass rotate=true for auto-calculated crops (when no stored UVs).
+                let rotate_for_calc = stored_uv.is_none() && item.rotation > 0.0;
                 let (u0, v0, u1, v1) = src_size.map(|(sw, sh)| {
                     crate::utils::calc_crop_uv(
                         r.width(),
                         r.height(),
                         sw,
                         sh,
-                        item.rotation > 0.0,
+                        rotate_for_calc,
                         item.crop_enabled,
+                        stored_uv,
                     )
                 }).unwrap_or((0.0, 0.0, 1.0, 1.0));
 

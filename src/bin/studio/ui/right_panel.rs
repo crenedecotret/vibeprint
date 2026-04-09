@@ -448,17 +448,91 @@ impl App {
                 .unwrap_or(false);
 
             // Disable crop when Fit to Page is selected
-            let crop_response = ui.add_enabled(
-                !is_fit_to_page,
-                egui::Checkbox::new(&mut crop_enabled, "Crop Image")
-            );
+            ui.horizontal(|ui| {
+                let crop_response = ui.add_enabled(
+                    !is_fit_to_page,
+                    egui::Checkbox::new(&mut crop_enabled, "Crop Image")
+                );
 
-            if !is_fit_to_page && crop_response.changed() {
-                if let Some(item) = self.selected_queue_mut() {
-                    item.crop_enabled = crop_enabled;
-                    self.mark_preview_dirty();
+                if !is_fit_to_page && crop_response.changed() {
+                    if let Some(item) = self.selected_queue_mut() {
+                        item.crop_enabled = crop_enabled;
+                        self.mark_preview_dirty();
+                    }
                 }
-            }
+
+                // Edit button - enabled when crop is enabled and a queue item is selected
+                let has_custom_crop = self.selected_queue()
+                    .map(|q| q.crop_u0.is_some() && q.crop_v0.is_some() && q.crop_u1.is_some() && q.crop_v1.is_some())
+                    .unwrap_or(false);
+                let edit_enabled = !is_fit_to_page && crop_enabled && self.selected_queue().is_some();
+                let edit_text = if has_custom_crop { "Edit*" } else { "Edit" };
+                if ui.add_enabled(edit_enabled, egui::Button::new(edit_text)).clicked() {
+                    if let Some(q) = self.selected_queue() {
+                        // Initialize crop editor with current UVs or auto-calculated
+                        let (ia_w_in, ia_h_in) = self.imageable_size_in();
+                        let stored_uv = match (q.crop_u0, q.crop_v0, q.crop_u1, q.crop_v1) {
+                            (Some(u0), Some(v0), Some(u1), Some(v1)) => Some((u0, v0, u1, v1)),
+                            _ => None,
+                        };
+                        let (w_in, h_in) = if q.fit_to_page {
+                            (ia_w_in, ia_h_in)
+                        } else {
+                            q.size.as_inches()
+                        };
+
+                        // Calculate oriented box and rotation like modals.rs
+                        let (sw, sh) = q.src_size_px.unwrap_or((1, 1));
+                        let src_w = sw as f32;
+                        let src_h = sh as f32;
+                        let src_landscape = src_w > src_h;
+
+                        // Orient print size to match image aspect ratio
+                        let (oriented_w, oriented_h) = if src_landscape {
+                            (h_in, w_in)
+                        } else {
+                            (w_in, h_in)
+                        };
+
+                        // Calculate if rotation is needed within oriented box
+                        let fitted_area_no_rotate = {
+                            let s = (oriented_w / src_w).min(oriented_h / src_h);
+                            (src_w * s) * (src_h * s)
+                        };
+                        let fitted_area_rotate = {
+                            let s = (oriented_w / src_h).min(oriented_h / src_w);
+                            (src_h * s) * (src_w * s)
+                        };
+                        let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+
+                        // For crop calculation, swap dimensions if rotation is needed
+                        // so calc_crop_uv returns UVs in original image space
+                        let (calc_w, calc_h) = if will_rotate {
+                            (oriented_h, oriented_w)
+                        } else {
+                            (oriented_w, oriented_h)
+                        };
+                        let auto_uv = if q.src_size_px.is_some() {
+                            let uv = crate::utils::calc_crop_uv(
+                                calc_w, calc_h, sw, sh, false, true, None,
+                            );
+                            Some(uv)
+                        } else {
+                            Some((0.0, 0.0, 1.0, 1.0))
+                        };
+                        let initial_uv = stored_uv.unwrap_or(auto_uv.unwrap_or((0.0, 0.0, 1.0, 1.0)));
+                        self.state.crop_editor_uv = initial_uv;
+                        // Store initial dimensions as the "default" for zoom = 1.0
+                        let (u0, v0, u1, v1) = initial_uv;
+                        self.state.crop_editor_default_w = u1 - u0;
+                        self.state.crop_editor_default_h = v1 - v0;
+                        self.state.crop_editor_zoom = 1.0;  // Start at zoom = 1.0 (default size)
+                        self.state.crop_editor_center = ((u0 + u1) / 2.0, (v0 + v1) / 2.0);
+                        self.state.crop_editor_queue_id = self.state.selected_queue_id;
+                        self.state.show_crop_editor = true;
+                    }
+                }
+            });
 
             if is_fit_to_page && crop_enabled {
                 // Auto-disable crop when fit to page is selected

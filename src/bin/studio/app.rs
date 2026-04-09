@@ -462,6 +462,10 @@ impl App {
             placed_h_px: 0,
             src_size_px: Some(src_size),
             crop_enabled: false,
+            crop_u0: None,
+            crop_v0: None,
+            crop_u1: None,
+            crop_v1: None,
         });
         self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
         self.state.selected = Some(path.clone());
@@ -501,8 +505,25 @@ impl App {
         let Some(ps) = self.size_from_idx(idx, src_size) else { return };
         let sel = self.state.selected_queue_id;
         if let Some(item) = self.selected_queue_mut() {
+            // Store old aspect ratio for crop preservation check
+            let old_size = item.size.as_inches();
+            let old_aspect = old_size.0 / old_size.1;
+            let new_size = ps.as_inches();
+            let new_aspect = new_size.0 / new_size.1;
+
             item.size = ps;
             item.fit_to_page = idx == FIT_PAGE_IDX;
+
+            // Reset crop if aspect ratio changed significantly (>5% difference)
+            if item.crop_u0.is_some() {
+                let aspect_diff = (old_aspect - new_aspect).abs() / old_aspect.max(new_aspect);
+                if aspect_diff > 0.05 {
+                    item.crop_u0 = None;
+                    item.crop_v0 = None;
+                    item.crop_u1 = None;
+                    item.crop_v1 = None;
+                }
+            }
         }
         self.relayout_queue();
         if let Some(id) = sel {
@@ -746,6 +767,10 @@ impl App {
                 let will_rotate = vibeprint::layout_engine::should_rotate_for_full_page(
                     q.src_size_px, w, h
                 );
+                let stored_uv = match (q.crop_u0, q.crop_v0, q.crop_u1, q.crop_v1) {
+                    (Some(u0), Some(v0), Some(u1), Some(v1)) => Some((u0, v0, u1, v1)),
+                    _ => None,
+                };
                 let uvs = crate::utils::calc_crop_uv_for_processor(
                     w as f32,
                     h as f32,
@@ -753,11 +778,12 @@ impl App {
                     src_h,
                     will_rotate,
                     q.crop_enabled,
+                    stored_uv,
                 );
                 // Debug: log the crop UVs and check if they would be detected as crop
                 if q.crop_enabled {
                     let has_crop = (uvs.2 - uvs.0) < 0.999 || (uvs.3 - uvs.1) < 0.999;
-                    self.state.log.push(format!("Debug: crop UVs: {:.3},{:.3},{:.3},{:.3} rot={} src={}x{} box={}x{} has_crop={}", 
+                    self.state.log.push(format!("Debug: crop UVs: {:.3},{:.3},{:.3},{:.3} rot={} src={}x{} box={}x{} has_crop={}",
                         uvs.0, uvs.1, uvs.2, uvs.3, will_rotate, src_w, src_h, w, h, has_crop));
                 }
                 uvs

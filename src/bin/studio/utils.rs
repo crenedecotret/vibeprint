@@ -26,7 +26,8 @@ pub(crate) fn aspect_fit_rect_in_box(box_rect: Rect, src_w: u32, src_h: u32, rot
 /// Calculate UV coordinates for cropping an image to fill a box (display path).
 /// Returns (u0, v0, u1, v1) where (0,0) is top-left and (1,1) is bottom-right of source.
 /// When crop is false, returns full image (0,0,1,1).
-/// When crop is true, returns centered crop that minimally fills the target box.
+/// When crop is true and stored UVs are provided, uses stored coordinates.
+/// When crop is true and no stored UVs, returns centered crop that minimally fills the target box.
 /// This is for the display path where UVs are used for texture sampling with rotation.
 pub(crate) fn calc_crop_uv(
     box_w: f32,
@@ -35,9 +36,29 @@ pub(crate) fn calc_crop_uv(
     src_h: u32,
     rotate_cw: bool,
     crop_enabled: bool,
+    stored_uv: Option<(f32, f32, f32, f32)>,
 ) -> (f32, f32, f32, f32) {
     if !crop_enabled {
         return (0.0, 0.0, 1.0, 1.0);
+    }
+
+    // Use stored UVs if available
+    if let Some((u0, v0, u1, v1)) = stored_uv {
+        // If rotation is enabled, stored UVs (in original image space) need to be
+        // transformed to match what the rotated image would show
+        // The stored UVs define a crop region on the original unrotated image.
+        // When the image is rotated 90° CW, we need to return UVs that, when
+        // sampled with the rotation-aware shader, show the correct region.
+        if rotate_cw {
+            // For 90° CW rotation, the texture sampling remaps:
+            // - The shader will rotate the image, so we need to "pre-rotate" the UVs
+            // - Original top-left (u0,v0) becomes bottom-left in rotated image
+            // - To get correct sampling, we swap and invert coordinates
+            // Transformation: new_u = v, new_v = 1-u (for the corners)
+            // The crop region [u0,v0] to [u1,v1] in original becomes:
+            return (v0, 1.0 - u1, v1, 1.0 - u0);
+        }
+        return (u0, v0, u1, v1);
     }
 
     let sw = src_w.max(1) as f32;
@@ -97,14 +118,22 @@ pub(crate) fn calc_crop_uv_for_processor(
     src_h: u32,
     rotate_cw: bool,
     crop_enabled: bool,
+    stored_uv: Option<(f32, f32, f32, f32)>,
 ) -> (f32, f32, f32, f32) {
     if !crop_enabled {
         return (0.0, 0.0, 1.0, 1.0);
     }
 
+    // Use stored UVs if available
+    if let Some((u0, v0, u1, v1)) = stored_uv {
+        // Processor path: crop first, then rotate. The UVs are applied to the
+        // original image directly. No transformation needed - just return as-is.
+        return (u0, v0, u1, v1);
+    }
+
     if !rotate_cw {
         // No rotation - use the same calculation as display path
-        return calc_crop_uv(box_w, box_h, src_w, src_h, false, true);
+        return calc_crop_uv(box_w, box_h, src_w, src_h, false, true, None);
     }
 
     // For processor path with rotation:
@@ -115,7 +144,7 @@ pub(crate) fn calc_crop_uv_for_processor(
     // We need calc_crop_uv to calculate crop on this rotated image, so we
     // pass swapped source dimensions with rotate_cw=false
     let (rot_u0, rot_v0, rot_u1, rot_v1) = calc_crop_uv(
-        box_w, box_h, src_h, src_w, false, true,
+        box_w, box_h, src_h, src_w, false, true, None,
     );
 
     // Transform rotated UVs back to original image UVs

@@ -1,4 +1,4 @@
-use eframe::egui::{ColorImage, TextureHandle};
+use eframe::egui::{self, ColorImage, TextureHandle};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
@@ -313,6 +313,21 @@ pub(crate) struct AppState {
     // ── CLI auto-load ──
     pub auto_enqueue_path: Option<PathBuf>,
     pub auto_enqueue_pending: bool,
+
+    // ── Crop editor modal ──
+    pub show_crop_editor: bool,
+    pub crop_editor_queue_id: Option<Uuid>,
+    pub crop_editor_uv: (f32, f32, f32, f32),
+    pub crop_editor_zoom: f32,  // Zoom level: 1.0 = default crop size
+    pub crop_editor_center: (f32, f32),  // Center position (u, v) for zoom operations
+    pub crop_editor_default_w: f32,  // Initial crop width at zoom = 1.0
+    pub crop_editor_default_h: f32,  // Initial crop height at zoom = 1.0
+    pub crop_editor_dragging: bool,
+    pub crop_editor_drag_start: Option<egui::Pos2>,
+    pub crop_editor_drag_start_uv: Option<(f32, f32, f32, f32)>,
+    pub crop_editor_resizing: bool,
+    pub crop_editor_resize_start_pos: Option<egui::Pos2>,
+    pub crop_editor_resize_start_uv: Option<(f32, f32, f32, f32)>,
 }
 
 impl AppState {
@@ -412,6 +427,19 @@ impl AppState {
             saved_icc_filter_for_restore: saved_icc_filter,
             auto_enqueue_path: None,
             auto_enqueue_pending: false,
+            show_crop_editor: false,
+            crop_editor_queue_id: None,
+            crop_editor_uv: (0.0, 0.0, 1.0, 1.0),
+            crop_editor_zoom: 1.0,
+            crop_editor_center: (0.5, 0.5),
+            crop_editor_default_w: 1.0,
+            crop_editor_default_h: 1.0,
+            crop_editor_dragging: false,
+            crop_editor_drag_start: None,
+            crop_editor_drag_start_uv: None,
+            crop_editor_resizing: false,
+            crop_editor_resize_start_pos: None,
+            crop_editor_resize_start_uv: None,
         }
     }
 }
