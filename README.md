@@ -7,6 +7,9 @@ Please Note: Monitor ICC profile will not load under wayland (for now). It uses 
 
 There are some dependencies required to use Vibeprint Studio
 
+# RUST toolchain
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
 
 # UBUNTU Core dependencies
 sudo apt install \
@@ -26,3 +29,18 @@ sudo dnf install \
     libXrandr libXrandr-devel \
     ghostscript \
     libtiff-tools
+
+# How to compile
+
+# Clone the repository
+git clone https://github.com/crenedecotret/vibeprint.git
+cd vibeprint
+
+# Build CLI tool (vibeprint)
+cargo build --release
+
+# Build Studio GUI (studio) - requires all system deps above
+cargo build --release
+
+# Build without monitor ICC support (no X11 deps needed)
+cargo build --release --no-default-features
