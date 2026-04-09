@@ -1,21 +1,19 @@
-Monitor ICC profile will not load under wayland (for now). It uses specific X11 specific APIs
+Vibeprint Studio is an ICC aware print layout engine
+
+
+Please Note: Monitor ICC profile will not load under wayland (for now). It uses specific X11 specific APIs
 
 There are some dependencies required to use Vibeprint Studio
 
 UBUNTU
 # Core dependencies
 sudo apt install \
-    libcups2 \
-    cups-client \
-    libcups2-dev \
-    liblcms2-2 \
-    liblcms2-dev \
-    libx11-6 \
-    libx11-dev \
-    libxext6 \
-    libxext-dev \
-    libxrandr2 \
-    libxrandr-dev
+    libcups2 cups-client libcups2-dev \
+    liblcms2-2 liblcms2-dev \
+    libx11-6 libx11-dev \
+    libxrandr2 libxrandr-dev \
+    ghostscript \
+    libtiff-tools
 
 # For monitor ICC detection (optional feature)
 sudo apt install \
@@ -24,17 +22,13 @@ sudo apt install \
 
 FEDORA
 # Core dependencies
-sudo dnf install \
-    cups-libs \
-    cups-client \
-    lcms2 \
-    lcms2-devel \
-    libX11 \
-    libX11-devel \
-    libXext \
-    libXext-devel \
-    libXrandr \
-    libXrandr-devel
+sudo apt install \
+    libcups2 cups-client libcups2-dev \
+    liblcms2-2 liblcms2-dev \
+    libx11-6 libx11-dev \
+    libxrandr2 libxrandr-dev \
+    ghostscript \
+    libtiff-tools
 
 # For monitor ICC detection (optional feature)
 sudo dnf install \
