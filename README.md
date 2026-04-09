@@ -7,8 +7,8 @@ Please Note: Monitor ICC profile will not load under wayland (for now). It uses 
 
 There are some dependencies required to use Vibeprint Studio
 
-UBUNTU
-# Core dependencies
+
+# UBUNTU Core dependencies
 sudo apt install \
     libcups2 cups-client libcups2-dev \
     liblcms2-2 liblcms2-dev \
@@ -22,13 +22,13 @@ sudo apt install \
     libx11-dev \
     libxrandr-dev
 
-FEDORA
-# Core dependencies
-sudo apt install \
-    libcups2 cups-client libcups2-dev \
-    liblcms2-2 liblcms2-dev \
-    libx11-6 libx11-dev \
-    libxrandr2 libxrandr-dev \
+
+# FEDORA Core dependencies
+sudo dnf install \
+    cups-libs cups-client \
+    lcms2 lcms2-devel \
+    libX11 libX11-devel \
+    libXrandr libXrandr-devel \
     ghostscript \
     libtiff-tools
 
