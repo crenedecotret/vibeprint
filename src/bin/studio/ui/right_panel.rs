@@ -439,22 +439,18 @@ impl App {
                 }
             }
 
-            // Crop Image checkbox - disabled when Fit to Page is selected
             ui.add_space(8.0);
-            let is_fit_to_page = selected_size_idx == Some(FIT_PAGE_IDX);
 
             let mut crop_enabled = self.selected_queue()
                 .map(|q| q.crop_enabled)
                 .unwrap_or(false);
 
-            // Disable crop when Fit to Page is selected
             ui.horizontal(|ui| {
-                let crop_response = ui.add_enabled(
-                    !is_fit_to_page,
+                let crop_response = ui.add(
                     egui::Checkbox::new(&mut crop_enabled, "Crop Image")
                 );
 
-                if !is_fit_to_page && crop_response.changed() {
+                if crop_response.changed() {
                     // Get imageable size before mutable borrow
                     let (ia_w_in, ia_h_in) = self.imageable_size_in();
                     if let Some(item) = self.selected_queue_mut() {
@@ -525,7 +521,7 @@ impl App {
                 let has_custom_crop = self.selected_queue()
                     .map(|q| q.crop_u0.is_some() && q.crop_v0.is_some() && q.crop_u1.is_some() && q.crop_v1.is_some())
                     .unwrap_or(false);
-                let edit_enabled = !is_fit_to_page && crop_enabled && self.selected_queue().is_some();
+                let edit_enabled = crop_enabled && self.selected_queue().is_some();
                 let edit_text = if has_custom_crop { "Edit*" } else { "Edit" };
                 if ui.add_enabled(edit_enabled, egui::Button::new(edit_text)).clicked() {
                     if let Some(q) = self.selected_queue() {
@@ -603,17 +599,6 @@ impl App {
                 }
             });
 
-            if is_fit_to_page && crop_enabled {
-                // Auto-disable crop when fit to page is selected
-                if let Some(item) = self.selected_queue_mut() {
-                    item.crop_enabled = false;
-                    self.mark_preview_dirty();
-                }
-            }
-
-            if is_fit_to_page {
-                ui.label(RichText::new("Crop disabled for Fit to Page").weak().size(10.0));
-            }
 
             // ── Border ────────────────────────────────────────────────
             ui.add_space(12.0);
