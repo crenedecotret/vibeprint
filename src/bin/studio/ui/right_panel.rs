@@ -504,7 +504,7 @@ impl App {
 
                             // Calculate auto-crop UVs
                             let (u0, v0, u1, v1) = crate::utils::calc_crop_uv(
-                                calc_w, calc_h, sw, sh, false, true, None,
+                                calc_w, calc_h, sw, sh, will_rotate, true, None,
                             );
                             item.crop_u0 = Some(u0);
                             item.crop_v0 = Some(v0);
@@ -583,7 +583,7 @@ impl App {
 
                         let auto_uv = if q.src_size_px.is_some() {
                             let uv = crate::utils::calc_crop_uv(
-                                calc_w, calc_h, sw, sh, false, true, None,
+                                calc_w, calc_h, sw, sh, will_rotate, true, None,
                             );
                             Some(uv)
                         } else {
@@ -667,6 +667,7 @@ impl App {
                     let (ia_w_in, ia_h_in) = self.imageable_size_in();
                     if let Some(item) = self.selected_queue_mut() {
                         // If we have a custom crop, recalculate it for the new visible area
+                        // while preserving the center point of focus
                         if let (Some(u0), Some(v0), Some(u1), Some(v1)) = (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1) {
                             // Get the print size for calculating cell aspect ratio
                             let (w_in, h_in) = if item.fit_to_page {
@@ -701,15 +702,6 @@ impl App {
                                 (oriented_w, oriented_h)
                             };
 
-                            // Calculate old visible area size
-                            let old_border_in = item.border_width_pt / 72.0;
-                            let old_is_inner = old_border_type == Some(vibeprint::layout_engine::BorderType::Inner);
-                            let (old_visible_w, old_visible_h) = if old_is_inner && old_border_in > 0.0 {
-                                ((full_w - old_border_in * 2.0).max(0.1), (full_h - old_border_in * 2.0).max(0.1))
-                            } else {
-                                (full_w, full_h)
-                            };
-
                             // Calculate new visible area size
                             let new_border_in = border_width_pt / 72.0;
                             let new_is_inner = border_type == vibeprint::layout_engine::BorderType::Inner;
@@ -719,21 +711,38 @@ impl App {
                                 (full_w, full_h)
                             };
 
-                            // Scale crop from old visible area to new visible area
-                            let scale_x = new_visible_w / old_visible_w;
-                            let scale_y = new_visible_h / old_visible_h;
-                            let scale = scale_x.min(scale_y);  // Use smaller scale to fit within new area
+                            // Preserve the center point AND zoom level from the current crop
+                            let old_center_u = (u0 + u1) / 2.0;
+                            let old_center_v = (v0 + v1) / 2.0;
+                            let old_crop_w = u1 - u0;
+                            let old_crop_h = v1 - v0;
+                            let old_crop_area = old_crop_w * old_crop_h;
 
-                            // Scale crop from center
-                            let center_u = (u0 + u1) / 2.0;
-                            let center_v = (v0 + v1) / 2.0;
-                            let half_w = ((u1 - u0) * scale / 2.0).min(center_u).min(1.0 - center_u);
-                            let half_h = ((v1 - v0) * scale / 2.0).min(center_v).min(1.0 - center_v);
+                            // Calculate target aspect ratio based on new cell shape vs source
+                            let sw_f = sw as f32;
+                            let sh_f = sh as f32;
+                            let src_aspect = if will_rotate { sh_f / sw_f } else { sw_f / sh_f };
+                            let box_aspect = new_visible_w / new_visible_h;
+                            // Target aspect for the crop to fill the new cell properly
+                            let target_aspect = box_aspect / src_aspect;
 
-                            item.crop_u0 = Some((center_u - half_w).max(0.0));
-                            item.crop_u1 = Some((center_u + half_w).min(1.0));
-                            item.crop_v0 = Some((center_v - half_h).max(0.0));
-                            item.crop_v1 = Some((center_v + half_h).min(1.0));
+                            // Adjust crop dimensions to match target aspect while preserving area (zoom level)
+                            // aspect = w/h, area = w*h, so: w = sqrt(area * aspect), h = sqrt(area / aspect)
+                            let new_crop_w = (old_crop_area * target_aspect).sqrt();
+                            let new_crop_h = (old_crop_area / target_aspect).sqrt();
+
+                            // Build new crop around the preserved center point
+                            let half_w = new_crop_w / 2.0;
+                            let half_h = new_crop_h / 2.0;
+                            let new_u0 = (old_center_u - half_w).max(0.0);
+                            let new_v0 = (old_center_v - half_h).max(0.0);
+                            let new_u1 = (old_center_u + half_w).min(1.0);
+                            let new_v1 = (old_center_v + half_h).min(1.0);
+
+                            item.crop_u0 = Some(new_u0);
+                            item.crop_u1 = Some(new_u1);
+                            item.crop_v0 = Some(new_v0);
+                            item.crop_v1 = Some(new_v1);
                         }
 
                         item.border_type = border_type;
