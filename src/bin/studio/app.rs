@@ -373,6 +373,15 @@ impl App {
         let (w_in, h_in) = qi.size.as_inches();
         let (w_in, h_in) = if qi.rotation > 0.0 { (h_in, w_in) } else { (w_in, h_in) };
         let dpi = self.state.target_dpi as f32;
+
+        // For outer borders, expand the cell size
+        let (w_in, h_in) = if qi.border_type == vibeprint::layout_engine::BorderType::Outer {
+            let border_in = qi.border_width_pt / 72.0; // Convert pt to inches
+            (w_in + border_in * 2.0, h_in + border_in * 2.0)
+        } else {
+            (w_in, h_in)
+        };
+
         (
             (w_in * dpi).round().max(1.0) as u32,
             (h_in * dpi).round().max(1.0) as u32,
@@ -466,6 +475,8 @@ impl App {
             crop_v0: None,
             crop_u1: None,
             crop_v1: None,
+            border_type: vibeprint::layout_engine::BorderType::None,
+            border_width_pt: 4.0,
         });
         self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
         self.state.selected = Some(path.clone());
@@ -798,6 +809,13 @@ impl App {
             // Always log rotation and crop state for debugging
             self.state.log.push(format!("Debug: queue item - rotation={:.1} crop={} will_rotate={}", 
                 q.rotation, q.crop_enabled, will_rotate));
+            // Calculate border width in pixels for the processor
+            let border_width_px = if q.border_type != vibeprint::layout_engine::BorderType::None {
+                ((q.border_width_pt / 72.0) * self.state.target_dpi as f32).round() as u32
+            } else {
+                0
+            };
+
             per_page[q.page].push(processor::PagePlacement {
                 input: q.filepath.clone(),
                 input_icc: q.source_icc.clone(),
@@ -810,6 +828,8 @@ impl App {
                 crop_v0,
                 crop_u1,
                 crop_v1,
+                border_type: q.border_type,
+                border_width_px,
             });
         }
 

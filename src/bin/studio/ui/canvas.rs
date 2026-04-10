@@ -1,5 +1,16 @@
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
+/// Draw a filled rectangle with rounded coordinates to prevent sub-pixel gaps
+fn draw_solid_rect(painter: &egui::Painter, rect: Rect, color: Color32) {
+    // Round coordinates to nearest pixel to prevent gaps/antialiasing artifacts
+    let min_x = rect.min.x.round();
+    let min_y = rect.min.y.round();
+    let max_x = rect.max.x.round();
+    let max_y = rect.max.y.round();
+    let rounded_rect = Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y));
+    painter.rect_filled(rounded_rect, 0.0, color);
+}
+
 use crate::types::RULER_PX;
 use crate::utils::{aspect_fit_rect_in_box, draw_dashed_rect, draw_ruler_h, draw_ruler_v};
 use crate::App;
@@ -81,37 +92,35 @@ impl App {
                     .get(&item.filepath)
                     .map(|img| (img.size[0] as u32, img.size[1] as u32))
             });
-            let img_rect = if item.crop_enabled {
-                // When cropping, fill the entire cell (no letterboxing)
+
+            // For inner border, shrink the available area so image fits inside border
+            let display_rect = if item.border_type == vibeprint::layout_engine::BorderType::Inner && item.border_width_pt > 0.0 {
+                let border_px = (item.border_width_pt / 72.0 * self.state.target_dpi as f32 * sx).max(1.0);
+                Rect::from_min_size(
+                    r.min + Vec2::splat(border_px),
+                    r.size() - Vec2::splat(border_px * 2.0),
+                )
+            } else {
                 r
+            };
+
+            // When cropping is enabled, the image fills the entire display_rect
+            // (no letterboxing - the crop UVs define what portion is shown)
+            let img_rect = if item.crop_enabled {
+                display_rect
             } else {
                 // When not cropping, aspect-fit with letterboxing
                 src_size
-                    .map(|(sw, sh)| aspect_fit_rect_in_box(r, sw, sh, item.rotation > 0.0))
-                    .unwrap_or(r)
+                    .map(|(sw, sh)| aspect_fit_rect_in_box(display_rect, sw, sh, item.rotation > 0.0))
+                    .unwrap_or(display_rect)
             };
 
             if let Some(tex) = self.state.preview_textures.get(&item.filepath) {
-                // Calculate crop UVs
-                let stored_uv = match (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1) {
-                    (Some(u0), Some(v0), Some(u1), Some(v1)) => Some((u0, v0, u1, v1)),
-                    _ => None,
+                // Get crop UVs - when crop is enabled, we always have stored UVs
+                let (u0, v0, u1, v1) = match (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1) {
+                    (Some(cu0), Some(cv0), Some(cu1), Some(cv1)) => (cu0, cv0, cu1, cv1),
+                    _ => (0.0, 0.0, 1.0, 1.0),  // Fallback (shouldn't happen when crop_enabled)
                 };
-                // When we have stored UVs, don't rotate them in calc_crop_uv - the canvas
-                // handles rotation manually by remapping UVs to screen corners below.
-                // Only pass rotate=true for auto-calculated crops (when no stored UVs).
-                let rotate_for_calc = stored_uv.is_none() && item.rotation > 0.0;
-                let (u0, v0, u1, v1) = src_size.map(|(sw, sh)| {
-                    crate::utils::calc_crop_uv(
-                        r.width(),
-                        r.height(),
-                        sw,
-                        sh,
-                        rotate_for_calc,
-                        item.crop_enabled,
-                        stored_uv,
-                    )
-                }).unwrap_or((0.0, 0.0, 1.0, 1.0));
 
                 // Adjust UVs for rotation
                 // After 90° CW rotation:
@@ -155,6 +164,87 @@ impl App {
             } else {
                 painter.rect_filled(r, 0.0, Color32::from_gray(220));
                 painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_gray(120)));
+            }
+
+            // Draw border preview if enabled
+            if item.border_type != vibeprint::layout_engine::BorderType::None && item.border_width_pt > 0.0 {
+                match item.border_type {
+                    vibeprint::layout_engine::BorderType::Inner => {
+                        // Draw black border in gap between display_rect (shrunk) and r (full)
+                        // Top strip
+                        if display_rect.min.y > r.min.y {
+                            draw_solid_rect(&painter,
+                                Rect::from_min_max(r.min, Pos2::new(r.max.x, display_rect.min.y)),
+                                Color32::BLACK,
+                            );
+                        }
+                        // Bottom strip
+                        if display_rect.max.y < r.max.y {
+                            draw_solid_rect(&painter,
+                                Rect::from_min_max(Pos2::new(r.min.x, display_rect.max.y), r.max),
+                                Color32::BLACK,
+                            );
+                        }
+                        // Left strip
+                        if display_rect.min.x > r.min.x {
+                            draw_solid_rect(&painter,
+                                Rect::from_min_max(
+                                    Pos2::new(r.min.x, display_rect.min.y),
+                                    Pos2::new(display_rect.min.x, display_rect.max.y),
+                                ),
+                                Color32::BLACK,
+                            );
+                        }
+                        // Right strip
+                        if display_rect.max.x < r.max.x {
+                            draw_solid_rect(&painter,
+                                Rect::from_min_max(
+                                    Pos2::new(display_rect.max.x, display_rect.min.y),
+                                    Pos2::new(r.max.x, display_rect.max.y),
+                                ),
+                                Color32::BLACK,
+                            );
+                        }
+                    }
+                    vibeprint::layout_engine::BorderType::Outer => {
+                        // For outer border, fill the gap between the placement rect (r) and image rect (img_rect)
+                        // Top strip
+                        if img_rect.min.y > r.min.y {
+                            draw_solid_rect(&painter,
+                                Rect::from_min_max(r.min, Pos2::new(r.max.x, img_rect.min.y)),
+                                Color32::BLACK,
+                            );
+                        }
+                        // Bottom strip
+                        if img_rect.max.y < r.max.y {
+                            draw_solid_rect(&painter,
+                                Rect::from_min_max(Pos2::new(r.min.x, img_rect.max.y), r.max),
+                                Color32::BLACK,
+                            );
+                        }
+                        // Left strip (between top and bottom of image)
+                        if img_rect.min.x > r.min.x {
+                            draw_solid_rect(&painter,
+                                Rect::from_min_max(
+                                    Pos2::new(r.min.x, img_rect.min.y),
+                                    Pos2::new(img_rect.min.x, img_rect.max.y),
+                                ),
+                                Color32::BLACK,
+                            );
+                        }
+                        // Right strip (between top and bottom of image)
+                        if img_rect.max.x < r.max.x {
+                            draw_solid_rect(&painter,
+                                Rect::from_min_max(
+                                    Pos2::new(img_rect.max.x, img_rect.min.y),
+                                    Pos2::new(r.max.x, img_rect.max.y),
+                                ),
+                                Color32::BLACK,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
             }
 
             let stroke = if Some(item.id) == self.state.selected_queue_id {

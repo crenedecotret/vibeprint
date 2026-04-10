@@ -531,6 +531,8 @@ impl App {
         let q_fit_to_page = q.fit_to_page;
         let q_size = q.size;
         let q_src_size_px = q.src_size_px;
+        let q_border_type = q.border_type;
+        let q_border_width_pt = q.border_width_pt;
 
         let screen = ctx.screen_rect();
         let width = (screen.width() * 0.90).clamp(800.0, 1400.0);
@@ -597,6 +599,15 @@ impl App {
                 } else {
                     (oriented_w, oriented_h)
                 };
+
+                // Adjust for inner border: crop should fit in the inner area
+                let (target_w, target_h) = if q_border_type == vibeprint::layout_engine::BorderType::Inner && q_border_width_pt > 0.0 {
+                    let border_in = q_border_width_pt / 72.0; // Convert pt to inches
+                    ((target_w - border_in * 2.0).max(0.1), (target_h - border_in * 2.0).max(0.1))
+                } else {
+                    (target_w, target_h)
+                };
+
                 let target_aspect = target_w / target_h;
 
                 // Downsample image for preview if too large

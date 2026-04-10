@@ -63,7 +63,8 @@ impl eframe::App for App {
         }
 
         // DELETE key removes the selected queue item and returns to Printer Settings
-        if ctx.input(|i| i.key_pressed(eframe::egui::Key::Delete)) {
+        // But only if no text field is currently focused (e.g., border width input)
+        if !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(eframe::egui::Key::Delete)) {
             if let Some(id) = self.state.selected_queue_id {
                 self.state.queue.retain(|q| q.id != id);
                 self.state.selected_queue_id = None;

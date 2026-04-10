@@ -9,6 +9,14 @@ pub enum Unit {
     Millimeters,
 }
 
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum BorderType {
+    #[default]
+    None,
+    Inner,
+    Outer,
+}
+
 #[derive(Clone, Copy)]
 pub struct PrintSize {
     pub width: f32,
@@ -49,6 +57,8 @@ pub struct QueuedImage {
     pub crop_v0: Option<f32>,
     pub crop_u1: Option<f32>,
     pub crop_v1: Option<f32>,
+    pub border_type: BorderType,
+    pub border_width_pt: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -426,6 +436,8 @@ mod tests {
             crop_v0: None,
             crop_u1: None,
             crop_v1: None,
+            border_type: BorderType::None,
+            border_width_pt: 0.0,
         }
     }
 
@@ -451,6 +463,8 @@ mod tests {
             crop_v0: None,
             crop_u1: None,
             crop_v1: None,
+            border_type: BorderType::None,
+            border_width_pt: 0.0,
         }
     }
 

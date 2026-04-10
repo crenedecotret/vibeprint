@@ -455,8 +455,68 @@ impl App {
                 );
 
                 if !is_fit_to_page && crop_response.changed() {
+                    // Get imageable size before mutable borrow
+                    let (ia_w_in, ia_h_in) = self.imageable_size_in();
                     if let Some(item) = self.selected_queue_mut() {
                         item.crop_enabled = crop_enabled;
+                        if crop_enabled {
+                            // Calculate and store auto-crop UVs for the target cell
+                            let (w_in, h_in) = if item.fit_to_page {
+                                (ia_w_in, ia_h_in)
+                            } else {
+                                item.size.as_inches()
+                            };
+
+                            // Calculate oriented box and rotation
+                            let (sw, sh) = item.src_size_px.unwrap_or((1, 1));
+                            let src_landscape = (sw as f32) > (sh as f32);
+                            let (oriented_w, oriented_h) = if src_landscape {
+                                (h_in, w_in)
+                            } else {
+                                (w_in, h_in)
+                            };
+
+                            // Calculate if rotation is needed
+                            let fitted_area_no_rotate = {
+                                let s = (oriented_w / sw as f32).min(oriented_h / sh as f32);
+                                (sw as f32 * s) * (sh as f32 * s)
+                            };
+                            let fitted_area_rotate = {
+                                let s = (oriented_w / sh as f32).min(oriented_h / sw as f32);
+                                (sh as f32 * s) * (sw as f32 * s)
+                            };
+                            let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+
+                            // For crop calculation, swap dimensions if rotation is needed
+                            let (calc_w, calc_h) = if will_rotate {
+                                (oriented_h, oriented_w)
+                            } else {
+                                (oriented_w, oriented_h)
+                            };
+
+                            // Adjust for inner border
+                            let (calc_w, calc_h) = if item.border_type == vibeprint::layout_engine::BorderType::Inner && item.border_width_pt > 0.0 {
+                                let border_in = item.border_width_pt / 72.0;
+                                ((calc_w - border_in * 2.0).max(0.1), (calc_h - border_in * 2.0).max(0.1))
+                            } else {
+                                (calc_w, calc_h)
+                            };
+
+                            // Calculate auto-crop UVs
+                            let (u0, v0, u1, v1) = crate::utils::calc_crop_uv(
+                                calc_w, calc_h, sw, sh, false, true, None,
+                            );
+                            item.crop_u0 = Some(u0);
+                            item.crop_v0 = Some(v0);
+                            item.crop_u1 = Some(u1);
+                            item.crop_v1 = Some(v1);
+                        } else {
+                            // When disabling crop, clear custom UVs to restore full image
+                            item.crop_u0 = None;
+                            item.crop_v0 = None;
+                            item.crop_u1 = None;
+                            item.crop_v1 = None;
+                        }
                         self.mark_preview_dirty();
                     }
                 }
@@ -512,6 +572,15 @@ impl App {
                         } else {
                             (oriented_w, oriented_h)
                         };
+
+                        // Adjust for inner border: crop should fit in the inner area
+                        let (calc_w, calc_h) = if q.border_type == vibeprint::layout_engine::BorderType::Inner && q.border_width_pt > 0.0 {
+                            let border_in = q.border_width_pt / 72.0; // Convert pt to inches
+                            ((calc_w - border_in * 2.0).max(0.1), (calc_h - border_in * 2.0).max(0.1))
+                        } else {
+                            (calc_w, calc_h)
+                        };
+
                         let auto_uv = if q.src_size_px.is_some() {
                             let uv = crate::utils::calc_crop_uv(
                                 calc_w, calc_h, sw, sh, false, true, None,
@@ -544,6 +613,140 @@ impl App {
 
             if is_fit_to_page {
                 ui.label(RichText::new("Crop disabled for Fit to Page").weak().size(10.0));
+            }
+
+            // ── Border ────────────────────────────────────────────────
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(RichText::new("Border").strong().size(12.0));
+
+            let mut border_type = self.selected_queue()
+                .map(|q| q.border_type)
+                .unwrap_or(vibeprint::layout_engine::BorderType::None);
+            let mut border_width_pt = self.selected_queue()
+                .map(|q| q.border_width_pt)
+                .unwrap_or(4.0);
+
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut border_type, vibeprint::layout_engine::BorderType::None, "None");
+                ui.radio_value(&mut border_type, vibeprint::layout_engine::BorderType::Inner, "Inner");
+                ui.radio_value(&mut border_type, vibeprint::layout_engine::BorderType::Outer, "Outer");
+            });
+
+            // Width field - visible when Inner or Outer selected
+            let has_queue_selection = self.selected_queue().is_some();
+            let show_width = border_type != vibeprint::layout_engine::BorderType::None;
+
+            if show_width {
+                ui.horizontal(|ui| {
+                    ui.label("Width:");
+                    let mut width_str = format!("{:.1}", border_width_pt);
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut width_str)
+                            .desired_width(50.0)
+                            .font(egui::FontId::proportional(12.0)),
+                    );
+                    if resp.changed() {
+                        if let Ok(v) = width_str.parse::<f32>() {
+                            border_width_pt = v.max(0.0);
+                        }
+                    }
+                    ui.label("pt");
+                });
+            }
+
+            // Apply changes if they differ
+            if has_queue_selection {
+                let old_border_type = self.selected_queue().map(|q| q.border_type);
+                let type_changed = old_border_type != Some(border_type);
+                let width_changed = self.selected_queue().map(|q| q.border_width_pt) != Some(border_width_pt);
+
+                if type_changed || width_changed {
+                    // Get imageable size before mutable borrow
+                    let (ia_w_in, ia_h_in) = self.imageable_size_in();
+                    if let Some(item) = self.selected_queue_mut() {
+                        // If we have a custom crop, recalculate it for the new visible area
+                        if let (Some(u0), Some(v0), Some(u1), Some(v1)) = (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1) {
+                            // Get the print size for calculating cell aspect ratio
+                            let (w_in, h_in) = if item.fit_to_page {
+                                (ia_w_in, ia_h_in)
+                            } else {
+                                item.size.as_inches()
+                            };
+
+                            // Calculate oriented box and rotation like crop editor
+                            let (sw, sh) = item.src_size_px.unwrap_or((1, 1));
+                            let src_landscape = (sw as f32) > (sh as f32);
+                            let (oriented_w, oriented_h) = if src_landscape {
+                                (h_in, w_in)
+                            } else {
+                                (w_in, h_in)
+                            };
+
+                            // Calculate if rotation is needed (compare fitted areas)
+                            let fitted_area_no_rotate = {
+                                let s = (oriented_w / sw as f32).min(oriented_h / sh as f32);
+                                (sw as f32 * s) * (sh as f32 * s)
+                            };
+                            let fitted_area_rotate = {
+                                let s = (oriented_w / sh as f32).min(oriented_h / sw as f32);
+                                (sh as f32 * s) * (sw as f32 * s)
+                            };
+                            let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+
+                            let (full_w, full_h) = if will_rotate {
+                                (oriented_h, oriented_w)
+                            } else {
+                                (oriented_w, oriented_h)
+                            };
+
+                            // Calculate old visible area size
+                            let old_border_in = item.border_width_pt / 72.0;
+                            let old_is_inner = old_border_type == Some(vibeprint::layout_engine::BorderType::Inner);
+                            let (old_visible_w, old_visible_h) = if old_is_inner && old_border_in > 0.0 {
+                                ((full_w - old_border_in * 2.0).max(0.1), (full_h - old_border_in * 2.0).max(0.1))
+                            } else {
+                                (full_w, full_h)
+                            };
+
+                            // Calculate new visible area size
+                            let new_border_in = border_width_pt / 72.0;
+                            let new_is_inner = border_type == vibeprint::layout_engine::BorderType::Inner;
+                            let (new_visible_w, new_visible_h) = if new_is_inner && new_border_in > 0.0 {
+                                ((full_w - new_border_in * 2.0).max(0.1), (full_h - new_border_in * 2.0).max(0.1))
+                            } else {
+                                (full_w, full_h)
+                            };
+
+                            // Scale crop from old visible area to new visible area
+                            let scale_x = new_visible_w / old_visible_w;
+                            let scale_y = new_visible_h / old_visible_h;
+                            let scale = scale_x.min(scale_y);  // Use smaller scale to fit within new area
+
+                            // Scale crop from center
+                            let center_u = (u0 + u1) / 2.0;
+                            let center_v = (v0 + v1) / 2.0;
+                            let half_w = ((u1 - u0) * scale / 2.0).min(center_u).min(1.0 - center_u);
+                            let half_h = ((v1 - v0) * scale / 2.0).min(center_v).min(1.0 - center_v);
+
+                            item.crop_u0 = Some((center_u - half_w).max(0.0));
+                            item.crop_u1 = Some((center_u + half_w).min(1.0));
+                            item.crop_v0 = Some((center_v - half_h).max(0.0));
+                            item.crop_v1 = Some((center_v + half_h).min(1.0));
+                        }
+
+                        item.border_type = border_type;
+                        item.border_width_pt = border_width_pt;
+                        // Trigger relayout for outer border (affects cell size)
+                        if border_type == vibeprint::layout_engine::BorderType::Outer ||
+                           (old_border_type == Some(vibeprint::layout_engine::BorderType::Outer)) {
+                            self.relayout_queue();
+                        } else {
+                            self.mark_preview_dirty();
+                        }
+                    }
+                }
             }
         });
     }

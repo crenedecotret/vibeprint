@@ -159,7 +159,7 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
 
         // Apply crop if specified (crop_u0/v0/u1/v1 are in 0-1 range)
         let has_crop = (p.crop_u1 - p.crop_u0) < 0.999 || (p.crop_v1 - p.crop_v0) < 0.999;
-        eprintln!("Debug: crop UVs {:.3},{:.3},{:.3},{:.3} has_crop={} orig_size={}x{}", 
+        eprintln!("Debug: crop UVs {:.3},{:.3},{:.3},{:.3} has_crop={} orig_size={}x{}",
             p.crop_u0, p.crop_v0, p.crop_u1, p.crop_v1, has_crop, ow, oh);
         let cropped_img = if has_crop {
             // Calculate crop region in pixels
@@ -180,16 +180,34 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         };
 
         let (cw, ch) = (cropped_img.width(), cropped_img.height());
-        eprintln!("Debug: after crop: {}x{} (dest box: {}x{})", cw, ch, p.dest_w_px, p.dest_h_px);
-        let s = if p.rotate_cw {
-            (p.dest_w_px as f64 / ch as f64).min(p.dest_h_px as f64 / cw as f64)
-        } else {
-            (p.dest_w_px as f64 / cw as f64).min(p.dest_h_px as f64 / ch as f64)
-        };
-        let new_w = ((cw as f64 * s).round().max(1.0)) as u32;
-        let new_h = ((ch as f64 * s).round().max(1.0)) as u32;
 
-        eprintln!("Debug: scaling factor {:.3} -> {}x{}", s, new_w, new_h);
+        // For inner border, scale to fit inside the border area instead of full dest box
+        let (scale_dest_w, scale_dest_h) = if p.border_type == crate::layout_engine::BorderType::Inner && p.border_width_px > 0 {
+            let border = p.border_width_px;
+            (p.dest_w_px.saturating_sub(border * 2).max(1), p.dest_h_px.saturating_sub(border * 2).max(1))
+        } else {
+            (p.dest_w_px, p.dest_h_px)
+        };
+
+        eprintln!("Debug: after crop: {}x{} (scale dest: {}x{}, full dest: {}x{})", cw, ch, scale_dest_w, scale_dest_h, p.dest_w_px, p.dest_h_px);
+
+        // When crop is enabled with inner border, stretch to fill inner area (crop UVs preserve aspect)
+        // Otherwise use aspect-fit scaling
+        let has_crop = (p.crop_u1 - p.crop_u0) < 0.999 || (p.crop_v1 - p.crop_v0) < 0.999;
+        let (new_w, new_h) = if p.border_type == crate::layout_engine::BorderType::Inner && p.border_width_px > 0 && has_crop {
+            // Stretch to exactly fill inner area - crop UVs already selected correct portion
+            (scale_dest_w, scale_dest_h)
+        } else {
+            // Aspect-fit scaling
+            let s = if p.rotate_cw {
+                (scale_dest_w as f64 / ch as f64).min(scale_dest_h as f64 / cw as f64)
+            } else {
+                (scale_dest_w as f64 / cw as f64).min(scale_dest_h as f64 / ch as f64)
+            };
+            (((cw as f64 * s).round().max(1.0)) as u32, ((ch as f64 * s).round().max(1.0)) as u32)
+        };
+
+        eprintln!("Debug: resize target {}x{}", new_w, new_h);
         let resized = resize_rgb16(&cropped_img, new_w, new_h, &opts.engine);
         eprintln!("Debug: after resize: {}x{}", resized.width(), resized.height());
         let radius_px = ((opts.target_dpi as u64 * 100) / 720) as f64 / 100.0;
@@ -219,11 +237,54 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
             transformed
         };
 
+        // Composite position: center image in destination box
+        // For inner border with crop: image fills inner area, position at top-left of inner area
+        // For inner border without crop: center within inner area (aspect-fit letterboxing)
+        // For no border: center within full dest box
         let (pw, ph) = (placed.width(), placed.height());
-        let cx = p.dest_x_px + p.dest_w_px.saturating_sub(pw) / 2;
-        let cy = p.dest_y_px + p.dest_h_px.saturating_sub(ph) / 2;
-        eprintln!("Debug: compositing at ({},{}) on page, placed size: {}x{}", cx, cy, pw, ph);
-        composite_rgb16(&mut page, &placed, cx, cy);
+        let has_crop = (p.crop_u1 - p.crop_u0) < 0.999 || (p.crop_v1 - p.crop_v0) < 0.999;
+        let (cx, cy) = if p.border_type == crate::layout_engine::BorderType::Inner && p.border_width_px > 0 {
+            let border = p.border_width_px;
+            if has_crop {
+                // Image fills inner area completely - position at top-left
+                let cx = p.dest_x_px + border;
+                let cy = p.dest_y_px + border;
+                eprintln!("Debug: inner border with crop - compositing at ({},{}), image {}x{}", cx, cy, pw, ph);
+                (cx, cy)
+            } else {
+                // No crop - center within inner area
+                let inner_w = p.dest_w_px.saturating_sub(border * 2);
+                let inner_h = p.dest_h_px.saturating_sub(border * 2);
+                let cx = p.dest_x_px + border + (inner_w.saturating_sub(pw) / 2);
+                let cy = p.dest_y_px + border + (inner_h.saturating_sub(ph) / 2);
+                eprintln!("Debug: inner border no crop - compositing at ({},{}), image {}x{}", cx, cy, pw, ph);
+                (cx, cy)
+            }
+        } else {
+            let cx = p.dest_x_px + p.dest_w_px.saturating_sub(pw) / 2;
+            let cy = p.dest_y_px + p.dest_h_px.saturating_sub(ph) / 2;
+            eprintln!("Debug: compositing at ({},{}) on page, placed size: {}x{}", cx, cy, pw, ph);
+            (cx, cy)
+        };
+
+        let img_to_composite = placed;
+
+        composite_rgb16(&mut page, &img_to_composite, cx, cy);
+
+        // Draw border if enabled - only in the gap around the image
+        if p.border_type != crate::layout_engine::BorderType::None && p.border_width_px > 0 {
+            // For Inner: draw border in gap between smaller image and outer edge
+            // For Outer: draw border in gap between image and expanded outer edge
+            draw_border_in_gap_rgb16(
+                &mut page,
+                cx, cy,                               // image position
+                img_to_composite.width(),
+                img_to_composite.height(),            // image size
+                p.dest_x_px, p.dest_y_px,             // box position
+                p.dest_w_px, p.dest_h_px,             // box size
+                p.border_width_px,
+            );
+        }
 
         let _ = source_dpi;
     }
@@ -311,6 +372,9 @@ pub struct PagePlacement {
     pub crop_v0: f32,
     pub crop_u1: f32,
     pub crop_v1: f32,
+    // Border settings (border_width_px is the total border width in pixels)
+    pub border_type: crate::layout_engine::BorderType,
+    pub border_width_px: u32,
 }
 
 pub struct CompositePageOptions {
@@ -1200,5 +1264,95 @@ fn composite_rgb16(page: &mut Rgb16Image, img: &Rgb16Image, x: u32, y: u32) {
         let di = (py * page_w * 3 + x * 3) as usize;
         dst[di..di + (cols * 3) as usize]
             .copy_from_slice(&src[si..si + (cols * 3) as usize]);
+    }
+}
+
+/// Draw a black border in the gap between the image and its containing box.
+/// For Inner borders: fills the gap between the smaller centered image and the original box edge.
+/// For Outer borders: fills the gap between the image and the expanded outer box edge.
+fn draw_border_in_gap_rgb16(
+    page: &mut Rgb16Image,
+    img_x: u32,
+    img_y: u32,
+    img_w: u32,
+    img_h: u32,
+    box_x: u32,
+    box_y: u32,
+    box_w: u32,
+    box_h: u32,
+    border_width_px: u32,
+) {
+    let page_w = page.width();
+    let page_h = page.height();
+    let dst = page.as_mut();
+
+    // Calculate the gap between image and box
+    let gap_top = img_y.saturating_sub(box_y);
+    let gap_bottom = (box_y + box_h).saturating_sub(img_y + img_h);
+    let gap_left = img_x.saturating_sub(box_x);
+    let gap_right = (box_x + box_w).saturating_sub(img_x + img_w);
+
+    // Clamp gaps to border width (don't draw more than the specified border)
+    let border_top = gap_top.min(border_width_px);
+    let border_bottom = gap_bottom.min(border_width_px);
+    let border_left = gap_left.min(border_width_px);
+    let border_right = gap_right.min(border_width_px);
+
+    // Top strip: full width of box, height = gap_top
+    for row in 0..border_top {
+        let py = box_y + row;
+        if py >= page_h { break; }
+        for col in 0..box_w {
+            let px = box_x + col;
+            if px >= page_w { continue; }
+            let di = ((py * page_w + px) * 3) as usize;
+            dst[di] = 0;
+            dst[di + 1] = 0;
+            dst[di + 2] = 0;
+        }
+    }
+
+    // Bottom strip: full width of box, height = gap_bottom
+    for row in 0..border_bottom {
+        let py = box_y + box_h - border_bottom + row;
+        if py >= page_h { break; }
+        for col in 0..box_w {
+            let px = box_x + col;
+            if px >= page_w { continue; }
+            let di = ((py * page_w + px) * 3) as usize;
+            dst[di] = 0;
+            dst[di + 1] = 0;
+            dst[di + 2] = 0;
+        }
+    }
+
+    // Left strip: between top and bottom of image
+    let left_strip_top = box_y + border_top;
+    let left_strip_bottom = box_y + box_h - border_bottom;
+    for row in left_strip_top..left_strip_bottom {
+        let py = row;
+        if py >= page_h { break; }
+        for col in 0..border_left {
+            let px = box_x + col;
+            if px >= page_w { continue; }
+            let di = ((py * page_w + px) * 3) as usize;
+            dst[di] = 0;
+            dst[di + 1] = 0;
+            dst[di + 2] = 0;
+        }
+    }
+
+    // Right strip: between top and bottom of image
+    for row in left_strip_top..left_strip_bottom {
+        let py = row;
+        if py >= page_h { break; }
+        for col in 0..border_right {
+            let px = box_x + box_w - border_right + col;
+            if px >= page_w { continue; }
+            let di = ((py * page_w + px) * 3) as usize;
+            dst[di] = 0;
+            dst[di + 1] = 0;
+            dst[di + 2] = 0;
+        }
     }
 }
