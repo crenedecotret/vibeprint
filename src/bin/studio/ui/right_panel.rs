@@ -376,7 +376,7 @@ impl App {
         ui.label(
             RichText::new(format!("Printable area: {:.2}\" × {:.2}\"", ia_w_in, ia_h_in))
                 .size(10.0)
-                .weak(),
+                .color(egui::Color32::from_gray(180)),
         );
         ui.add_space(4.0);
 
