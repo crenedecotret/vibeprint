@@ -519,18 +519,45 @@ impl App {
         let (ia_w_in, ia_h_in) = self.imageable_size_in();
 
         if let Some(item) = self.selected_queue_mut() {
-            // Store old aspect ratio for crop preservation check
             let old_size = item.size.as_inches();
-            let old_aspect = old_size.0 / old_size.1;
             let new_size = ps.as_inches();
-            let new_aspect = new_size.0 / new_size.1;
 
             item.size = ps;
             item.fit_to_page = idx == FIT_PAGE_IDX;
 
+            // Clamp border to new max (20% of longest side in points)
+            let (cell_w_in, cell_h_in) = if item.fit_to_page {
+                (ia_w_in, ia_h_in)
+            } else {
+                item.size.as_inches()
+            };
+            let longest_side_in = cell_w_in.max(cell_h_in);
+            let max_border_pt = longest_side_in * 0.2 * 72.0;
+            let old_border_pt = item.border_width_pt;
+            item.border_width_pt = item.border_width_pt.min(max_border_pt);
+            let new_border_pt = item.border_width_pt;
+
+            // Calculate visible area aspects (cell minus border) for proper comparison
+            let old_border_in = old_border_pt / 72.0;
+            let new_border_in = new_border_pt / 72.0;
+            let old_is_inner = item.border_type == vibeprint::layout_engine::BorderType::Inner;
+            let new_is_inner = old_is_inner; // Type hasn't changed yet
+            let (old_visible_w, old_visible_h) = if old_is_inner && old_border_in > 0.0 {
+                ((old_size.0 - old_border_in * 2.0).max(0.1), (old_size.1 - old_border_in * 2.0).max(0.1))
+            } else {
+                (old_size.0, old_size.1)
+            };
+            let (new_visible_w, new_visible_h) = if new_is_inner && new_border_in > 0.0 {
+                ((new_size.0 - new_border_in * 2.0).max(0.1), (new_size.1 - new_border_in * 2.0).max(0.1))
+            } else {
+                (new_size.0, new_size.1)
+            };
+            let old_visible_aspect = old_visible_w / old_visible_h;
+            let new_visible_aspect = new_visible_w / new_visible_h;
+
             // Recalculate crop for new aspect ratio while preserving center/zoom
             if let (Some(u0), Some(v0), Some(u1), Some(v1)) = (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1) {
-                let aspect_diff = (old_aspect - new_aspect).abs() / old_aspect.max(new_aspect);
+                let aspect_diff = (old_visible_aspect - new_visible_aspect).abs() / old_visible_aspect.max(new_visible_aspect);
                 if aspect_diff > 0.05 {
                     // Aspect changed significantly - recalculate crop like border change
                     let (w_in, h_in) = if item.fit_to_page {

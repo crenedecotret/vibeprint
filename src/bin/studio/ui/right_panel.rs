@@ -606,27 +606,72 @@ impl App {
             ui.add_space(4.0);
             ui.label(RichText::new("Border").strong().size(12.0));
 
+            // Check if fit_to_page is enabled - Outer border is impossible in this case
+            let is_fit_to_page = self.selected_queue().map(|q| q.fit_to_page).unwrap_or(false);
+
             let mut border_type = self.selected_queue()
                 .map(|q| q.border_type)
                 .unwrap_or(vibeprint::layout_engine::BorderType::None);
+
+            // Calculate aesthetic default: 15% of longest cell side in points
+            let default_border_pt = if let Some(item) = self.selected_queue() {
+                let (cell_w_in, cell_h_in) = if item.fit_to_page {
+                    let (ia_w_in, ia_h_in) = self.imageable_size_in();
+                    (ia_w_in, ia_h_in)
+                } else {
+                    item.size.as_inches()
+                };
+                let longest_side_in = cell_w_in.max(cell_h_in);
+                longest_side_in * 0.15 // 15% of longest side (result in points)
+            } else {
+                0.15 // Default: 15% of 1 inch (0.15 pt)
+            };
+
             let mut border_width_pt = self.selected_queue()
                 .map(|q| q.border_width_pt)
-                .unwrap_or(4.0);
+                .unwrap_or(default_border_pt);
+
+            // Auto-switch from Outer to Inner if fit_to_page is enabled
+            if is_fit_to_page && border_type == vibeprint::layout_engine::BorderType::Outer {
+                border_type = vibeprint::layout_engine::BorderType::Inner;
+            }
 
             ui.horizontal(|ui| {
                 ui.radio_value(&mut border_type, vibeprint::layout_engine::BorderType::None, "None");
                 ui.radio_value(&mut border_type, vibeprint::layout_engine::BorderType::Inner, "Inner");
-                ui.radio_value(&mut border_type, vibeprint::layout_engine::BorderType::Outer, "Outer");
+                if is_fit_to_page {
+                    ui.add_enabled_ui(false, |ui| {
+                        ui.radio_value(&mut border_type, vibeprint::layout_engine::BorderType::Outer, "Outer")
+                            .on_disabled_hover_text("Outer border not available with Fit to Page");
+                    });
+                } else {
+                    ui.radio_value(&mut border_type, vibeprint::layout_engine::BorderType::Outer, "Outer");
+                }
             });
 
             // Width field - visible when Inner or Outer selected
             let has_queue_selection = self.selected_queue().is_some();
             let show_width = border_type != vibeprint::layout_engine::BorderType::None;
 
+            // Calculate max border: 20% of longest cell side in points
+            let max_border_pt = if let Some(item) = self.selected_queue() {
+                let (cell_w_in, cell_h_in) = if item.fit_to_page {
+                    let (ia_w_in, ia_h_in) = self.imageable_size_in();
+                    (ia_w_in, ia_h_in)
+                } else {
+                    item.size.as_inches()
+                };
+                let longest_side_in = cell_w_in.max(cell_h_in);
+                // 20% of longest side in inches, convert to points (1 inch = 72 pt)
+                longest_side_in * 0.2 * 72.0
+            } else {
+                20.16 // Default max if no selection (20% of 1.4" at 72pt/inch)
+            };
+
             if show_width {
                 ui.horizontal(|ui| {
                     ui.label("Width:");
-                    let mut width_str = format!("{:.1}", border_width_pt);
+                    let mut width_str = format!("{:.3}", border_width_pt.min(max_border_pt));
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut width_str)
                             .desired_width(50.0)
@@ -634,10 +679,11 @@ impl App {
                     );
                     if resp.changed() {
                         if let Ok(v) = width_str.parse::<f32>() {
-                            border_width_pt = v.max(0.0);
+                            border_width_pt = v.max(0.0).min(max_border_pt);
                         }
                     }
                     ui.label("pt");
+                    ui.label(RichText::new(format!("max {:.3}", max_border_pt)).weak().size(10.0));
                 });
             }
 
@@ -647,10 +693,18 @@ impl App {
                 let type_changed = old_border_type != Some(border_type);
                 let width_changed = self.selected_queue().map(|q| q.border_width_pt) != Some(border_width_pt);
 
+                // If enabling border for first time (None -> Inner/Outer), use calculated default
+                let border_enabled = old_border_type == Some(vibeprint::layout_engine::BorderType::None)
+                    && border_type != vibeprint::layout_engine::BorderType::None;
+
                 if type_changed || width_changed {
                     // Get imageable size before mutable borrow
                     let (ia_w_in, ia_h_in) = self.imageable_size_in();
                     if let Some(item) = self.selected_queue_mut() {
+                        // Apply aesthetic default if border is being enabled for the first time
+                        if border_enabled {
+                            border_width_pt = default_border_pt;
+                        }
                         // If we have a custom crop, recalculate it for the new visible area
                         // while preserving the center point of focus
                         if let (Some(u0), Some(v0), Some(u1), Some(v1)) = (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1) {
@@ -688,7 +742,7 @@ impl App {
                             };
 
                             // Calculate new visible area size
-                            let new_border_in = border_width_pt / 72.0;
+                            let new_border_in = border_width_pt / 72.0; // Convert pt to inches
                             let new_is_inner = border_type == vibeprint::layout_engine::BorderType::Inner;
                             let (new_visible_w, new_visible_h) = if new_is_inner && new_border_in > 0.0 {
                                 ((full_w - new_border_in * 2.0).max(0.1), (full_h - new_border_in * 2.0).max(0.1))
@@ -731,7 +785,7 @@ impl App {
                         }
 
                         item.border_type = border_type;
-                        item.border_width_pt = border_width_pt;
+                        item.border_width_pt = border_width_pt.min(max_border_pt); // Clamp to max for this cell size
                         // Trigger relayout for outer border (affects cell size)
                         if border_type == vibeprint::layout_engine::BorderType::Outer ||
                            (old_border_type == Some(vibeprint::layout_engine::BorderType::Outer)) {

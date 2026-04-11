@@ -181,8 +181,9 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
 
         let (cw, ch) = (cropped_img.width(), cropped_img.height());
 
-        // For inner border, scale to fit inside the border area instead of full dest box
-        let (scale_dest_w, scale_dest_h) = if p.border_type == crate::layout_engine::BorderType::Inner && p.border_width_px > 0 {
+        // For inner border: scale to fit inside the border area (dest - 2*border)
+        // For outer border: scale to original size (dest - 2*border), border adds to total size
+        let (scale_dest_w, scale_dest_h) = if p.border_width_px > 0 {
             let border = p.border_width_px;
             (p.dest_w_px.saturating_sub(border * 2).max(1), p.dest_h_px.saturating_sub(border * 2).max(1))
         } else {
@@ -191,12 +192,17 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
 
         eprintln!("Debug: after crop: {}x{} (scale dest: {}x{}, full dest: {}x{})", cw, ch, scale_dest_w, scale_dest_h, p.dest_w_px, p.dest_h_px);
 
-        // When crop is enabled with inner border, stretch to fill inner area (crop UVs preserve aspect)
+        // When crop is enabled with border, stretch to fill inner area (crop UVs preserve aspect)
         // Otherwise use aspect-fit scaling
         let has_crop = (p.crop_u1 - p.crop_u0) < 0.999 || (p.crop_v1 - p.crop_v0) < 0.999;
-        let (new_w, new_h) = if p.border_type == crate::layout_engine::BorderType::Inner && p.border_width_px > 0 && has_crop {
+        let (new_w, new_h) = if p.border_width_px > 0 && has_crop {
             // Stretch to exactly fill inner area - crop UVs already selected correct portion
-            (scale_dest_w, scale_dest_h)
+            // Account for rotation: destination is in final orientation, image is in original orientation
+            if p.rotate_cw {
+                (scale_dest_h, scale_dest_w) // Swap: image will be rotated to match destination
+            } else {
+                (scale_dest_w, scale_dest_h)
+            }
         } else {
             // Aspect-fit scaling
             let s = if p.rotate_cw {
@@ -240,6 +246,7 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         // Composite position: center image in destination box
         // For inner border with crop: image fills inner area, position at top-left of inner area
         // For inner border without crop: center within inner area (aspect-fit letterboxing)
+        // For outer border: center within full dest box (border adds to total size)
         // For no border: center within full dest box
         let (pw, ph) = (placed.width(), placed.height());
         let has_crop = (p.crop_u1 - p.crop_u0) < 0.999 || (p.crop_v1 - p.crop_v0) < 0.999;
@@ -261,6 +268,7 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
                 (cx, cy)
             }
         } else {
+            // Outer border or no border: center within full dest box
             let cx = p.dest_x_px + p.dest_w_px.saturating_sub(pw) / 2;
             let cy = p.dest_y_px + p.dest_h_px.saturating_sub(ph) / 2;
             eprintln!("Debug: compositing at ({},{}) on page, placed size: {}x{}", cx, cy, pw, ph);

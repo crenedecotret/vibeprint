@@ -121,6 +121,13 @@ pub fn layout_queue(
         w_in = w_in.max(0.01);
         h_in = h_in.max(0.01);
 
+        // For outer borders, expand the cell size so layout accounts for the border
+        if item.border_type == BorderType::Outer {
+            let border_in = item.border_width_pt / 72.0;
+            w_in += border_in * 2.0;
+            h_in += border_in * 2.0;
+        }
+
         let (box_w_px, box_h_px, rotate) = choose_orientation_for_flow_with_state(
             item.src_size_px,
             w_in,

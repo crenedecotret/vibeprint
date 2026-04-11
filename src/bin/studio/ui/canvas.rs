@@ -93,9 +93,17 @@ impl App {
                     .map(|img| (img.size[0] as u32, img.size[1] as u32))
             });
 
-            // For inner border, shrink the available area so image fits inside border
+            // For inner border: shrink the available area so image fits inside border
+            // For outer border: center the original image area within the expanded placement rect
             let display_rect = if item.border_type == vibeprint::layout_engine::BorderType::Inner && item.border_width_pt > 0.0 {
                 let border_px = (item.border_width_pt / 72.0 * self.state.target_dpi as f32 * sx).max(1.0);
+                Rect::from_min_size(
+                    r.min + Vec2::splat(border_px),
+                    r.size() - Vec2::splat(border_px * 2.0),
+                )
+            } else if item.border_type == vibeprint::layout_engine::BorderType::Outer && item.border_width_pt > 0.0 {
+                let border_px = (item.border_width_pt / 72.0 * self.state.target_dpi as f32 * sx).max(1.0);
+                // Center the original image area within the expanded rect
                 Rect::from_min_size(
                     r.min + Vec2::splat(border_px),
                     r.size() - Vec2::splat(border_px * 2.0),
