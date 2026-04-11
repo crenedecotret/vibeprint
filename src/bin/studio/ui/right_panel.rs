@@ -181,6 +181,9 @@ impl App {
             ui.horizontal(|ui| {
                 ui.label("Sharpen:");
                 ui.add(egui::Slider::new(&mut self.state.sharpen, 0..=20).show_value(true));
+                if ui.small_button("✖").on_hover_text("Reset to 5").clicked() {
+                    self.state.sharpen = 5;
+                }
             });
 
             // Output DPI
@@ -363,8 +366,14 @@ impl App {
         let (ia_w_in, ia_h_in) = self.imageable_size_in();
 
         ui.add_space(4.0);
-        ui.label(RichText::new("Print Size").strong().size(12.0));
-        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Print Size").strong().size(12.0));
+            ui.label(
+                RichText::new(format!("  Printable area: {:.2}\" × {:.2}\"", ia_w_in, ia_h_in))
+                    .size(10.0)
+                    .color(egui::Color32::from_gray(180)),
+            );
+        });
 
         let has_target = self.state.staged.is_some() || self.state.selected_queue_id.is_some();
         if !has_target {
@@ -373,11 +382,6 @@ impl App {
             return;
         }
 
-        ui.label(
-            RichText::new(format!("Printable area: {:.2}\" × {:.2}\"", ia_w_in, ia_h_in))
-                .size(10.0)
-                .color(egui::Color32::from_gray(180)),
-        );
         ui.add_space(4.0);
 
         // Determine the currently selected size index for queued images
@@ -405,11 +409,11 @@ impl App {
                 let (fits, _) = check_size_fit(w, h, ia_w_in, ia_h_in);
                 let is_selected = selected_size_idx == Some(idx);
                 let row_text = RichText::new(label).size(13.0).color(if is_selected {
-                    Color32::from_rgb(100, 200, 100)
+                    Color32::from_rgb(60, 120, 200)
                 } else if fits {
                     Color32::from_gray(210)
                 } else {
-                    Color32::from_rgb(200, 60, 60)
+                    Color32::from_gray(150)
                 });
                 let resp = ui.add_enabled(fits, egui::SelectableLabel::new(false, row_text));
                 if !fits {
@@ -424,10 +428,10 @@ impl App {
                 }
             }
 
-            ui.separator();
+            // Fit to Page option (in same section as print sizes)
             let is_fit_to_page_selected = selected_size_idx == Some(FIT_PAGE_IDX);
             let fit_text = RichText::new("Fit to Page").size(13.0).color(if is_fit_to_page_selected {
-                Color32::from_rgb(100, 200, 100)
+                Color32::from_rgb(60, 120, 200)
             } else {
                 Color32::from_gray(210)
             });
@@ -438,6 +442,8 @@ impl App {
                     self.update_selected_queue_size_idx(FIT_PAGE_IDX);
                 }
             }
+
+            ui.separator();
 
             ui.add_space(8.0);
 
