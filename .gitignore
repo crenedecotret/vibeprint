@@ -5,9 +5,10 @@ cargo_check.log
 *_out.tif
 *_out.tiff
 MatrixLarge_*.tif
-*_mks.tif
+*_catmullrom.tif
 *_lanczos3.tif
 *_iterative-step.tif
-*_robidoux-ewa.tif
+*_mitchell-ewa.tif
+*_mitchell-ewa-sharp.tif
 *.tif
 .windsurf/

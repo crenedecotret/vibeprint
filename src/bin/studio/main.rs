@@ -19,8 +19,9 @@ impl eframe::App for App {
         let engine_str = match self.state.engine {
             Engine::Lanczos3 => "lanczos3",
             Engine::Iterative => "iterative",
-            Engine::RobidouxEwa => "robidoux",
-            Engine::Mks => "mks",
+            Engine::MitchellEwa => "mitchell",
+            Engine::MitchellEwaSharp => "mitchell-sharp",
+            Engine::Mks => "catmullrom",
         };
         let intent_str = match self.state.intent {
             Intent::Perceptual => "perceptual",
@@ -32,18 +33,29 @@ impl eframe::App for App {
             IccProfileFilter::System => "system",
             IccProfileFilter::User => "user",
         };
-        let printer_name = self.state.printers.get(self.state.printer_idx).map(|p| p.name.clone());
+        let printer_name = self
+            .state
+            .printers
+            .get(self.state.printer_idx)
+            .map(|p| p.name.clone());
         save_settings(&types::Settings {
             current_dir: Some(self.state.current_dir.to_string_lossy().into_owned()),
             printer_name,
-            page_size_name: self.state.caps.as_ref()
+            page_size_name: self
+                .state
+                .caps
+                .as_ref()
                 .and_then(|c| c.page_sizes.get(self.state.selected_page_size_idx))
                 .map(|ps| ps.name.clone()),
             engine: Some(engine_str.into()),
             sharpen: Some(self.state.sharpen),
             depth16: Some(self.state.depth16),
             target_dpi: Some(self.state.target_dpi),
-            output_icc: self.state.output_icc.as_ref().map(|e| e.path.to_string_lossy().into_owned()),
+            output_icc: self
+                .state
+                .output_icc
+                .as_ref()
+                .map(|e| e.path.to_string_lossy().into_owned()),
             intent: Some(intent_str.into()),
             bpc: Some(self.state.bpc),
             output_dir: Some(self.state.output_dir.to_string_lossy().into_owned()),
@@ -73,44 +85,57 @@ impl eframe::App for App {
             }
         }
 
-        if self.state.show_props { self.show_printer_props(ctx); }
-        if self.state.show_print_confirm { self.show_print_confirm(ctx); }
-        if self.state.show_icc_picker { self.show_icc_picker(ctx); }
-        if self.state.show_crop_editor { self.show_crop_editor(ctx); }
+        if self.state.show_props {
+            self.show_printer_props(ctx);
+        }
+        if self.state.show_print_confirm {
+            self.show_print_confirm(ctx);
+        }
+        if self.state.show_icc_picker {
+            self.show_icc_picker(ctx);
+        }
+        if self.state.show_crop_editor {
+            self.show_crop_editor(ctx);
+        }
 
         // Show splash screen during printer discovery
         if !self.state.discovery_complete {
-            egui::CentralPanel::default()
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(ui.available_height() * 0.3);
-                        
-                        ui.label(eframe::egui::RichText::new("VibePrint Studio").size(32.0).strong());
-                        ui.add_space(24.0);
-                        
-                        ui.add_space(16.0);
-                        ui.horizontal(|ui| {
-                            let space_each_side = (ui.available_width() - 200.0) / 2.0;
-                            ui.add_space(space_each_side.max(0.0));
-                            ui.spinner();
-                            ui.label(eframe::egui::RichText::new("Discovering printers...").size(16.0));
-                        });
-                        
-                        ui.add_space(ui.available_height() * 0.3);
-                        
-                        if !self.state.log.is_empty() {
-                            ui.separator();
-                            ui.add_space(8.0);
-                            egui::ScrollArea::vertical()
-                                .max_height(120.0)
-                                .show(ui, |ui| {
-                                    for entry in self.state.log.iter().take(5) {
-                                        ui.label(eframe::egui::RichText::new(entry).small().monospace());
-                                    }
-                                });
-                        }
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(ui.available_height() * 0.3);
+
+                    ui.label(
+                        eframe::egui::RichText::new("VibePrint Studio")
+                            .size(32.0)
+                            .strong(),
+                    );
+                    ui.add_space(24.0);
+
+                    ui.add_space(16.0);
+                    ui.horizontal(|ui| {
+                        let space_each_side = (ui.available_width() - 200.0) / 2.0;
+                        ui.add_space(space_each_side.max(0.0));
+                        ui.spinner();
+                        ui.label(eframe::egui::RichText::new("Discovering printers...").size(16.0));
                     });
+
+                    ui.add_space(ui.available_height() * 0.3);
+
+                    if !self.state.log.is_empty() {
+                        ui.separator();
+                        ui.add_space(8.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(120.0)
+                            .show(ui, |ui| {
+                                for entry in self.state.log.iter().take(5) {
+                                    ui.label(
+                                        eframe::egui::RichText::new(entry).small().monospace(),
+                                    );
+                                }
+                            });
+                    }
                 });
+            });
             return;
         }
 
@@ -129,15 +154,17 @@ impl eframe::App for App {
             .resizable(true)
             .show(ctx, |ui| self.draw_right(ui));
 
-        egui::CentralPanel::default()
-            .show(ctx, |ui| {
-                let toolbar_h = 42.0_f32;
-                let canvas_h = (ui.available_height() - toolbar_h).max(0.0);
-                ui.allocate_ui(eframe::egui::Vec2::new(ui.available_width(), canvas_h), |ui| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let toolbar_h = 42.0_f32;
+            let canvas_h = (ui.available_height() - toolbar_h).max(0.0);
+            ui.allocate_ui(
+                eframe::egui::Vec2::new(ui.available_width(), canvas_h),
+                |ui| {
                     self.draw_canvas(ui);
-                });
-                self.draw_canvas_toolbar(ui);
-            });
+                },
+            );
+            self.draw_canvas_toolbar(ui);
+        });
     }
 }
 

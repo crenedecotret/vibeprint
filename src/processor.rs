@@ -1,7 +1,9 @@
 use std::{fs::File, io::BufReader, path::Path};
 
 use anyhow::{bail, Context, Result};
-use image::{codecs::png::PngDecoder, imageops::FilterType, DynamicImage, ImageBuffer, ImageDecoder, Rgb};
+use image::{
+    codecs::png::PngDecoder, imageops::FilterType, DynamicImage, ImageBuffer, ImageDecoder, Rgb,
+};
 
 type Rgb16Image = ImageBuffer<Rgb<u16>, Vec<u16>>;
 type Rgb8Image = ImageBuffer<Rgb<u8>, Vec<u8>>;
@@ -22,7 +24,11 @@ fn load_output_profile(
                 .with_context(|| format!("failed to read output ICC: {}", path.display()))?;
             let profile = lcms2::Profile::new_icc(&bytes)
                 .with_context(|| format!("failed to load output ICC: {}", path.display()))?;
-            let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+            let fname = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
             Ok((profile, bytes, fname))
         }
         None => {
@@ -37,7 +43,11 @@ fn load_output_profile(
                 Some(icc_bytes) => {
                     let profile = lcms2::Profile::new_icc(icc_bytes)
                         .context("failed to load passthrough ICC profile")?;
-                    Ok((profile, icc_bytes.to_vec(), "embedded (passthrough)".to_string()))
+                    Ok((
+                        profile,
+                        icc_bytes.to_vec(),
+                        "embedded (passthrough)".to_string(),
+                    ))
                 }
                 None => {
                     let profile = lcms2::Profile::new_srgb();
@@ -56,8 +66,9 @@ fn load_input_profile(
     match (input_icc, embedded_icc) {
         (Some(path), _) => lcms2::Profile::new_file(path)
             .with_context(|| format!("failed to load input ICC: {}", path.display())),
-        (None, Some(icc)) => lcms2::Profile::new_icc(icc)
-            .context("failed to load embedded ICC profile"),
+        (None, Some(icc)) => {
+            lcms2::Profile::new_icc(icc).context("failed to load embedded ICC profile")
+        }
         (None, None) => Ok(lcms2::Profile::new_srgb()),
     }
 }
@@ -92,13 +103,19 @@ fn load_prophoto_working_profile() -> Result<lcms2::Profile> {
 
     let mut desc = lcms2::MLU::new(1);
     desc.set_text_ascii("ProPhoto RGB D50 (Linear)", lcms2::Locale::new("en_US"));
-    if !profile.write_tag(lcms2::TagSignature::ProfileDescriptionTag, lcms2::Tag::MLU(&desc)) {
+    if !profile.write_tag(
+        lcms2::TagSignature::ProfileDescriptionTag,
+        lcms2::Tag::MLU(&desc),
+    ) {
         bail!("failed to set ProPhoto profile description tag");
     }
 
     let mut copyright = lcms2::MLU::new(1);
     copyright.set_text_ascii("No copyright, use freely", lcms2::Locale::new("en_US"));
-    if !profile.write_tag(lcms2::TagSignature::CopyrightTag, lcms2::Tag::MLU(&copyright)) {
+    if !profile.write_tag(
+        lcms2::TagSignature::CopyrightTag,
+        lcms2::Tag::MLU(&copyright),
+    ) {
         bail!("failed to set ProPhoto profile copyright tag");
     }
 
@@ -110,22 +127,25 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         bail!("dpi must be > 0");
     }
 
-    let (output_profile, output_icc_bytes, icc_filename) =
-        load_output_profile(
-            opts.output_icc.as_ref(),
-            None,
-            opts.default_wide_output_when_unset,
-        )?;
+    let (output_profile, output_icc_bytes, icc_filename) = load_output_profile(
+        opts.output_icc.as_ref(),
+        None,
+        opts.default_wide_output_when_unset,
+    )?;
     let working_profile = load_prophoto_working_profile()?;
 
     let intent_name = match opts.intent {
-        lcms2::Intent::Perceptual             => "Perceptual",
-        lcms2::Intent::RelativeColorimetric   => "Relative Colorimetric",
-        lcms2::Intent::Saturation             => "Saturation",
-        lcms2::Intent::AbsoluteColorimetric   => "Absolute Colorimetric",
-        _                                     => "Unknown",
+        lcms2::Intent::Perceptual => "Perceptual",
+        lcms2::Intent::RelativeColorimetric => "Relative Colorimetric",
+        lcms2::Intent::Saturation => "Saturation",
+        lcms2::Intent::AbsoluteColorimetric => "Absolute Colorimetric",
+        _ => "Unknown",
     };
-    let depth_label = if opts.depth == 8 { "8-bit (dithered)" } else { "16-bit" };
+    let depth_label = if opts.depth == 8 {
+        "8-bit (dithered)"
+    } else {
+        "16-bit"
+    };
     let sharpen_label = if opts.sharpen == 0 {
         "Off".to_string()
     } else {
@@ -149,7 +169,7 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
     for p in &opts.placements {
         let (img, source_dpi, embedded_icc) = load_image_with_dpi_and_embedded_icc(&p.input)?;
         let img16: Rgb16Image = match img {
-            LoadedImage::Rgb8(im)  => rgb8_to_rgb16(&im),
+            LoadedImage::Rgb8(im) => rgb8_to_rgb16(&im),
             LoadedImage::Rgb16(im) => im,
         };
 
@@ -159,20 +179,33 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
 
         // Apply crop if specified (crop_u0/v0/u1/v1 are in 0-1 range)
         let has_crop = (p.crop_u1 - p.crop_u0) < 0.999 || (p.crop_v1 - p.crop_v0) < 0.999;
-        eprintln!("Debug: crop UVs {:.3},{:.3},{:.3},{:.3} has_crop={} orig_size={}x{}",
-            p.crop_u0, p.crop_v0, p.crop_u1, p.crop_v1, has_crop, ow, oh);
+        eprintln!(
+            "Debug: crop UVs {:.3},{:.3},{:.3},{:.3} has_crop={} orig_size={}x{}",
+            p.crop_u0, p.crop_v0, p.crop_u1, p.crop_v1, has_crop, ow, oh
+        );
         let cropped_img = if has_crop {
             // Calculate crop region in pixels
             let crop_x = ((ow as f64 * p.crop_u0 as f64).round() as u32).min(ow - 1);
             let crop_y = ((oh as f64 * p.crop_v0 as f64).round() as u32).min(oh - 1);
-            let crop_w = ((ow as f64 * (p.crop_u1 - p.crop_u0) as f64).round() as u32).max(1).min(ow - crop_x);
-            let crop_h = ((oh as f64 * (p.crop_v1 - p.crop_v0) as f64).round() as u32).max(1).min(oh - crop_y);
+            let crop_w = ((ow as f64 * (p.crop_u1 - p.crop_u0) as f64).round() as u32)
+                .max(1)
+                .min(ow - crop_x);
+            let crop_h = ((oh as f64 * (p.crop_v1 - p.crop_v0) as f64).round() as u32)
+                .max(1)
+                .min(oh - crop_y);
 
-            eprintln!("Debug: crop region {}x{} at ({},{}) size {}x{}", crop_w, crop_h, crop_x, crop_y, crop_w, crop_h);
+            eprintln!(
+                "Debug: crop region {}x{} at ({},{}) size {}x{}",
+                crop_w, crop_h, crop_x, crop_y, crop_w, crop_h
+            );
 
             let cropped = image::imageops::crop_imm(&img16, crop_x, crop_y, crop_w, crop_h);
             let result = cropped.to_image();
-            eprintln!("Debug: cropped image size: {}x{}", result.width(), result.height());
+            eprintln!(
+                "Debug: cropped image size: {}x{}",
+                result.width(),
+                result.height()
+            );
             result
         } else {
             eprintln!("Debug: no crop applied, using original image");
@@ -185,12 +218,18 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         // For outer border: scale to original size (dest - 2*border), border adds to total size
         let (scale_dest_w, scale_dest_h) = if p.border_width_px > 0 {
             let border = p.border_width_px;
-            (p.dest_w_px.saturating_sub(border * 2).max(1), p.dest_h_px.saturating_sub(border * 2).max(1))
+            (
+                p.dest_w_px.saturating_sub(border * 2).max(1),
+                p.dest_h_px.saturating_sub(border * 2).max(1),
+            )
         } else {
             (p.dest_w_px, p.dest_h_px)
         };
 
-        eprintln!("Debug: after crop: {}x{} (scale dest: {}x{}, full dest: {}x{})", cw, ch, scale_dest_w, scale_dest_h, p.dest_w_px, p.dest_h_px);
+        eprintln!(
+            "Debug: after crop: {}x{} (scale dest: {}x{}, full dest: {}x{})",
+            cw, ch, scale_dest_w, scale_dest_h, p.dest_w_px, p.dest_h_px
+        );
 
         // When crop is enabled with border, stretch to fill inner area (crop UVs preserve aspect)
         // Otherwise use aspect-fit scaling
@@ -210,16 +249,24 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
             } else {
                 (scale_dest_w as f64 / cw as f64).min(scale_dest_h as f64 / ch as f64)
             };
-            (((cw as f64 * s).round().max(1.0)) as u32, ((ch as f64 * s).round().max(1.0)) as u32)
+            (
+                ((cw as f64 * s).round().max(1.0)) as u32,
+                ((ch as f64 * s).round().max(1.0)) as u32,
+            )
         };
 
         eprintln!("Debug: resize target {}x{}", new_w, new_h);
         let resized = resize_rgb16(&cropped_img, new_w, new_h, &opts.engine);
-        eprintln!("Debug: after resize: {}x{}", resized.width(), resized.height());
+        eprintln!(
+            "Debug: after resize: {}x{}",
+            resized.width(),
+            resized.height()
+        );
         let radius_px = ((opts.target_dpi as u64 * 100) / 720) as f64 / 100.0;
         let sharpened = if opts.sharpen > 0 {
             let sigma = ((radius_px as u64 * 100) / 2) as f64 / 100.0;
-            let amount = opts.sharpen as f64 * 0.1;
+            let normalized = map_sharpening_slider(opts.sharpen as f64);
+            let amount = normalized * SHARPEN_MAX_AMOUNT;
             unsharp_mask_rgb16(&resized, sigma, amount, 0.03)
         } else {
             resized
@@ -232,11 +279,19 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
             opts.intent,
             opts.bpc,
         )?;
-        eprintln!("Debug: after ICC transform: {}x{}", transformed.width(), transformed.height());
+        eprintln!(
+            "Debug: after ICC transform: {}x{}",
+            transformed.width(),
+            transformed.height()
+        );
         let placed = if p.rotate_cw {
             eprintln!("Debug: applying 90° CW rotation");
             let rotated = rotate_90_cw_rgb16(&transformed);
-            eprintln!("Debug: after rotation: {}x{}", rotated.width(), rotated.height());
+            eprintln!(
+                "Debug: after rotation: {}x{}",
+                rotated.width(),
+                rotated.height()
+            );
             rotated
         } else {
             eprintln!("Debug: no rotation applied");
@@ -250,30 +305,40 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         // For no border: center within full dest box
         let (pw, ph) = (placed.width(), placed.height());
         let has_crop = (p.crop_u1 - p.crop_u0) < 0.999 || (p.crop_v1 - p.crop_v0) < 0.999;
-        let (cx, cy) = if p.border_type == crate::layout_engine::BorderType::Inner && p.border_width_px > 0 {
-            let border = p.border_width_px;
-            if has_crop {
-                // Image fills inner area completely - position at top-left
-                let cx = p.dest_x_px + border;
-                let cy = p.dest_y_px + border;
-                eprintln!("Debug: inner border with crop - compositing at ({},{}), image {}x{}", cx, cy, pw, ph);
-                (cx, cy)
+        let (cx, cy) =
+            if p.border_type == crate::layout_engine::BorderType::Inner && p.border_width_px > 0 {
+                let border = p.border_width_px;
+                if has_crop {
+                    // Image fills inner area completely - position at top-left
+                    let cx = p.dest_x_px + border;
+                    let cy = p.dest_y_px + border;
+                    eprintln!(
+                        "Debug: inner border with crop - compositing at ({},{}), image {}x{}",
+                        cx, cy, pw, ph
+                    );
+                    (cx, cy)
+                } else {
+                    // No crop - center within inner area
+                    let inner_w = p.dest_w_px.saturating_sub(border * 2);
+                    let inner_h = p.dest_h_px.saturating_sub(border * 2);
+                    let cx = p.dest_x_px + border + (inner_w.saturating_sub(pw) / 2);
+                    let cy = p.dest_y_px + border + (inner_h.saturating_sub(ph) / 2);
+                    eprintln!(
+                        "Debug: inner border no crop - compositing at ({},{}), image {}x{}",
+                        cx, cy, pw, ph
+                    );
+                    (cx, cy)
+                }
             } else {
-                // No crop - center within inner area
-                let inner_w = p.dest_w_px.saturating_sub(border * 2);
-                let inner_h = p.dest_h_px.saturating_sub(border * 2);
-                let cx = p.dest_x_px + border + (inner_w.saturating_sub(pw) / 2);
-                let cy = p.dest_y_px + border + (inner_h.saturating_sub(ph) / 2);
-                eprintln!("Debug: inner border no crop - compositing at ({},{}), image {}x{}", cx, cy, pw, ph);
+                // Outer border or no border: center within full dest box
+                let cx = p.dest_x_px + p.dest_w_px.saturating_sub(pw) / 2;
+                let cy = p.dest_y_px + p.dest_h_px.saturating_sub(ph) / 2;
+                eprintln!(
+                    "Debug: compositing at ({},{}) on page, placed size: {}x{}",
+                    cx, cy, pw, ph
+                );
                 (cx, cy)
-            }
-        } else {
-            // Outer border or no border: center within full dest box
-            let cx = p.dest_x_px + p.dest_w_px.saturating_sub(pw) / 2;
-            let cy = p.dest_y_px + p.dest_h_px.saturating_sub(ph) / 2;
-            eprintln!("Debug: compositing at ({},{}) on page, placed size: {}x{}", cx, cy, pw, ph);
-            (cx, cy)
-        };
+            };
 
         let img_to_composite = placed;
 
@@ -285,11 +350,14 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
             // For Outer: draw border in gap between image and expanded outer edge
             draw_border_in_gap_rgb16(
                 &mut page,
-                cx, cy,                               // image position
+                cx,
+                cy, // image position
                 img_to_composite.width(),
-                img_to_composite.height(),            // image size
-                p.dest_x_px, p.dest_y_px,             // box position
-                p.dest_w_px, p.dest_h_px,             // box size
+                img_to_composite.height(), // image size
+                p.dest_x_px,
+                p.dest_y_px, // box position
+                p.dest_w_px,
+                p.dest_h_px, // box size
                 p.border_width_px,
             );
         }
@@ -297,13 +365,31 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         let _ = source_dpi;
     }
 
-    let page = transform_rgb16_icc(&page, &working_profile, &output_profile, opts.intent, opts.bpc)?;
+    let page = transform_rgb16_icc(
+        &page,
+        &working_profile,
+        &output_profile,
+        opts.intent,
+        opts.bpc,
+    )?;
 
     if opts.depth == 8 {
         let dithered = dither_rgb16_to_rgb8(&page);
-        save_rgb8_tiff_with_dpi(&opts.output, &dithered, opts.target_dpi, &output_icc_bytes, &description)?;
+        save_rgb8_tiff_with_dpi(
+            &opts.output,
+            &dithered,
+            opts.target_dpi,
+            &output_icc_bytes,
+            &description,
+        )?;
     } else {
-        save_rgb16_tiff_with_dpi(&opts.output, &page, opts.target_dpi, &output_icc_bytes, &description)?;
+        save_rgb16_tiff_with_dpi(
+            &opts.output,
+            &page,
+            opts.target_dpi,
+            &output_icc_bytes,
+            &description,
+        )?;
     }
     Ok(())
 }
@@ -324,16 +410,18 @@ pub enum ResampleEngine {
     Mks,
     Lanczos3,
     IterativeStep,
-    RobidouxEwa,
+    MitchellEwa,
+    MitchellEwaSharp,
 }
 
 impl ResampleEngine {
     pub fn display_name(&self) -> &'static str {
         match self {
-            ResampleEngine::Mks           => "MKS (Magic Kernel Sharp)",
-            ResampleEngine::Lanczos3      => "Lanczos3",
+            ResampleEngine::Mks => "Catmull-Rom",
+            ResampleEngine::Lanczos3 => "Lanczos3",
             ResampleEngine::IterativeStep => "Iterative-Step",
-            ResampleEngine::RobidouxEwa   => "Robidoux-EWA",
+            ResampleEngine::MitchellEwa => "Mitchell-EWA",
+            ResampleEngine::MitchellEwaSharp => "Mitchell-EWA (Sharp)",
         }
     }
 }
@@ -342,13 +430,13 @@ impl ResampleEngine {
 /// The image will be letterboxed into the print rect, optionally rotated 90° CW,
 /// then composited onto a blank white full-paper page.
 pub struct PageLayout {
-    pub page_w_px:  u32,  // paper width in pixels  (paper_w_pt / 72 * dpi)
-    pub page_h_px:  u32,  // paper height in pixels
-    pub print_x:    u32,  // print rect left on page (centred in imageable area)
-    pub print_y:    u32,  // print rect top on page
-    pub print_w_px: u32,  // print rect width  (target box for letterboxing)
-    pub print_h_px: u32,  // print rect height
-    pub rotate_cw:  bool, // rotate image 90° CW before compositing
+    pub page_w_px: u32,  // paper width in pixels  (paper_w_pt / 72 * dpi)
+    pub page_h_px: u32,  // paper height in pixels
+    pub print_x: u32,    // print rect left on page (centred in imageable area)
+    pub print_y: u32,    // print rect top on page
+    pub print_w_px: u32, // print rect width  (target box for letterboxing)
+    pub print_h_px: u32, // print rect height
+    pub rotate_cw: bool, // rotate image 90° CW before compositing
 }
 
 pub struct ProcessOptions {
@@ -409,7 +497,7 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
 
     // Convert to 16-bit before resize so all engines operate at full depth
     let img16: Rgb16Image = match img {
-        LoadedImage::Rgb8(im)  => rgb8_to_rgb16(&im),
+        LoadedImage::Rgb8(im) => rgb8_to_rgb16(&im),
         LoadedImage::Rgb16(im) => im,
     };
 
@@ -427,17 +515,25 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         let new_h = ((oh as u64 * (s * 10000.0) as u64) / 10000) as u32;
         (new_w, new_h)
     } else {
-        scaled_dimensions(img16.width(), img16.height(),
-            source_dpi.unwrap_or(opts.target_dpi), opts.target_dpi)
+        scaled_dimensions(
+            img16.width(),
+            img16.height(),
+            source_dpi.unwrap_or(opts.target_dpi),
+            opts.target_dpi,
+        )
     };
 
-    println!("VibePrint Engine: {} initialized.", opts.engine.display_name());
+    println!(
+        "VibePrint Engine: {} initialized.",
+        opts.engine.display_name()
+    );
     let resized = resize_rgb16(&img16, new_w, new_h, &opts.engine);
 
     let radius_px = ((opts.target_dpi as u64 * 100) / 720) as f64 / 100.0;
     let sharpened = if opts.sharpen > 0 {
         let sigma = ((radius_px as u64 * 100) / 2) as f64 / 100.0;
-        let amount = opts.sharpen as f64 * 0.1;
+        let normalized = map_sharpening_slider(opts.sharpen as f64);
+        let amount = normalized * SHARPEN_MAX_AMOUNT;
         println!(
             "VibePrint: Applying Universal Sharpening (Level {}, Radius {:.2}px).",
             opts.sharpen, radius_px
@@ -488,11 +584,11 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
     };
 
     let intent_name = match opts.intent {
-        lcms2::Intent::Perceptual             => "Perceptual",
-        lcms2::Intent::RelativeColorimetric   => "Relative Colorimetric",
-        lcms2::Intent::Saturation             => "Saturation",
-        lcms2::Intent::AbsoluteColorimetric   => "Absolute Colorimetric",
-        _                                     => "Unknown",
+        lcms2::Intent::Perceptual => "Perceptual",
+        lcms2::Intent::RelativeColorimetric => "Relative Colorimetric",
+        lcms2::Intent::Saturation => "Saturation",
+        lcms2::Intent::AbsoluteColorimetric => "Absolute Colorimetric",
+        _ => "Unknown",
     };
     println!(
         "Applying {} transform {} Black Point Compensation.",
@@ -500,7 +596,11 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         if opts.bpc { "with" } else { "without" }
     );
 
-    let depth_label = if opts.depth == 8 { "8-bit (dithered)" } else { "16-bit" };
+    let depth_label = if opts.depth == 8 {
+        "8-bit (dithered)"
+    } else {
+        "16-bit"
+    };
     let sharpen_label = if opts.sharpen == 0 {
         "Off".to_string()
     } else {
@@ -536,11 +636,14 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
         let (pw, ph) = (placed.width(), placed.height());
         let cx = layout.print_x + layout.print_w_px.saturating_sub(pw) / 2;
         let cy = layout.print_y + layout.print_h_px.saturating_sub(ph) / 2;
-        println!("VibePrint: Compositing {}x{} image at ({},{}) on {}x{} page.",
-            pw, ph, cx, cy, layout.page_w_px, layout.page_h_px);
+        println!(
+            "VibePrint: Compositing {}x{} image at ({},{}) on {}x{} page.",
+            pw, ph, cx, cy, layout.page_w_px, layout.page_h_px
+        );
         let page_data = vec![65535u16; (layout.page_w_px * layout.page_h_px * 3) as usize];
-        let mut page: Rgb16Image = ImageBuffer::from_raw(layout.page_w_px, layout.page_h_px, page_data)
-            .context("failed to allocate page buffer")?;
+        let mut page: Rgb16Image =
+            ImageBuffer::from_raw(layout.page_w_px, layout.page_h_px, page_data)
+                .context("failed to allocate page buffer")?;
         composite_rgb16(&mut page, &placed, cx, cy);
         page
     } else {
@@ -564,11 +667,23 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
     if opts.depth == 8 {
         println!("VibePrint: Outputting 8-bit TIFF (with dithering).");
         let dithered = dither_rgb16_to_rgb8(&final_image);
-        save_rgb8_tiff_with_dpi(&opts.output, &dithered, opts.target_dpi, &output_icc_bytes, &description)?;
+        save_rgb8_tiff_with_dpi(
+            &opts.output,
+            &dithered,
+            opts.target_dpi,
+            &output_icc_bytes,
+            &description,
+        )?;
         println!("VibePrint: Saved 8-bit TIFF to {}", opts.output.display());
     } else {
         println!("VibePrint: Outputting 16-bit TIFF.");
-        save_rgb16_tiff_with_dpi(&opts.output, &final_image, opts.target_dpi, &output_icc_bytes, &description)?;
+        save_rgb16_tiff_with_dpi(
+            &opts.output,
+            &final_image,
+            opts.target_dpi,
+            &output_icc_bytes,
+            &description,
+        )?;
         println!("VibePrint: Saved 16-bit TIFF to {}", opts.output.display());
     }
 
@@ -641,10 +756,13 @@ fn resize_rgb16(img: &Rgb16Image, new_w: u32, new_h: u32, engine: &ResampleEngin
         return img.clone();
     }
     match engine {
-        ResampleEngine::Mks           => image::imageops::resize(img, new_w, new_h, FilterType::CatmullRom),
-        ResampleEngine::Lanczos3      => image::imageops::resize(img, new_w, new_h, FilterType::Lanczos3),
+        ResampleEngine::Mks => image::imageops::resize(img, new_w, new_h, FilterType::CatmullRom),
+        ResampleEngine::Lanczos3 => {
+            image::imageops::resize(img, new_w, new_h, FilterType::Lanczos3)
+        }
         ResampleEngine::IterativeStep => resize_iterative_step(img, new_w, new_h),
-        ResampleEngine::RobidouxEwa   => resize_ewa_robidoux(img, new_w, new_h),
+        ResampleEngine::MitchellEwa => resize_ewa_mitchell(img, new_w, new_h),
+        ResampleEngine::MitchellEwaSharp => resize_ewa_mitchell_sharp(img, new_w, new_h),
     }
 }
 
@@ -666,15 +784,23 @@ fn resize_iterative_step(img: &Rgb16Image, target_w: u32, target_h: u32) -> Rgb1
         } else {
             ((cur_h as u64 * 10000) / 11000).max(1) as u32
         };
-        let next_w = if target_w > cur_w { next_w.min(target_w) } else { next_w.max(target_w) };
-        let next_h = if target_h > cur_h { next_h.min(target_h) } else { next_h.max(target_h) };
+        let next_w = if target_w > cur_w {
+            next_w.min(target_w)
+        } else {
+            next_w.max(target_w)
+        };
+        let next_h = if target_h > cur_h {
+            next_h.min(target_h)
+        } else {
+            next_h.max(target_h)
+        };
         current = image::imageops::resize(&current, next_w, next_h, FilterType::Lanczos3);
     }
     current
 }
 
 #[inline]
-fn robidoux_kernel(t: f64) -> f64 {
+fn mitchell_kernel(t: f64) -> f64 {
     const B: f64 = 0.3782;
     const C: f64 = 0.3109;
     let t = t.abs();
@@ -694,7 +820,41 @@ fn robidoux_kernel(t: f64) -> f64 {
     }
 }
 
-fn resize_ewa_robidoux(img: &Rgb16Image, dst_w: u32, dst_h: u32) -> Rgb16Image {
+#[inline]
+fn mitchell_sharp_kernel(t: f64) -> f64 {
+    const B: f64 = 0.30;
+    const C: f64 = 0.35;
+    let t = t.abs();
+    if t < 1.0 {
+        ((12.0 - 9.0 * B - 6.0 * C) * t * t * t
+            + (-18.0 + 12.0 * B + 6.0 * C) * t * t
+            + (6.0 - 2.0 * B))
+            / 6.0
+    } else if t < 2.0 {
+        ((-B - 6.0 * C) * t * t * t
+            + (6.0 * B + 30.0 * C) * t * t
+            + (-12.0 * B - 48.0 * C) * t
+            + (8.0 * B + 24.0 * C))
+            / 6.0
+    } else {
+        0.0
+    }
+}
+
+fn resize_ewa_mitchell(img: &Rgb16Image, dst_w: u32, dst_h: u32) -> Rgb16Image {
+    resize_ewa_cubic(img, dst_w, dst_h, mitchell_kernel)
+}
+
+fn resize_ewa_mitchell_sharp(img: &Rgb16Image, dst_w: u32, dst_h: u32) -> Rgb16Image {
+    resize_ewa_cubic(img, dst_w, dst_h, mitchell_sharp_kernel)
+}
+
+fn resize_ewa_cubic(
+    img: &Rgb16Image,
+    dst_w: u32,
+    dst_h: u32,
+    kernel: fn(f64) -> f64,
+) -> Rgb16Image {
     let src_w = img.width() as f64;
     let src_h = img.height() as f64;
     let scale_x = src_w / (dst_w as f64);
@@ -732,7 +892,7 @@ fn resize_ewa_robidoux(img: &Rgb16Image, dst_w: u32, dst_h: u32) -> Rgb16Image {
                     if r2 >= 1.0 {
                         continue;
                     }
-                    let w = robidoux_kernel(r2.sqrt() * 2.0);
+                    let w = kernel(r2.sqrt() * 2.0);
                     if w == 0.0 {
                         continue;
                     }
@@ -748,18 +908,24 @@ fn resize_ewa_robidoux(img: &Rgb16Image, dst_w: u32, dst_h: u32) -> Rgb16Image {
 
             let idx = ((oy * dst_w + ox) * 3) as usize;
             if sum_w > 1e-10 {
-                output[idx]     = ((sum_r as u64 * 10000) / (sum_w as u64) / 10000).clamp(0, 65535) as u16;
-                output[idx + 1] = ((sum_g as u64 * 10000) / (sum_w as u64) / 10000).clamp(0, 65535) as u16;
-                output[idx + 2] = ((sum_b as u64 * 10000) / (sum_w as u64) / 10000).clamp(0, 65535) as u16;
+                let r = (sum_r / sum_w).round().clamp(0.0, 65535.0) as u16;
+                let g = (sum_g / sum_w).round().clamp(0.0, 65535.0) as u16;
+                let b = (sum_b / sum_w).round().clamp(0.0, 65535.0) as u16;
+                output[idx] = r;
+                output[idx + 1] = g;
+                output[idx + 2] = b;
             }
         }
     }
 
-    ImageBuffer::from_raw(dst_w, dst_h, output).expect("ewa_robidoux: buffer size mismatch")
+    ImageBuffer::from_raw(dst_w, dst_h, output).expect("resize_ewa_cubic: buffer size mismatch")
 }
 
-fn load_image_with_dpi_and_embedded_icc(path: &Path) -> Result<(LoadedImage, Option<f64>, Option<Vec<u8>>)> {
-    let dyn_img = image::open(path).with_context(|| format!("failed to decode image: {}", path.display()))?;
+fn load_image_with_dpi_and_embedded_icc(
+    path: &Path,
+) -> Result<(LoadedImage, Option<f64>, Option<Vec<u8>>)> {
+    let dyn_img =
+        image::open(path).with_context(|| format!("failed to decode image: {}", path.display()))?;
 
     let (dpi, embedded_icc) = if is_tiff_path(path) {
         read_tiff_dpi_and_embedded_icc(path).unwrap_or((None, None))
@@ -825,10 +991,12 @@ fn read_png_dpi_and_embedded_icc(path: &Path) -> (Option<f64>, Option<Vec<u8>>) 
         }
         let mut i = 8usize;
         while i + 12 <= data.len() {
-            let chunk_len = u32::from_be_bytes(data[i..i+4].try_into().ok()?) as usize;
-            let chunk_type = &data[i+4..i+8];
-            if i + 8 + chunk_len > data.len() { break; }
-            let chunk_data = &data[i+8..i+8+chunk_len];
+            let chunk_len = u32::from_be_bytes(data[i..i + 4].try_into().ok()?) as usize;
+            let chunk_type = &data[i + 4..i + 8];
+            if i + 8 + chunk_len > data.len() {
+                break;
+            }
+            let chunk_data = &data[i + 8..i + 8 + chunk_len];
             i += 12 + chunk_len;
             if chunk_type == b"pHYs" && chunk_data.len() >= 9 {
                 let px = u32::from_be_bytes(chunk_data[0..4].try_into().ok()?);
@@ -840,7 +1008,9 @@ fn read_png_dpi_and_embedded_icc(path: &Path) -> (Option<f64>, Option<Vec<u8>>) 
                 }
             }
             // pHYs appears before IDAT; stop once image data starts
-            if chunk_type == b"IDAT" || chunk_type == b"IEND" { break; }
+            if chunk_type == b"IDAT" || chunk_type == b"IEND" {
+                break;
+            }
         }
         None
     })();
@@ -851,20 +1021,19 @@ fn read_png_dpi_and_embedded_icc(path: &Path) -> (Option<f64>, Option<Vec<u8>>) 
 fn read_webp_embedded_icc(path: &Path) -> Option<Vec<u8>> {
     let data = std::fs::read(path).ok()?;
     // RIFF header: "RIFF" + 4-byte LE size + "WEBP"
-    if data.len() < 12
-        || &data[0..4] != b"RIFF"
-        || &data[8..12] != b"WEBP"
-    {
+    if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WEBP" {
         return None;
     }
     let mut i = 12usize;
     while i + 8 <= data.len() {
-        let chunk_id = &data[i..i+4];
-        let chunk_size = u32::from_le_bytes(data[i+4..i+8].try_into().ok()?) as usize;
+        let chunk_id = &data[i..i + 4];
+        let chunk_size = u32::from_le_bytes(data[i + 4..i + 8].try_into().ok()?) as usize;
         let payload_start = i + 8;
-        if payload_start + chunk_size > data.len() { break; }
+        if payload_start + chunk_size > data.len() {
+            break;
+        }
         if chunk_id == b"ICCP" {
-            return Some(data[payload_start..payload_start+chunk_size].to_vec());
+            return Some(data[payload_start..payload_start + chunk_size].to_vec());
         }
         // Chunks are padded to even byte boundaries
         i = payload_start + chunk_size + (chunk_size & 1);
@@ -955,16 +1124,24 @@ fn read_jpeg_dpi_and_embedded_icc(path: &Path) -> (Option<f64>, Option<Vec<u8>>)
 fn dynamic_to_rgb8_or_rgb16(img: DynamicImage) -> Result<LoadedImage> {
     Ok(match img {
         DynamicImage::ImageRgb16(im) => LoadedImage::Rgb16(im),
-        DynamicImage::ImageRgba16(im) => LoadedImage::Rgb16(image::DynamicImage::ImageRgba16(im).to_rgb16()),
-        DynamicImage::ImageLuma16(im) => LoadedImage::Rgb16(image::DynamicImage::ImageLuma16(im).to_rgb16()),
-        DynamicImage::ImageLumaA16(im) => LoadedImage::Rgb16(image::DynamicImage::ImageLumaA16(im).to_rgb16()),
+        DynamicImage::ImageRgba16(im) => {
+            LoadedImage::Rgb16(image::DynamicImage::ImageRgba16(im).to_rgb16())
+        }
+        DynamicImage::ImageLuma16(im) => {
+            LoadedImage::Rgb16(image::DynamicImage::ImageLuma16(im).to_rgb16())
+        }
+        DynamicImage::ImageLumaA16(im) => {
+            LoadedImage::Rgb16(image::DynamicImage::ImageLumaA16(im).to_rgb16())
+        }
         _ => LoadedImage::Rgb8(img.to_rgb8()),
     })
 }
 
 fn read_tiff_dpi_and_embedded_icc(path: &Path) -> Result<(Option<f64>, Option<Vec<u8>>)> {
-    let file = File::open(path).with_context(|| format!("failed to open TIFF: {}", path.display()))?;
-    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file)).context("failed to create TIFF decoder")?;
+    let file =
+        File::open(path).with_context(|| format!("failed to open TIFF: {}", path.display()))?;
+    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))
+        .context("failed to create TIFF decoder")?;
     let dpi = read_tiff_dpi(&mut decoder);
     let embedded_icc = read_tiff_embedded_icc(&mut decoder);
     Ok((dpi, embedded_icc))
@@ -1002,7 +1179,9 @@ fn read_tiff_dpi(decoder: &mut tiff::decoder::Decoder<BufReader<File>>) -> Optio
     dpi
 }
 
-fn read_tiff_embedded_icc(decoder: &mut tiff::decoder::Decoder<BufReader<File>>) -> Option<Vec<u8>> {
+fn read_tiff_embedded_icc(
+    decoder: &mut tiff::decoder::Decoder<BufReader<File>>,
+) -> Option<Vec<u8>> {
     use tiff::decoder::ifd::Value;
     use tiff::tags::Tag;
 
@@ -1065,7 +1244,8 @@ fn transform_rgb16_icc(
         });
     }
 
-    let mut output_pixels: Vec<Rgb16Pixel> = vec![Rgb16Pixel { r: 0, g: 0, b: 0 }; input_pixels.len()];
+    let mut output_pixels: Vec<Rgb16Pixel> =
+        vec![Rgb16Pixel { r: 0, g: 0, b: 0 }; input_pixels.len()];
     transform.transform_pixels(&input_pixels, &mut output_pixels);
 
     let mut output_raw: Vec<u16> = Vec::with_capacity(input_raw.len());
@@ -1081,7 +1261,13 @@ fn transform_rgb16_icc(
     Ok(out)
 }
 
-fn save_rgb8_tiff_with_dpi(path: &Path, img: &Rgb8Image, dpi: f64, output_icc_bytes: &[u8], description: &str) -> Result<()> {
+fn save_rgb8_tiff_with_dpi(
+    path: &Path,
+    img: &Rgb8Image,
+    dpi: f64,
+    output_icc_bytes: &[u8],
+    description: &str,
+) -> Result<()> {
     use tiff::encoder::{colortype, TiffEncoder};
     use tiff::tags::Tag;
 
@@ -1089,19 +1275,28 @@ fn save_rgb8_tiff_with_dpi(path: &Path, img: &Rgb8Image, dpi: f64, output_icc_by
         bail!("dpi must be > 0");
     }
 
-    let file = File::create(path).with_context(|| format!("failed to create output file: {}", path.display()))?;
+    let file = File::create(path)
+        .with_context(|| format!("failed to create output file: {}", path.display()))?;
     let mut encoder = TiffEncoder::new(file).context("failed to create TIFF encoder")?;
     let mut image = encoder
         .new_image::<colortype::RGB8>(img.width(), img.height())
         .context("failed to create 8-bit TIFF image")?;
 
     let (n, d) = dpi_to_rational(dpi);
-    let _ = image.encoder().write_tag(Tag::XResolution, tiff::encoder::Rational { n, d });
-    let _ = image.encoder().write_tag(Tag::YResolution, tiff::encoder::Rational { n, d });
+    let _ = image
+        .encoder()
+        .write_tag(Tag::XResolution, tiff::encoder::Rational { n, d });
+    let _ = image
+        .encoder()
+        .write_tag(Tag::YResolution, tiff::encoder::Rational { n, d });
     let _ = image.encoder().write_tag(Tag::ResolutionUnit, 2u16);
     let _ = image.encoder().write_tag(Tag::IccProfile, output_icc_bytes);
-    let _ = image.encoder().write_tag(Tag::from_u16_exhaustive(40961), 65535u16);
-    let _ = image.encoder().write_tag(Tag::ImageDescription, description);
+    let _ = image
+        .encoder()
+        .write_tag(Tag::from_u16_exhaustive(40961), 65535u16);
+    let _ = image
+        .encoder()
+        .write_tag(Tag::ImageDescription, description);
 
     image
         .write_data(img.as_raw())
@@ -1110,7 +1305,13 @@ fn save_rgb8_tiff_with_dpi(path: &Path, img: &Rgb8Image, dpi: f64, output_icc_by
     Ok(())
 }
 
-fn save_rgb16_tiff_with_dpi(path: &Path, img: &Rgb16Image, dpi: f64, output_icc_bytes: &[u8], description: &str) -> Result<()> {
+fn save_rgb16_tiff_with_dpi(
+    path: &Path,
+    img: &Rgb16Image,
+    dpi: f64,
+    output_icc_bytes: &[u8],
+    description: &str,
+) -> Result<()> {
     use tiff::encoder::{colortype, TiffEncoder};
     use tiff::tags::Tag;
 
@@ -1118,26 +1319,57 @@ fn save_rgb16_tiff_with_dpi(path: &Path, img: &Rgb16Image, dpi: f64, output_icc_
         bail!("dpi must be > 0");
     }
 
-    let file = File::create(path).with_context(|| format!("failed to create output file: {}", path.display()))?;
+    let file = File::create(path)
+        .with_context(|| format!("failed to create output file: {}", path.display()))?;
     let mut encoder = TiffEncoder::new(file).context("failed to create TIFF encoder")?;
     let mut image = encoder
         .new_image::<colortype::RGB16>(img.width(), img.height())
         .context("failed to create TIFF image")?;
 
     let (n, d) = dpi_to_rational(dpi);
-    let _ = image.encoder().write_tag(Tag::XResolution, tiff::encoder::Rational { n, d });
-    let _ = image.encoder().write_tag(Tag::YResolution, tiff::encoder::Rational { n, d });
+    let _ = image
+        .encoder()
+        .write_tag(Tag::XResolution, tiff::encoder::Rational { n, d });
+    let _ = image
+        .encoder()
+        .write_tag(Tag::YResolution, tiff::encoder::Rational { n, d });
     let _ = image.encoder().write_tag(Tag::ResolutionUnit, 2u16);
 
     let _ = image.encoder().write_tag(Tag::IccProfile, output_icc_bytes);
-    let _ = image.encoder().write_tag(Tag::from_u16_exhaustive(40961), 65535u16);
-    let _ = image.encoder().write_tag(Tag::ImageDescription, description);
+    let _ = image
+        .encoder()
+        .write_tag(Tag::from_u16_exhaustive(40961), 65535u16);
+    let _ = image
+        .encoder()
+        .write_tag(Tag::ImageDescription, description);
 
     image
         .write_data(img.as_raw())
         .context("failed to write TIFF pixel data")?;
 
     Ok(())
+}
+
+const SHARPEN_SLIDER_NEUTRAL: f64 = 5.0;
+const SHARPEN_SLIDER_MAX: f64 = 20.0;
+const SHARPEN_NEUTRAL_AMOUNT: f64 = 0.8; // perceptual baseline USM strength
+const SHARPEN_MAX_AMOUNT: f64 = 2.0; // existing USM upper bound
+
+/// Maps the UI sharpening slider (0-20) to a normalized 0-1 strength while anchoring
+/// slider value 5 to the calibrated neutral amount (~0.8). The curve is piecewise:
+/// quadratic below 5 for fine control, cubic-ease above 5 for gentle growth.
+fn map_sharpening_slider(value: f64) -> f64 {
+    let v = value.clamp(0.0, SHARPEN_SLIDER_MAX);
+    let neutral_norm = SHARPEN_NEUTRAL_AMOUNT / SHARPEN_MAX_AMOUNT;
+
+    if v <= SHARPEN_SLIDER_NEUTRAL {
+        let t = (v / SHARPEN_SLIDER_NEUTRAL).max(0.0);
+        neutral_norm * t * t
+    } else {
+        let t = (v - SHARPEN_SLIDER_NEUTRAL) / (SHARPEN_SLIDER_MAX - SHARPEN_SLIDER_NEUTRAL);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        neutral_norm + (1.0 - neutral_norm) * eased
+    }
 }
 
 fn gaussian_blur_rgb16(img: &Rgb16Image, sigma: f64) -> Rgb16Image {
@@ -1195,7 +1427,12 @@ fn gaussian_blur_rgb16(img: &Rgb16Image, sigma: f64) -> Rgb16Image {
     ImageBuffer::from_raw(w as u32, h as u32, result).expect("gaussian_blur_rgb16: buffer mismatch")
 }
 
-fn unsharp_mask_rgb16(img: &Rgb16Image, sigma: f64, amount: f64, threshold_frac: f64) -> Rgb16Image {
+fn unsharp_mask_rgb16(
+    img: &Rgb16Image,
+    sigma: f64,
+    amount: f64,
+    threshold_frac: f64,
+) -> Rgb16Image {
     let blurred = gaussian_blur_rgb16(img, sigma);
     let threshold = threshold_frac * 65535.0;
 
@@ -1247,7 +1484,7 @@ fn rotate_90_cw_rgb16(img: &Rgb16Image) -> Rgb16Image {
             let oy = nx;
             let si = ((oy * w + ox) * 3) as usize;
             let di = ((ny * new_w + nx) * 3) as usize;
-            dst[di]     = src[si];
+            dst[di] = src[si];
             dst[di + 1] = src[si + 1];
             dst[di + 2] = src[si + 2];
         }
@@ -1259,19 +1496,22 @@ fn rotate_90_cw_rgb16(img: &Rgb16Image) -> Rgb16Image {
 fn composite_rgb16(page: &mut Rgb16Image, img: &Rgb16Image, x: u32, y: u32) {
     let page_w = page.width();
     let page_h = page.height();
-    let img_w  = img.width();
-    let img_h  = img.height();
+    let img_w = img.width();
+    let img_h = img.height();
     let src = img.as_raw();
     let dst = page.as_mut();
     for row in 0..img_h {
         let py = y + row;
-        if py >= page_h { break; }
+        if py >= page_h {
+            break;
+        }
         let cols = img_w.min(page_w.saturating_sub(x));
-        if cols == 0 { continue; }
+        if cols == 0 {
+            continue;
+        }
         let si = (row * img_w * 3) as usize;
         let di = (py * page_w * 3 + x * 3) as usize;
-        dst[di..di + (cols * 3) as usize]
-            .copy_from_slice(&src[si..si + (cols * 3) as usize]);
+        dst[di..di + (cols * 3) as usize].copy_from_slice(&src[si..si + (cols * 3) as usize]);
     }
 }
 
@@ -1309,10 +1549,14 @@ fn draw_border_in_gap_rgb16(
     // Top strip: full width of box, height = gap_top
     for row in 0..border_top {
         let py = box_y + row;
-        if py >= page_h { break; }
+        if py >= page_h {
+            break;
+        }
         for col in 0..box_w {
             let px = box_x + col;
-            if px >= page_w { continue; }
+            if px >= page_w {
+                continue;
+            }
             let di = ((py * page_w + px) * 3) as usize;
             dst[di] = 0;
             dst[di + 1] = 0;
@@ -1323,10 +1567,14 @@ fn draw_border_in_gap_rgb16(
     // Bottom strip: full width of box, height = gap_bottom
     for row in 0..border_bottom {
         let py = box_y + box_h - border_bottom + row;
-        if py >= page_h { break; }
+        if py >= page_h {
+            break;
+        }
         for col in 0..box_w {
             let px = box_x + col;
-            if px >= page_w { continue; }
+            if px >= page_w {
+                continue;
+            }
             let di = ((py * page_w + px) * 3) as usize;
             dst[di] = 0;
             dst[di + 1] = 0;
@@ -1339,10 +1587,14 @@ fn draw_border_in_gap_rgb16(
     let left_strip_bottom = box_y + box_h - border_bottom;
     for row in left_strip_top..left_strip_bottom {
         let py = row;
-        if py >= page_h { break; }
+        if py >= page_h {
+            break;
+        }
         for col in 0..border_left {
             let px = box_x + col;
-            if px >= page_w { continue; }
+            if px >= page_w {
+                continue;
+            }
             let di = ((py * page_w + px) * 3) as usize;
             dst[di] = 0;
             dst[di + 1] = 0;
@@ -1353,10 +1605,14 @@ fn draw_border_in_gap_rgb16(
     // Right strip: between top and bottom of image
     for row in left_strip_top..left_strip_bottom {
         let py = row;
-        if py >= page_h { break; }
+        if py >= page_h {
+            break;
+        }
         for col in 0..border_right {
             let px = box_x + box_w - border_right + col;
-            if px >= page_w { continue; }
+            if px >= page_w {
+                continue;
+            }
             let di = ((py * page_w + px) * 3) as usize;
             dst[di] = 0;
             dst[di + 1] = 0;

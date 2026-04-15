@@ -6,7 +6,11 @@ use image::GenericImageView;
 use vibeprint::{printer_discovery, processor};
 
 #[derive(Parser, Debug)]
-#[command(name = "vibeprint", version, about = "Image layout + color-managed printing (prototype)")]
+#[command(
+    name = "vibeprint",
+    version,
+    about = "Image layout + color-managed printing (prototype)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -14,16 +18,20 @@ struct Cli {
 
 #[derive(clap::ValueEnum, Debug, Clone)]
 enum CliEngine {
-    /// Magic Kernel Sharp — Catmull-Rom cubic (default)
+    /// Catmull-Rom cubic resampler (default; accepts legacy alias "mks")
+    #[value(name = "catmullrom", alias = "mks")]
     Mks,
     /// Classic Lanczos3
     Lanczos3,
     /// Iterative 1.1x step upscaling
     #[value(name = "iterative-step")]
     IterativeStep,
-    /// Elliptical Weighted Average with Robidoux coefficients
-    #[value(name = "robidoux-ewa")]
-    RobidouxEwa,
+    /// Elliptical Weighted Average with Mitchell coefficients
+    #[value(name = "mitchell-ewa")]
+    MitchellEwa,
+    /// Mitchell-EWA variant tuned for higher sharpness
+    #[value(name = "mitchell-sharp")]
+    MitchellEwaSharp,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
@@ -83,8 +91,8 @@ enum Command {
         /// Explicitly disable Black Point Compensation
         #[arg(long = "no-bpc", conflicts_with = "bpc")]
         no_bpc: bool,
-        /// Resampling engine (default: mks)
-        #[arg(long = "engine", default_value = "mks")]
+        /// Resampling engine (default: catmullrom)
+        #[arg(long = "engine", default_value = "catmullrom")]
         engine: CliEngine,
         /// Output bit depth: 8 (dithered) or 16 (default)
         #[arg(long = "depth", default_value = "16")]
@@ -122,18 +130,25 @@ fn main() -> Result<()> {
             target_dpi: dpi,
             intent: match intent {
                 ColorIntent::Perceptual => lcms2::Intent::Perceptual,
-                ColorIntent::Relative   => lcms2::Intent::RelativeColorimetric,
+                ColorIntent::Relative => lcms2::Intent::RelativeColorimetric,
                 ColorIntent::Saturation => lcms2::Intent::Saturation,
             },
-            bpc: if bpc { true } else if no_bpc { false } else { matches!(intent, ColorIntent::Relative) },
+            bpc: if bpc {
+                true
+            } else if no_bpc {
+                false
+            } else {
+                matches!(intent, ColorIntent::Relative)
+            },
             engine: match engine {
-                CliEngine::Mks           => processor::ResampleEngine::Mks,
-                CliEngine::Lanczos3      => processor::ResampleEngine::Lanczos3,
+                CliEngine::Mks => processor::ResampleEngine::Mks,
+                CliEngine::Lanczos3 => processor::ResampleEngine::Lanczos3,
                 CliEngine::IterativeStep => processor::ResampleEngine::IterativeStep,
-                CliEngine::RobidouxEwa   => processor::ResampleEngine::RobidouxEwa,
+                CliEngine::MitchellEwa => processor::ResampleEngine::MitchellEwa,
+                CliEngine::MitchellEwaSharp => processor::ResampleEngine::MitchellEwaSharp,
             },
             depth: match depth {
-                OutputDepth::Eight   => 8,
+                OutputDepth::Eight => 8,
                 OutputDepth::Sixteen => 16,
             },
             sharpen,
@@ -168,7 +183,12 @@ fn print_generic_metadata(path: &PathBuf) -> Result<()> {
     let (w, h) = dyn_img.dimensions();
 
     println!("File: {}", path.display());
-    println!("Format: {}", format.map(|f| format!("{f:?}")).unwrap_or("Unknown".to_string()));
+    println!(
+        "Format: {}",
+        format
+            .map(|f| format!("{f:?}"))
+            .unwrap_or("Unknown".to_string())
+    );
     println!("Dimensions: {} x {} px", w, h);
 
     let (bit_depth, color_space_hint) = match dyn_img {
@@ -183,7 +203,14 @@ fn print_generic_metadata(path: &PathBuf) -> Result<()> {
         _ => (0u32, "Unknown"),
     };
 
-    println!("Bit depth: {}", if bit_depth == 0 { "Unknown".to_string() } else { format!("{}-bit", bit_depth) });
+    println!(
+        "Bit depth: {}",
+        if bit_depth == 0 {
+            "Unknown".to_string()
+        } else {
+            format!("{}-bit", bit_depth)
+        }
+    );
     println!("Color space hint: {}", color_space_hint);
     println!("DPI: Unknown (not available via image crate for this format)");
 
@@ -191,11 +218,17 @@ fn print_generic_metadata(path: &PathBuf) -> Result<()> {
 }
 
 fn print_tiff_metadata(path: &PathBuf) -> Result<()> {
-    let file = File::open(path).with_context(|| format!("failed to open TIFF: {}", path.display()))?;
-    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file)).context("failed to create TIFF decoder")?;
+    let file =
+        File::open(path).with_context(|| format!("failed to open TIFF: {}", path.display()))?;
+    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))
+        .context("failed to create TIFF decoder")?;
 
-    let dims = decoder.dimensions().context("failed to read TIFF dimensions")?;
-    let ct = decoder.colortype().context("failed to read TIFF color type")?;
+    let dims = decoder
+        .dimensions()
+        .context("failed to read TIFF dimensions")?;
+    let ct = decoder
+        .colortype()
+        .context("failed to read TIFF color type")?;
 
     println!("File: {}", path.display());
     println!("Format: TIFF");
@@ -307,10 +340,16 @@ fn print_printers(name: Option<&str>) -> Result<()> {
             println!("Page sizes ({}):", caps.page_sizes.len());
             for ps in &caps.page_sizes {
                 let (l, b, r, t) = ps.imageable_area;
-                println!("  - {} \"{}\"  imageable [{:.1} {:.1} {:.1} {:.1}] pt", ps.name, ps.label, l, b, r, t);
+                println!(
+                    "  - {} \"{}\"  imageable [{:.1} {:.1} {:.1} {:.1}] pt",
+                    ps.name, ps.label, l, b, r, t
+                );
             }
             let (l, b, r, t) = caps.printable_area;
-            println!("Default printable area: [{:.1} {:.1} {:.1} {:.1}] pt", l, b, r, t);
+            println!(
+                "Default printable area: [{:.1} {:.1} {:.1} {:.1}] pt",
+                l, b, r, t
+            );
         }
         None => {
             // List all printers, mark default
@@ -321,14 +360,10 @@ fn print_printers(name: Option<&str>) -> Result<()> {
             }
             println!("{} printer(s) found:", printers.len());
             for p in &printers {
-                println!(
-                    "  {} {}",
-                    if p.is_default { "*" } else { " " },
-                    p.name
-                );
+                println!("  {} {}", if p.is_default { "*" } else { " " }, p.name);
                 match printer_discovery::find_ppd_path(&p.name) {
                     Some(path) => println!("    PPD: {}", path.display()),
-                    None       => println!("    PPD: not found"),
+                    None => println!("    PPD: not found"),
                 }
             }
             println!("(* = system default  |  use --name <printer> to show full capabilities)");

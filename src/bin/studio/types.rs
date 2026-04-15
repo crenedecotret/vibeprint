@@ -85,27 +85,36 @@ impl IccProfileEntry {
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Engine {
     Mks,
-    RobidouxEwa,
+    MitchellEwa,
+    MitchellEwaSharp,
     Iterative,
     Lanczos3,
 }
 
 impl Engine {
-    pub const ALL: &'static [Engine] = &[Engine::Mks, Engine::RobidouxEwa, Engine::Iterative, Engine::Lanczos3];
-    
+    pub const ALL: &'static [Engine] = &[
+        Engine::MitchellEwa,
+        Engine::MitchellEwaSharp,
+        Engine::Mks,
+        Engine::Lanczos3,
+        Engine::Iterative,
+    ];
+
     pub fn label(&self) -> &'static str {
         match self {
-            Engine::Mks => "MKS (Magic Kernel Sharp)",
-            Engine::RobidouxEwa => "Robidoux-EWA",
+            Engine::Mks => "Catmull-Rom",
+            Engine::MitchellEwa => "Mitchell-EWA",
+            Engine::MitchellEwaSharp => "Mitchell-EWA (Sharp)",
             Engine::Iterative => "Iterative Step",
             Engine::Lanczos3 => "Lanczos3",
         }
     }
-    
+
     pub fn to_proc(&self) -> ResampleEngine {
         match self {
             Engine::Mks => ResampleEngine::Mks,
-            Engine::RobidouxEwa => ResampleEngine::RobidouxEwa,
+            Engine::MitchellEwa => ResampleEngine::MitchellEwa,
+            Engine::MitchellEwaSharp => ResampleEngine::MitchellEwaSharp,
             Engine::Iterative => ResampleEngine::IterativeStep,
             Engine::Lanczos3 => ResampleEngine::Lanczos3,
         }
@@ -127,7 +136,7 @@ impl Intent {
             Intent::Saturation => "Saturation",
         }
     }
-    
+
     pub fn to_lcms(&self) -> lcms2::Intent {
         match self {
             Intent::Perceptual => lcms2::Intent::Perceptual,
@@ -318,10 +327,10 @@ pub(crate) struct AppState {
     pub show_crop_editor: bool,
     pub crop_editor_queue_id: Option<Uuid>,
     pub crop_editor_uv: (f32, f32, f32, f32),
-    pub crop_editor_zoom: f32,  // Zoom level: 1.0 = default crop size
-    pub crop_editor_center: (f32, f32),  // Center position (u, v) for zoom operations
-    pub crop_editor_default_w: f32,  // Initial crop width at zoom = 1.0
-    pub crop_editor_default_h: f32,  // Initial crop height at zoom = 1.0
+    pub crop_editor_zoom: f32, // Zoom level: 1.0 = default crop size
+    pub crop_editor_center: (f32, f32), // Center position (u, v) for zoom operations
+    pub crop_editor_default_w: f32, // Initial crop width at zoom = 1.0
+    pub crop_editor_default_h: f32, // Initial crop height at zoom = 1.0
     pub crop_editor_dragging: bool,
     pub crop_editor_drag_start: Option<egui::Pos2>,
     pub crop_editor_drag_start_uv: Option<(f32, f32, f32, f32)>,
