@@ -122,7 +122,11 @@ pub fn find_ppd_path(printer_name: &str) -> Option<PathBuf> {
     }
     // Fallback: conventional location
     let p = PathBuf::from(format!("/etc/cups/ppd/{}.ppd", printer_name));
-    if p.exists() { Some(p) } else { None }
+    if p.exists() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 fn find_ppd_via_lpstat(printer_name: &str) -> Option<PathBuf> {
@@ -209,7 +213,9 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
                     let v = token.trim_start_matches('*');
                     let k = v.split('/').next().unwrap_or(v);
                     if let Some(dpi) = parse_resolution_value(k) {
-                        if !resolutions.contains(&dpi) { resolutions.push(dpi); }
+                        if !resolutions.contains(&dpi) {
+                            resolutions.push(dpi);
+                        }
                     }
                 }
             }
@@ -235,8 +241,9 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
                 for token in values_str.split_whitespace() {
                     let v = token.trim_start_matches('*');
                     let mut parts = v.splitn(2, '/');
-                    let k     = parts.next().unwrap_or(v).trim().to_string();
-                    let label = parts.next()
+                    let k = parts.next().unwrap_or(v).trim().to_string();
+                    let label = parts
+                        .next()
                         .map(|s| clean_paper_size_label(&s.trim().to_string()))
                         .filter(|s| !s.is_empty())
                         .unwrap_or_else(|| human_readable_label(&clean_paper_size_label(&k)));
@@ -257,8 +264,12 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
                     } else {
                         (v.to_string(), v.to_string())
                     };
-                    if is_default { default_idx = choices.len(); }
-                    if !ck.is_empty() { choices.push((ck, cl)); }
+                    if is_default {
+                        default_idx = choices.len();
+                    }
+                    if !ck.is_empty() {
+                        choices.push((ck, cl));
+                    }
                 }
                 if choices.len() >= 2 {
                     extra_options.push(CupsOption {
@@ -283,20 +294,33 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
     let mut page_sizes: Vec<PageSize> = page_size_entries
         .into_iter()
         .map(|(name, label)| {
-            let imageable_area = standard_imageable_area(&name)
-                .unwrap_or((0.0, 0.0, 612.0, 792.0));
-            let paper_size = standard_paper_size(&name)
-                .unwrap_or((imageable_area.2, imageable_area.3));
-            PageSize { name, label, paper_size, imageable_area }
+            let imageable_area = standard_imageable_area(&name).unwrap_or((0.0, 0.0, 612.0, 792.0));
+            let paper_size =
+                standard_paper_size(&name).unwrap_or((imageable_area.2, imageable_area.3));
+            PageSize {
+                name,
+                label,
+                paper_size,
+                imageable_area,
+            }
         })
         .collect();
     fill_standard_imageable_areas(&mut page_sizes);
 
-    let printable_area = page_sizes.first()
+    let printable_area = page_sizes
+        .first()
         .map(|p| p.imageable_area)
         .unwrap_or((0.0, 0.0, 612.0, 792.0));
 
-    Ok(PrinterCaps { name: name.to_string(), resolutions, media_types, input_slots, page_sizes, printable_area, extra_options })
+    Ok(PrinterCaps {
+        name: name.to_string(),
+        resolutions,
+        media_types,
+        input_slots,
+        page_sizes,
+        printable_area,
+        extra_options,
+    })
 }
 
 /// Extract only the `Resolution` values from `lpoptions -p <name> -l`.
@@ -313,9 +337,15 @@ fn lpoptions_resolutions(name: &str) -> Vec<u32> {
         if key == "Resolution" || key == "OutputResolution" || key == "Dpi" {
             if let Some(vals) = line.split_once(':').map(|(_, v)| v) {
                 for token in vals.split_whitespace() {
-                    let v = token.trim_start_matches('*').split('/').next().unwrap_or("");
+                    let v = token
+                        .trim_start_matches('*')
+                        .split('/')
+                        .next()
+                        .unwrap_or("");
                     if let Some(dpi) = parse_resolution_value(v) {
-                        if !resolutions.contains(&dpi) { resolutions.push(dpi); }
+                        if !resolutions.contains(&dpi) {
+                            resolutions.push(dpi);
+                        }
                     }
                 }
             }
@@ -330,24 +360,24 @@ fn lpoptions_resolutions(name: &str) -> Vec<u32> {
 /// Values represent the physical page dimensions (i.e. effectively borderless bounds).
 fn standard_imageable_area(size_name: &str) -> Option<(f32, f32, f32, f32)> {
     Some(match size_name {
-        "Letter"               => (0.0, 0.0, 612.0,  792.0),
-        "Legal"                => (0.0, 0.0, 612.0, 1008.0),
-        "Tabloid" | "11x17"   => (0.0, 0.0, 792.0, 1224.0),
-        "Executive"            => (0.0, 0.0, 522.0,  756.0),
-        "Statement"            => (0.0, 0.0, 396.0,  612.0),
-        "A3"                   => (0.0, 0.0, 842.0, 1191.0),
-        "A4"                   => (0.0, 0.0, 595.0,  842.0),
-        "A5"                   => (0.0, 0.0, 420.0,  595.0),
-        "A6"                   => (0.0, 0.0, 298.0,  420.0),
-        "B4"                   => (0.0, 0.0, 729.0, 1032.0),
-        "B5"                   => (0.0, 0.0, 516.0,  729.0),
-        "SuperB" | "13x19"    => (0.0, 0.0, 936.0, 1368.0),
-        "w288h432" | "4x6"    => (0.0, 0.0, 288.0,  432.0),
-        "w360h504" | "5x7"    => (0.0, 0.0, 360.0,  504.0),
-        "w432h576" | "6x8"    => (0.0, 0.0, 432.0,  576.0),
-        "w576h720" | "8x10"   => (0.0, 0.0, 576.0,  720.0),
-        "w144h432" | "2x6"    => (0.0, 0.0, 144.0,  432.0),
-        "Postcard"             => (0.0, 0.0, 283.0,  416.0),
+        "Letter" => (0.0, 0.0, 612.0, 792.0),
+        "Legal" => (0.0, 0.0, 612.0, 1008.0),
+        "Tabloid" | "11x17" => (0.0, 0.0, 792.0, 1224.0),
+        "Executive" => (0.0, 0.0, 522.0, 756.0),
+        "Statement" => (0.0, 0.0, 396.0, 612.0),
+        "A3" => (0.0, 0.0, 842.0, 1191.0),
+        "A4" => (0.0, 0.0, 595.0, 842.0),
+        "A5" => (0.0, 0.0, 420.0, 595.0),
+        "A6" => (0.0, 0.0, 298.0, 420.0),
+        "B4" => (0.0, 0.0, 729.0, 1032.0),
+        "B5" => (0.0, 0.0, 516.0, 729.0),
+        "SuperB" | "13x19" => (0.0, 0.0, 936.0, 1368.0),
+        "w288h432" | "4x6" => (0.0, 0.0, 288.0, 432.0),
+        "w360h504" | "5x7" => (0.0, 0.0, 360.0, 504.0),
+        "w432h576" | "6x8" => (0.0, 0.0, 432.0, 576.0),
+        "w576h720" | "8x10" => (0.0, 0.0, 576.0, 720.0),
+        "w144h432" | "2x6" => (0.0, 0.0, 144.0, 432.0),
+        "Postcard" => (0.0, 0.0, 283.0, 416.0),
         _ => return None,
     })
 }
@@ -396,7 +426,11 @@ fn detect_default_printer() -> Option<String> {
     let line = text.lines().next()?.trim();
     // strip everything up to and including the last ": "
     let name = line.rsplit(": ").next()?.trim().to_string();
-    if name.is_empty() { None } else { Some(name) }
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 fn discovery_worker(tx: Sender<DiscoveryEvent>) {
@@ -422,10 +456,7 @@ fn discovery_worker(tx: Sender<DiscoveryEvent>) {
                 let _ = tx.send(DiscoveryEvent::CapsReady(caps));
             }
             Err(e) => {
-                let _ = tx.send(DiscoveryEvent::Warning(format!(
-                    "{}: {}",
-                    printer.name, e
-                )));
+                let _ = tx.send(DiscoveryEvent::Warning(format!("{}: {}", printer.name, e)));
             }
         }
     }
@@ -436,13 +467,14 @@ fn discovery_worker(tx: Sender<DiscoveryEvent>) {
 /// Extract `(key, human_label)` from a `*OpenUI *Key/Human Label: PickOne` line.
 fn parse_open_ui_key_label(line: &str) -> Option<(String, String)> {
     // Find the second '*' (first is the *OpenUI / *JCLOpenUI keyword itself)
-    let second = line.char_indices()
+    let second = line
+        .char_indices()
         .filter(|(_, c)| *c == '*')
         .nth(1)
         .map(|(i, _)| i)?;
-    let rest = &line[second + 1..];           // "Key/Human Label: PickOne"
+    let rest = &line[second + 1..]; // "Key/Human Label: PickOne"
     let colon = rest.find(':')?;
-    let key_label = rest[..colon].trim();     // "Key/Human Label"
+    let key_label = rest[..colon].trim(); // "Key/Human Label"
     if let Some((k, l)) = key_label.split_once('/') {
         Some((k.trim().to_string(), l.trim().to_string()))
     } else {
@@ -459,10 +491,17 @@ fn flush_generic(
     defaults: &HashMap<String, String>,
     extra_options: &mut Vec<CupsOption>,
 ) {
-    if choices.len() < 2 { return; }
+    if choices.len() < 2 {
+        return;
+    }
     let def = defaults.get(&key).map(|s| s.as_str()).unwrap_or("");
     let default_idx = choices.iter().position(|(k, _)| k == def).unwrap_or(0);
-    extra_options.push(CupsOption { key, label, choices, default_idx });
+    extra_options.push(CupsOption {
+        key,
+        label,
+        choices,
+        default_idx,
+    });
 }
 
 fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
@@ -482,8 +521,12 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
 
     // These option keys are handled by dedicated fields — skip for extra_options.
     const SKIP_KEYS: &[&str] = &[
-        "Resolution", "MediaType", "InputSlot", "MediaPosition",
-        "PageSize", "PageRegion",
+        "Resolution",
+        "MediaType",
+        "InputSlot",
+        "MediaPosition",
+        "PageSize",
+        "PageRegion",
     ];
 
     // Which *OpenUI section are we currently inside?
@@ -492,7 +535,11 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
         MediaType,
         InputSlot,
         PageSize,
-        Generic { key: String, label: String, choices: Vec<(String, String)> },
+        Generic {
+            key: String,
+            label: String,
+            choices: Vec<(String, String)>,
+        },
         Other,
     }
     let mut section = Section::Other;
@@ -512,17 +559,26 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
         if line.starts_with("*OpenUI") || line.starts_with("*JCLOpenUI") {
             // Flush any pending generic section first
             let prev = std::mem::replace(&mut section, Section::Other);
-            if let Section::Generic { key, label, choices } = prev {
+            if let Section::Generic {
+                key,
+                label,
+                choices,
+            } = prev
+            {
                 flush_generic(key, label, choices, &defaults, &mut extra_options);
             }
 
             if let Some((key, label)) = parse_open_ui_key_label(line) {
                 section = match key.as_str() {
                     "Resolution" => Section::Resolution,
-                    "MediaType"  => Section::MediaType,
+                    "MediaType" => Section::MediaType,
                     "InputSlot" | "MediaPosition" => Section::InputSlot,
-                    "PageSize"  | "PageRegion"    => Section::PageSize,
-                    _ => Section::Generic { key, label, choices: Vec::new() },
+                    "PageSize" | "PageRegion" => Section::PageSize,
+                    _ => Section::Generic {
+                        key,
+                        label,
+                        choices: Vec::new(),
+                    },
                 };
             }
             continue;
@@ -531,7 +587,12 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
         // ── Section close ────────────────────────────────────────────────────
         if line.starts_with("*CloseUI") || line.starts_with("*JCLCloseUI") {
             let prev = std::mem::replace(&mut section, Section::Other);
-            if let Section::Generic { key, label, choices } = prev {
+            if let Section::Generic {
+                key,
+                label,
+                choices,
+            } = prev
+            {
                 flush_generic(key, label, choices, &defaults, &mut extra_options);
             }
             continue;
@@ -551,7 +612,13 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
         // ── PaperDimension <key>[/<label>]: "width height" ───────────────────
         if let Some(rest) = line.strip_prefix("*PaperDimension ") {
             if let Some((key_part, val)) = rest.split_once(':') {
-                let key = key_part.trim().split('/').next().unwrap_or("").trim().to_string();
+                let key = key_part
+                    .trim()
+                    .split('/')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if !key.is_empty() {
                     if let Some((w, h)) = parse_pair(val) {
                         paper_dimensions.insert(key, (w, h));
@@ -564,7 +631,13 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
         // ── ImageableArea ─────────────────────────────────────────────────────
         if let Some(rest) = line.strip_prefix("*ImageableArea ") {
             if let Some((key_part, val)) = rest.split_once(':') {
-                let key = key_part.trim().split('/').next().unwrap_or("").trim().to_string();
+                let key = key_part
+                    .trim()
+                    .split('/')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if !key.is_empty() {
                     if let Some(area) = parse_quad(val) {
                         imageable_areas.insert(key, area);
@@ -600,23 +673,33 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
         match &mut section {
             Section::Resolution => {
                 if let Some(rest) = line.strip_prefix("*Resolution ") {
-                    if rest.starts_with("Default") { continue; }
+                    if rest.starts_with("Default") {
+                        continue;
+                    }
                     let value = rest.split('/').next().unwrap_or("").trim();
                     if let Some(dpi) = parse_resolution_value(value) {
-                        if !resolutions.contains(&dpi) { resolutions.push(dpi); }
+                        if !resolutions.contains(&dpi) {
+                            resolutions.push(dpi);
+                        }
                     }
                 }
             }
             Section::MediaType => {
                 if let Some(rest) = line.strip_prefix("*MediaType ") {
-                    if rest.starts_with("Default") { continue; }
+                    if rest.starts_with("Default") {
+                        continue;
+                    }
                     // Split on ':' first to separate key from PostScript value
                     if let Some((key_part, _)) = rest.split_once(':') {
                         let key_part = key_part.trim();
                         // Now check if key_part has "/Label" separator
                         if let Some((key, label)) = key_part.split_once('/') {
                             let label = label.trim().to_string();
-                            let label = if label.is_empty() { key.to_string() } else { label };
+                            let label = if label.is_empty() {
+                                key.to_string()
+                            } else {
+                                label
+                            };
                             if !label.is_empty() && !media_types.contains(&label) {
                                 media_types.push(label);
                             }
@@ -633,14 +716,20 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
             Section::InputSlot => {
                 for prefix in &["*InputSlot ", "*MediaPosition "] {
                     if let Some(rest) = line.strip_prefix(prefix) {
-                        if rest.starts_with("Default") { continue; }
+                        if rest.starts_with("Default") {
+                            continue;
+                        }
                         // Split on ':' first to separate key from PostScript value
                         if let Some((key_part, _)) = rest.split_once(':') {
                             let key_part = key_part.trim();
                             // Now check if key_part has "/Label" separator
                             if let Some((key, label)) = key_part.split_once('/') {
                                 let label = label.trim().to_string();
-                                let label = if label.is_empty() { key.to_string() } else { label };
+                                let label = if label.is_empty() {
+                                    key.to_string()
+                                } else {
+                                    label
+                                };
                                 if !label.is_empty() && !input_slots.contains(&label) {
                                     input_slots.push(label);
                                 }
@@ -658,7 +747,9 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
             }
             Section::PageSize => {
                 if let Some(rest) = line.strip_prefix("*PageSize ") {
-                    if rest.starts_with("Default") { continue; }
+                    if rest.starts_with("Default") {
+                        continue;
+                    }
                     // Split on ':' first to separate key from PostScript value
                     if let Some((key_part, _)) = rest.split_once(':') {
                         let key_part = key_part.trim();
@@ -666,7 +757,11 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
                         if let Some((key, label)) = key_part.split_once('/') {
                             let key = key.trim().to_string();
                             let label = clean_paper_size_label(&label.trim().to_string());
-                            let label = if label.is_empty() { human_readable_label(&clean_paper_size_label(&key)) } else { label };
+                            let label = if label.is_empty() {
+                                human_readable_label(&clean_paper_size_label(&key))
+                            } else {
+                                label
+                            };
                             page_size_entries.push((key, label));
                         } else {
                             // No "/" separator in key - use key directly
@@ -681,7 +776,9 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
                 // Choice lines: "*<Key> ChoiceKey/Choice Label: <postscript>"
                 let prefix = format!("*{} ", key);
                 if let Some(rest) = line.strip_prefix(prefix.as_str()) {
-                    if rest.starts_with("Default") { continue; }
+                    if rest.starts_with("Default") {
+                        continue;
+                    }
                     // Parse "ChoiceKey/Choice Label:" — stop at first ':'
                     if let Some(colon) = rest.find(':') {
                         let kl = rest[..colon].trim();
@@ -702,7 +799,12 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
     }
 
     // Flush any still-open generic section at end-of-file
-    if let Section::Generic { key, label, choices } = section {
+    if let Section::Generic {
+        key,
+        label,
+        choices,
+    } = section
+    {
         flush_generic(key, label, choices, &defaults, &mut extra_options);
     }
 
@@ -724,11 +826,17 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
         .into_iter()
         .map(|(name, label)| {
             let imageable_area = imageable_areas.get(&name).copied().unwrap_or(fallback_area);
-            let paper_size = paper_dimensions.get(&name)
+            let paper_size = paper_dimensions
+                .get(&name)
                 .copied()
                 .or_else(|| standard_paper_size(&name))
                 .unwrap_or((imageable_area.2, imageable_area.3));
-            PageSize { name, label, paper_size, imageable_area }
+            PageSize {
+                name,
+                label,
+                paper_size,
+                imageable_area,
+            }
         })
         .collect();
 
@@ -763,19 +871,19 @@ fn parse_pair(s: &str) -> Option<(f32, f32)> {
 /// Physical sheet dimensions for well-known paper names (width × height, PostScript points).
 fn standard_paper_size(name: &str) -> Option<(f32, f32)> {
     match name {
-        "Letter"    | "na_letter_8.5x11in"  => Some((612.0,  792.0)),
-        "Legal"     | "na_legal_8.5x14in"   => Some((612.0, 1008.0)),
-        "Tabloid"   | "11x17"               => Some((792.0, 1224.0)),
-        "Executive"                          => Some((522.0,  756.0)),
-        "A3"        | "iso_a3_297x420mm"    => Some((842.0, 1191.0)),
-        "A4"        | "iso_a4_210x297mm"    => Some((595.0,  842.0)),
-        "A5"        | "iso_a5_148x210mm"    => Some((420.0,  595.0)),
-        "B4"        | "iso_b4_250x353mm"    => Some((709.0, 1001.0)),
-        "B5"        | "iso_b5_176x250mm"    => Some((499.0,  709.0)),
-        "Postcard"                           => Some((284.0,  419.0)),
-        "SuperB"    | "13x19"               => Some((936.0, 1368.0)),
-        "Statement"                          => Some((396.0,  612.0)),
-        _                                    => None,
+        "Letter" | "na_letter_8.5x11in" => Some((612.0, 792.0)),
+        "Legal" | "na_legal_8.5x14in" => Some((612.0, 1008.0)),
+        "Tabloid" | "11x17" => Some((792.0, 1224.0)),
+        "Executive" => Some((522.0, 756.0)),
+        "A3" | "iso_a3_297x420mm" => Some((842.0, 1191.0)),
+        "A4" | "iso_a4_210x297mm" => Some((595.0, 842.0)),
+        "A5" | "iso_a5_148x210mm" => Some((420.0, 595.0)),
+        "B4" | "iso_b4_250x353mm" => Some((709.0, 1001.0)),
+        "B5" | "iso_b5_176x250mm" => Some((499.0, 709.0)),
+        "Postcard" => Some((284.0, 419.0)),
+        "SuperB" | "13x19" => Some((936.0, 1368.0)),
+        "Statement" => Some((396.0, 612.0)),
+        _ => None,
     }
 }
 
@@ -783,12 +891,14 @@ fn standard_paper_size(name: &str) -> Option<(f32, f32)> {
 /// Keeps "(Borderless)" to distinguish regular vs borderless sizes.
 fn clean_paper_size_label(label: &str) -> String {
     // Remove all square-like Unicode characters
-    let squares = ['□', '■', '▪', '▫', '▬', '▭', '▮', '▯', '▰', '▱', '▢', '▣', '▤', '▥', '▦', '▧', '▨', '▩'];
+    let squares = [
+        '□', '■', '▪', '▫', '▬', '▭', '▮', '▯', '▰', '▱', '▢', '▣', '▤', '▥', '▦', '▧', '▨', '▩',
+    ];
     let mut cleaned = label.to_string();
-    
+
     // Replace inch symbol (″) with regular double quotes
     cleaned = cleaned.replace('″', "\"");
-    
+
     for square in squares.iter() {
         cleaned = cleaned.replace(*square, "");
     }
@@ -809,7 +919,7 @@ fn human_readable_label(key: &str) -> String {
         "na_number-10_4.125x9.5in" => "Envelope #10",
         "na_monarch_3.875x7.5in" => "Envelope Monarch",
         "na_invoice_5.5x8.5in" | "Statement" => "Statement (5.5x8.5)",
-        
+
         // ISO sizes
         "iso_a3_297x420mm" | "A3" => "A3",
         "iso_a4_210x297mm" | "A4" => "A4",
@@ -821,7 +931,7 @@ fn human_readable_label(key: &str) -> String {
         "iso_c5_162x229mm" => "C5 Envelope",
         "iso_c6_114x162mm" => "C6 Envelope",
         "iso_dl_110x220mm" => "DL Envelope",
-        
+
         // Common photo/paper sizes
         "jis_b5_182x257mm" => "JIS B5",
         "jpn_hagaki_100x148mm" => "Hagaki",
@@ -836,11 +946,11 @@ fn human_readable_label(key: &str) -> String {
         "na_quarto_8.5x10.83in" => "Quarto",
         "na_supera_8.94x14in" => "Super A",
         "na_superb_11.7x17.6in" | "SuperB" | "13x19" => "Super B (13x19)",
-        
+
         // Roll paper (common for wide format)
         "roll_min_8.5in" => "Roll (min 8.5in)",
         "roll_max_36in" => "Roll (max 36in)",
-        
+
         // Legacy w*h*432 format (Epson/Gutenprint style)
         "w288h432" | "4x6" => "4x6 Photo",
         "w360h504" | "5x7" => "5x7 Photo",
@@ -848,16 +958,16 @@ fn human_readable_label(key: &str) -> String {
         "w576h720" | "8x10" => "8x10 Photo",
         "w720h1080" => "10x15 Photo",
         "w144h432" | "2x6" => "2x6 Photo",
-        
+
         // Default: return the key itself
         _ => key,
     };
-    
+
     // Handle the PostScript PageSize[...] format by extracting dimensions
     if key.starts_with("PageSize[") {
         if let Some(close) = key.find(']') {
             let inner = &key[9..close]; // Skip "PageSize["
-            // Try to parse "W H" format
+                                        // Try to parse "W H" format
             let dims: Vec<&str> = inner.split_whitespace().collect();
             if dims.len() == 2 {
                 if let (Ok(w), Ok(h)) = (dims[0].parse::<f32>(), dims[1].parse::<f32>()) {
@@ -879,7 +989,7 @@ fn human_readable_label(key: &str) -> String {
             return format!("Custom ({inner})",);
         }
     }
-    
+
     clean_paper_size_label(&label.to_string())
 }
 
@@ -921,8 +1031,14 @@ mod tests {
 
     #[test]
     fn parse_quad_quoted() {
-        assert_eq!(parse_quad("\"12.0 12.0 600.0 780.0\""), Some((12.0, 12.0, 600.0, 780.0)));
-        assert_eq!(parse_quad("12 12 600 780"), Some((12.0, 12.0, 600.0, 780.0)));
+        assert_eq!(
+            parse_quad("\"12.0 12.0 600.0 780.0\""),
+            Some((12.0, 12.0, 600.0, 780.0))
+        );
+        assert_eq!(
+            parse_quad("12 12 600 780"),
+            Some((12.0, 12.0, 600.0, 780.0))
+        );
     }
 
     #[test]
@@ -961,7 +1077,10 @@ mod tests {
         let caps = parse_ppd("TestPrinter", &ppd_path).unwrap();
 
         assert_eq!(caps.resolutions, vec![360, 720, 1440]);
-        assert_eq!(caps.media_types, vec!["Plain Paper", "Premium Glossy Photo", "Ultra Premium Matte"]);
+        assert_eq!(
+            caps.media_types,
+            vec!["Plain Paper", "Premium Glossy Photo", "Ultra Premium Matte"]
+        );
         assert_eq!(caps.page_sizes.len(), 2);
 
         // Default page size is A4
@@ -997,19 +1116,35 @@ mod tests {
         let caps = parse_ppd("IPPPrinter", &ppd_path).unwrap();
 
         assert_eq!(caps.page_sizes.len(), 4);
-        
+
         // Check that IPP technical names get converted to readable labels
-        let letter = caps.page_sizes.iter().find(|p| p.name == "na_letter_8.5x11in").unwrap();
+        let letter = caps
+            .page_sizes
+            .iter()
+            .find(|p| p.name == "na_letter_8.5x11in")
+            .unwrap();
         assert_eq!(letter.label, "Letter");
-        
-        let a4 = caps.page_sizes.iter().find(|p| p.name == "iso_a4_210x297mm").unwrap();
+
+        let a4 = caps
+            .page_sizes
+            .iter()
+            .find(|p| p.name == "iso_a4_210x297mm")
+            .unwrap();
         assert_eq!(a4.label, "A4");
-        
-        let legal = caps.page_sizes.iter().find(|p| p.name == "na_legal_8.5x14in").unwrap();
+
+        let legal = caps
+            .page_sizes
+            .iter()
+            .find(|p| p.name == "na_legal_8.5x14in")
+            .unwrap();
         assert_eq!(legal.label, "Legal");
-        
+
         // Check PageSize[...] format gets parsed as dimensions
-        let custom = caps.page_sizes.iter().find(|p| p.name.starts_with("PageSize[")).unwrap();
+        let custom = caps
+            .page_sizes
+            .iter()
+            .find(|p| p.name.starts_with("PageSize["))
+            .unwrap();
         assert!(custom.label.contains("x") || custom.label.contains("in"));
     }
 
@@ -1023,14 +1158,14 @@ mod tests {
         assert_eq!(human_readable_label("A4"), "A4");
         assert_eq!(human_readable_label("w288h432"), "4x6 Photo");
         assert_eq!(human_readable_label("4x6"), "4x6 Photo");
-        
+
         // Test PostScript PageSize format
         let label = human_readable_label("PageSize[612 792]>>setpagedevice");
         assert_eq!(label, "Letter");
-        
+
         let label = human_readable_label("PageSize[595 842]>>setpagedevice");
         assert_eq!(label, "A4");
-        
+
         // Unknown key returns itself
         assert_eq!(human_readable_label("unknown_key"), "unknown_key");
     }

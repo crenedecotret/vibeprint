@@ -7,7 +7,12 @@ use crate::types::LoadKind;
 use crate::types::RULER_PX;
 
 /// Aspect-fit a source image into a box, optionally rotating 90° CW
-pub(crate) fn aspect_fit_rect_in_box(box_rect: Rect, src_w: u32, src_h: u32, rotate_cw: bool) -> Rect {
+pub(crate) fn aspect_fit_rect_in_box(
+    box_rect: Rect,
+    src_w: u32,
+    src_h: u32,
+    rotate_cw: bool,
+) -> Rect {
     let sw = src_w.max(1) as f32;
     let sh = src_h.max(1) as f32;
     let aspect = if rotate_cw { sh / sw } else { sw / sh };
@@ -63,7 +68,7 @@ pub(crate) fn calc_crop_uv(
 
     let sw = src_w.max(1) as f32;
     let sh = src_h.max(1) as f32;
-    
+
     // Use rotated aspect if the image will be rotated
     let src_aspect = if rotate_cw { sh / sw } else { sw / sh };
     let box_aspect = box_w / box_h;
@@ -143,9 +148,8 @@ pub(crate) fn calc_crop_uv_for_processor(
     // When the image is rotated 90° CW, its dimensions become (src_h, src_w)
     // We need calc_crop_uv to calculate crop on this rotated image, so we
     // pass swapped source dimensions with rotate_cw=false
-    let (rot_u0, rot_v0, rot_u1, rot_v1) = calc_crop_uv(
-        box_w, box_h, src_h, src_w, false, true, None,
-    );
+    let (rot_u0, rot_v0, rot_u1, rot_v1) =
+        calc_crop_uv(box_w, box_h, src_h, src_w, false, true, None);
 
     // Transform rotated UVs back to original image UVs
     // For 90° CW rotation: new(nx, ny) = old(w-1-ny, nx)
@@ -162,34 +166,67 @@ pub(crate) fn calc_crop_uv_for_processor(
 /// Check if a file is an image
 pub(crate) fn is_image(path: &std::path::Path) -> bool {
     matches!(
-        path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str(),
+        path.extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
         "jpg" | "jpeg" | "png" | "tif" | "tiff" | "webp" | "bmp"
     )
 }
 
 /// Load a thumbnail in background thread
-pub(crate) fn load_thumb(path: PathBuf, size: u32, tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>, LoadKind)>) {
+pub(crate) fn load_thumb(
+    path: PathBuf,
+    size: u32,
+    tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>, LoadKind)>,
+) {
     if let Ok(img) = image::open(&path) {
         let thumb = img.thumbnail(size, size).into_rgb8();
         let w = thumb.width() as usize;
         let h = thumb.height() as usize;
-        let pixels = thumb.into_raw()
+        let pixels = thumb
+            .into_raw()
             .chunks_exact(3)
             .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
             .collect();
-        let _ = tx.send((path, ColorImage { size: [w, h], pixels }, None, LoadKind::Thumb));
+        let _ = tx.send((
+            path,
+            ColorImage {
+                size: [w, h],
+                pixels,
+            },
+            None,
+            LoadKind::Thumb,
+        ));
     } else {
         // Signal failure by sending an empty 1×1 magenta image
-        let _ = tx.send((path, ColorImage {
-            size: [1, 1],
-            pixels: vec![Color32::from_rgb(200, 0, 80)],
-        }, None, LoadKind::Thumb));
+        let _ = tx.send((
+            path,
+            ColorImage {
+                size: [1, 1],
+                pixels: vec![Color32::from_rgb(200, 0, 80)],
+            },
+            None,
+            LoadKind::Thumb,
+        ));
     }
 }
 
 /// Draw a dashed rectangle outline via short line segments
-pub(crate) fn draw_dashed_rect(painter: &egui::Painter, rect: Rect, color: Color32, width: f32, dash: f32) {
-    let corners = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+pub(crate) fn draw_dashed_rect(
+    painter: &egui::Painter,
+    rect: Rect,
+    color: Color32,
+    width: f32,
+    dash: f32,
+) {
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+    ];
     for i in 0..4 {
         let a = corners[i];
         let b = corners[(i + 1) % 4];
@@ -229,8 +266,10 @@ pub(crate) fn draw_ruler_h(
     painter.rect_filled(ruler_rect, 0.0, bg);
     // Bottom separator
     painter.line_segment(
-        [Pos2::new(area.min.x, area.min.y + ruler_h),
-         Pos2::new(area.max.x, area.min.y + ruler_h)],
+        [
+            Pos2::new(area.min.x, area.min.y + ruler_h),
+            Pos2::new(area.max.x, area.min.y + ruler_h),
+        ],
         Stroke::new(1.0, Color32::from_gray(72)),
     );
 
@@ -239,12 +278,16 @@ pub(crate) fn draw_ruler_h(
 
     for i in 0..=(total as u32 + 1) {
         let x = paper_x + i as f32 * ppi;
-        if x < area.min.x || x > area.max.x { continue; }
+        if x < area.min.x || x > area.max.x {
+            continue;
+        }
 
         // Inch tick
         painter.line_segment(
-            [Pos2::new(x, area.min.y + ruler_h - 13.0),
-             Pos2::new(x, area.min.y + ruler_h)],
+            [
+                Pos2::new(x, area.min.y + ruler_h - 13.0),
+                Pos2::new(x, area.min.y + ruler_h),
+            ],
             Stroke::new(1.0, fg),
         );
         if i > 0 {
@@ -260,8 +303,10 @@ pub(crate) fn draw_ruler_h(
         let xh = x + ppi * 0.5;
         if xh > area.min.x && xh < area.max.x {
             painter.line_segment(
-                [Pos2::new(xh, area.min.y + ruler_h - 8.0),
-                 Pos2::new(xh, area.min.y + ruler_h)],
+                [
+                    Pos2::new(xh, area.min.y + ruler_h - 8.0),
+                    Pos2::new(xh, area.min.y + ruler_h),
+                ],
                 Stroke::new(1.0, half_fg),
             );
         }
@@ -270,8 +315,10 @@ pub(crate) fn draw_ruler_h(
             let xq = x + ppi * frac;
             if xq > area.min.x && xq < area.max.x {
                 painter.line_segment(
-                    [Pos2::new(xq, area.min.y + ruler_h - 5.0),
-                     Pos2::new(xq, area.min.y + ruler_h)],
+                    [
+                        Pos2::new(xq, area.min.y + ruler_h - 5.0),
+                        Pos2::new(xq, area.min.y + ruler_h),
+                    ],
                     Stroke::new(0.75, qtr_fg),
                 );
             }
@@ -281,10 +328,11 @@ pub(crate) fn draw_ruler_h(
     // Margin markers — orange triangle pointing down toward canvas
     for &offset_px in &[margin_l_px, margin_r_px] {
         let x = paper_x + offset_px;
-        if x < area.min.x || x > area.max.x { continue; }
+        if x < area.min.x || x > area.max.x {
+            continue;
+        }
         painter.line_segment(
-            [Pos2::new(x, area.min.y),
-             Pos2::new(x, area.min.y + ruler_h)],
+            [Pos2::new(x, area.min.y), Pos2::new(x, area.min.y + ruler_h)],
             Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 150, 50, 120)),
         );
         let bot = area.min.y + ruler_h;
@@ -324,8 +372,10 @@ pub(crate) fn draw_ruler_v(
     painter.rect_filled(ruler_rect, 0.0, bg);
     // Right separator
     painter.line_segment(
-        [Pos2::new(area.min.x + ruler_w, area.min.y + RULER_PX),
-         Pos2::new(area.min.x + ruler_w, area.max.y)],
+        [
+            Pos2::new(area.min.x + ruler_w, area.min.y + RULER_PX),
+            Pos2::new(area.min.x + ruler_w, area.max.y),
+        ],
         Stroke::new(1.0, Color32::from_gray(72)),
     );
 
@@ -334,12 +384,16 @@ pub(crate) fn draw_ruler_v(
 
     for i in 0..=(total as u32 + 1) {
         let y = paper_y + i as f32 * ppi;
-        if y < area.min.y || y > area.max.y { continue; }
+        if y < area.min.y || y > area.max.y {
+            continue;
+        }
 
         // Inch tick
         painter.line_segment(
-            [Pos2::new(area.min.x + ruler_w - 13.0, y),
-             Pos2::new(area.min.x + ruler_w, y)],
+            [
+                Pos2::new(area.min.x + ruler_w - 13.0, y),
+                Pos2::new(area.min.x + ruler_w, y),
+            ],
             Stroke::new(1.0, fg),
         );
         if i > 0 {
@@ -355,8 +409,10 @@ pub(crate) fn draw_ruler_v(
         let yh = y + ppi * 0.5;
         if yh > area.min.y && yh < area.max.y {
             painter.line_segment(
-                [Pos2::new(area.min.x + ruler_w - 8.0, yh),
-                 Pos2::new(area.min.x + ruler_w, yh)],
+                [
+                    Pos2::new(area.min.x + ruler_w - 8.0, yh),
+                    Pos2::new(area.min.x + ruler_w, yh),
+                ],
                 Stroke::new(1.0, half_fg),
             );
         }
@@ -365,8 +421,10 @@ pub(crate) fn draw_ruler_v(
             let yq = y + ppi * frac;
             if yq > area.min.y && yq < area.max.y {
                 painter.line_segment(
-                    [Pos2::new(area.min.x + ruler_w - 5.0, yq),
-                     Pos2::new(area.min.x + ruler_w, yq)],
+                    [
+                        Pos2::new(area.min.x + ruler_w - 5.0, yq),
+                        Pos2::new(area.min.x + ruler_w, yq),
+                    ],
                     Stroke::new(0.75, qtr_fg),
                 );
             }
@@ -376,10 +434,11 @@ pub(crate) fn draw_ruler_v(
     // Margin markers — orange triangle pointing right toward canvas
     for &offset_px in &[margin_t_px, margin_b_px] {
         let y = paper_y + offset_px;
-        if y < area.min.y || y > area.max.y { continue; }
+        if y < area.min.y || y > area.max.y {
+            continue;
+        }
         painter.line_segment(
-            [Pos2::new(area.min.x, y),
-             Pos2::new(area.min.x + ruler_w, y)],
+            [Pos2::new(area.min.x, y), Pos2::new(area.min.x + ruler_w, y)],
             Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 150, 50, 120)),
         );
         let right = area.min.x + ruler_w;
@@ -406,22 +465,28 @@ pub(crate) fn draw_tree_node(
     nav: &mut Option<PathBuf>,
     toggle: &mut Option<(PathBuf, bool)>,
 ) {
-    if depth > 8 { return; }
+    if depth > 8 {
+        return;
+    }
 
     let name: String = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned());
 
-    if name.starts_with('.') && depth > 0 { return; }
+    if name.starts_with('.') && depth > 0 {
+        return;
+    }
 
     // Check for any non-hidden subdirectory
     let has_children = std::fs::read_dir(path)
         .ok()
-        .map(|rd| rd.flatten().any(|e| {
-            let n = e.file_name().to_string_lossy().to_string();
-            !n.starts_with('.') && e.path().is_dir()
-        }))
+        .map(|rd| {
+            rd.flatten().any(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                !n.starts_with('.') && e.path().is_dir()
+            })
+        })
         .unwrap_or(false);
 
     // Default: home (depth==0) starts expanded; everything else collapsed
@@ -439,11 +504,16 @@ pub(crate) fn draw_tree_node(
         // Expand/collapse arrow
         if has_children {
             let arrow = if is_expanded { "▼" } else { "▶" };
-            let resp = ui.add(
-                egui::Label::new(
-                    RichText::new(arrow).size(14.0).color(Color32::from_gray(140))
-                ).sense(Sense::click())
-            ).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let resp = ui
+                .add(
+                    egui::Label::new(
+                        RichText::new(arrow)
+                            .size(14.0)
+                            .color(Color32::from_gray(140)),
+                    )
+                    .sense(Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
             if resp.clicked() {
                 *toggle = Some((path.clone(), !is_expanded));
             }
@@ -452,7 +522,11 @@ pub(crate) fn draw_tree_node(
         }
 
         // Folder icon + name
-        let icon = if is_expanded && has_children { "📂" } else { "📁" };
+        let icon = if is_expanded && has_children {
+            "📂"
+        } else {
+            "📁"
+        };
         let color = if is_current {
             Color32::from_rgb(100, 180, 255)
         } else if is_ancestor {
@@ -460,8 +534,11 @@ pub(crate) fn draw_tree_node(
         } else {
             Color32::from_gray(185)
         };
-        let label = RichText::new(format!("{icon} {name}")).size(12.0).color(color);
-        let resp = ui.add(egui::Label::new(label).sense(Sense::click()))
+        let label = RichText::new(format!("{icon} {name}"))
+            .size(12.0)
+            .color(color);
+        let resp = ui
+            .add(egui::Label::new(label).sense(Sense::click()))
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         if resp.clicked() {
             *nav = Some(path.clone());
@@ -499,25 +576,32 @@ pub(crate) fn draw_tree_node(
 pub(crate) fn check_size_fit(w_in: f32, h_in: f32, ia_w_in: f32, ia_h_in: f32) -> (bool, bool) {
     let fits_portrait = w_in <= ia_w_in && h_in <= ia_h_in;
     let fits_landscape = h_in <= ia_w_in && w_in <= ia_h_in;
-    if fits_portrait { (true, false) }
-    else if fits_landscape { (true, true) }
-    else { (false, false) }
+    if fits_portrait {
+        (true, false)
+    } else if fits_landscape {
+        (true, true)
+    } else {
+        (false, false)
+    }
 }
 
 /// Extract embedded ICC profile from image file (JPEG APP2, PNG iCCP, TIFF tag)
 pub(crate) fn extract_embedded_icc(path: &std::path::Path) -> Option<Vec<u8>> {
-    let ext = path.extension().and_then(|s| s.to_str())?.to_ascii_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())?
+        .to_ascii_lowercase();
     let data = std::fs::read(path).ok()?;
-    
+
     match ext.as_str() {
         "jpg" | "jpeg" => {
             // Look for APP2 marker (0xFFE2) followed by "ICC_PROFILE"
             let mut i = 0;
             while i < data.len().saturating_sub(16) {
-                if data[i] == 0xFF && data[i+1] == 0xE2 {
+                if data[i] == 0xFF && data[i + 1] == 0xE2 {
                     // Found APP2 marker, check for ICC_PROFILE signature
-                    let len = ((data[i+2] as usize) << 8) | (data[i+3] as usize);
-                    if i + 4 + 11 < data.len() && &data[i+4..i+4+11] == b"ICC_PROFILE" {
+                    let len = ((data[i + 2] as usize) << 8) | (data[i + 3] as usize);
+                    if i + 4 + 11 < data.len() && &data[i + 4..i + 4 + 11] == b"ICC_PROFILE" {
                         // ICC profile data starts after "ICC_PROFILE\0" + sequence byte
                         let icc_start = i + 4 + 14; // Skip "ICC_PROFILE\0" + 2 bytes (sequence/chunk)
                         let icc_len = len.saturating_sub(16);
@@ -526,9 +610,15 @@ pub(crate) fn extract_embedded_icc(path: &std::path::Path) -> Option<Vec<u8>> {
                         }
                     }
                     i += 2 + len;
-                } else if data[i] == 0xFF && (data[i+1] == 0xD8 || data[i+1] == 0xD9 || data[i+1] >= 0xE0) {
+                } else if data[i] == 0xFF
+                    && (data[i + 1] == 0xD8 || data[i + 1] == 0xD9 || data[i + 1] >= 0xE0)
+                {
                     // Skip other markers
-                    let len = if data[i+1] == 0xD8 { 0 } else { ((data[i+2] as usize) << 8) | (data[i+3] as usize) };
+                    let len = if data[i + 1] == 0xD8 {
+                        0
+                    } else {
+                        ((data[i + 2] as usize) << 8) | (data[i + 3] as usize)
+                    };
                     i += 2 + len;
                 } else {
                     i += 1;
@@ -540,16 +630,19 @@ pub(crate) fn extract_embedded_icc(path: &std::path::Path) -> Option<Vec<u8>> {
             // Look for iCCP chunk
             let mut i = 8; // Skip PNG signature
             while i < data.len().saturating_sub(12) {
-                let len = ((data[i] as usize) << 24) | ((data[i+1] as usize) << 16) |
-                          ((data[i+2] as usize) << 8) | (data[i+3] as usize);
-                let chunk_type = &data[i+4..i+8];
+                let len = ((data[i] as usize) << 24)
+                    | ((data[i + 1] as usize) << 16)
+                    | ((data[i + 2] as usize) << 8)
+                    | (data[i + 3] as usize);
+                let chunk_type = &data[i + 4..i + 8];
                 if chunk_type == b"iCCP" {
                     // iCCP chunk: profile name + compression method + compressed profile
-                    let chunk_data = &data[i+8..i+8+len];
+                    let chunk_data = &data[i + 8..i + 8 + len];
                     // Find null terminator for profile name
                     let null_pos = chunk_data.iter().position(|&b| b == 0)?;
                     let compression = chunk_data.get(null_pos + 1)?;
-                    if *compression == 0 { // deflate
+                    if *compression == 0 {
+                        // deflate
                         let compressed = &chunk_data[null_pos + 2..];
                         use std::io::Read;
                         let mut decoder = flate2::read::ZlibDecoder::new(compressed);
@@ -567,43 +660,64 @@ pub(crate) fn extract_embedded_icc(path: &std::path::Path) -> Option<Vec<u8>> {
         }
         "tif" | "tiff" => {
             // Look for ICC tag (34675 = 0x8773)
-            if data.len() < 8 { return None; }
+            if data.len() < 8 {
+                return None;
+            }
             let little_endian = data[0] == 0x49; // "II" = little endian
             let ifd_offset = if little_endian {
-                (data[4] as usize) | ((data[5] as usize) << 8) | ((data[6] as usize) << 16) | ((data[7] as usize) << 24)
+                (data[4] as usize)
+                    | ((data[5] as usize) << 8)
+                    | ((data[6] as usize) << 16)
+                    | ((data[7] as usize) << 24)
             } else {
-                ((data[4] as usize) << 24) | ((data[5] as usize) << 16) | ((data[6] as usize) << 8) | (data[7] as usize)
+                ((data[4] as usize) << 24)
+                    | ((data[5] as usize) << 16)
+                    | ((data[6] as usize) << 8)
+                    | (data[7] as usize)
             };
-            
-            if ifd_offset + 2 > data.len() { return None; }
+
+            if ifd_offset + 2 > data.len() {
+                return None;
+            }
             let num_entries = if little_endian {
                 (data[ifd_offset] as usize) | ((data[ifd_offset + 1] as usize) << 8)
             } else {
                 ((data[ifd_offset] as usize) << 8) | (data[ifd_offset + 1] as usize)
             };
-            
+
             let mut offset = ifd_offset + 2;
             for _ in 0..num_entries {
-                if offset + 12 > data.len() { break; }
+                if offset + 12 > data.len() {
+                    break;
+                }
                 let tag = if little_endian {
                     (data[offset] as u16) | ((data[offset + 1] as u16) << 8)
                 } else {
                     ((data[offset] as u16) << 8) | (data[offset + 1] as u16)
                 };
-                if tag == 34675 { // ICC profile tag
+                if tag == 34675 {
+                    // ICC profile tag
                     let len = if little_endian {
-                        (data[offset + 4] as usize) | ((data[offset + 5] as usize) << 8) |
-                        ((data[offset + 6] as usize) << 16) | ((data[offset + 7] as usize) << 24)
+                        (data[offset + 4] as usize)
+                            | ((data[offset + 5] as usize) << 8)
+                            | ((data[offset + 6] as usize) << 16)
+                            | ((data[offset + 7] as usize) << 24)
                     } else {
-                        ((data[offset + 4] as usize) << 24) | ((data[offset + 5] as usize) << 16) |
-                        ((data[offset + 6] as usize) << 8) | (data[offset + 7] as usize)
+                        ((data[offset + 4] as usize) << 24)
+                            | ((data[offset + 5] as usize) << 16)
+                            | ((data[offset + 6] as usize) << 8)
+                            | (data[offset + 7] as usize)
                     };
                     let value_offset = if little_endian {
-                        (data[offset + 8] as usize) | ((data[offset + 9] as usize) << 8) |
-                        ((data[offset + 10] as usize) << 16) | ((data[offset + 11] as usize) << 24)
+                        (data[offset + 8] as usize)
+                            | ((data[offset + 9] as usize) << 8)
+                            | ((data[offset + 10] as usize) << 16)
+                            | ((data[offset + 11] as usize) << 24)
                     } else {
-                        ((data[offset + 8] as usize) << 24) | ((data[offset + 9] as usize) << 16) |
-                        ((data[offset + 10] as usize) << 8) | (data[offset + 11] as usize)
+                        ((data[offset + 8] as usize) << 24)
+                            | ((data[offset + 9] as usize) << 16)
+                            | ((data[offset + 10] as usize) << 8)
+                            | (data[offset + 11] as usize)
                     };
                     if value_offset + len <= data.len() {
                         return Some(data[value_offset..value_offset + len].to_vec());

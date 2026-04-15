@@ -185,10 +185,7 @@ pub fn layout_queue(
     }
 }
 
-fn center_rows_horizontally_per_page(
-    placements: &mut HashMap<Uuid, Placement>,
-    page_w_px: u32,
-) {
+fn center_rows_horizontally_per_page(placements: &mut HashMap<Uuid, Placement>, page_w_px: u32) {
     let mut bounds_by_page_row: HashMap<(usize, u32), (u32, u32)> = HashMap::new();
 
     for p in placements.values() {
@@ -240,34 +237,28 @@ fn choose_orientation_for_flow_with_state(
     let sh = sh.max(1) as f32;
     let src_landscape = sw > sh;
 
-    let preferred = if src_landscape { (h_in, w_in) } else { (w_in, h_in) };
-    let alternate = if src_landscape { (w_in, h_in) } else { (h_in, w_in) };
+    let preferred = if src_landscape {
+        (h_in, w_in)
+    } else {
+        (w_in, h_in)
+    };
+    let alternate = if src_landscape {
+        (w_in, h_in)
+    } else {
+        (h_in, w_in)
+    };
     let pref_w_px = to_px(preferred.0);
     let pref_h_px = to_px(preferred.1);
     let pref_rotate = best_rotate_for_box(sw, sh, preferred.0, preferred.1);
     let pref_sim = simulate_insertion(
-        cursor_x,
-        cursor_y,
-        row_h,
-        pref_w_px,
-        pref_h_px,
-        page_w_px,
-        page_h_px,
-        spacing_px,
+        cursor_x, cursor_y, row_h, pref_w_px, pref_h_px, page_w_px, page_h_px, spacing_px,
     );
 
     let alt_w_px = to_px(alternate.0);
     let alt_h_px = to_px(alternate.1);
     let alt_rotate = best_rotate_for_box(sw, sh, alternate.0, alternate.1);
     let alt_sim = simulate_insertion(
-        cursor_x,
-        cursor_y,
-        row_h,
-        alt_w_px,
-        alt_h_px,
-        page_w_px,
-        page_h_px,
-        spacing_px,
+        cursor_x, cursor_y, row_h, alt_w_px, alt_h_px, page_w_px, page_h_px, spacing_px,
     );
 
     if pref_sim.valid && !alt_sim.valid {
@@ -295,7 +286,9 @@ fn choose_orientation_for_flow_with_state(
     // Fallback: scale to fit page while preserving aspect ratio
     let page_w = page_w_px.max(1) as f32;
     let page_h = page_h_px.max(1) as f32;
-    let scale = (page_w / pref_w_px as f32).min(page_h / pref_h_px as f32).min(1.0);
+    let scale = (page_w / pref_w_px as f32)
+        .min(page_h / pref_h_px as f32)
+        .min(1.0);
     let fallback_w = (pref_w_px as f32 * scale).round().max(1.0) as u32;
     let fallback_h = (pref_h_px as f32 * scale).round().max(1.0) as u32;
     (fallback_w, fallback_h, pref_rotate)
@@ -489,8 +482,14 @@ mod tests {
             let p = result.placements.get(&item.id).expect("placement missing");
             assert!(p.w_px <= page_w_px, "placement width exceeds page");
             assert!(p.h_px <= page_h_px, "placement height exceeds page");
-            assert!(p.x_px.saturating_add(p.w_px) <= page_w_px, "placement overflows x");
-            assert!(p.y_px.saturating_add(p.h_px) <= page_h_px, "placement overflows y");
+            assert!(
+                p.x_px.saturating_add(p.w_px) <= page_w_px,
+                "placement overflows x"
+            );
+            assert!(
+                p.y_px.saturating_add(p.h_px) <= page_h_px,
+                "placement overflows y"
+            );
         }
     }
 
@@ -506,8 +505,14 @@ mod tests {
 
         assert!(p.w_px <= page_w_px, "placement width exceeds page");
         assert!(p.h_px <= page_h_px, "placement height exceeds page");
-        assert!(p.x_px.saturating_add(p.w_px) <= page_w_px, "placement overflows x");
-        assert!(p.y_px.saturating_add(p.h_px) <= page_h_px, "placement overflows y");
+        assert!(
+            p.x_px.saturating_add(p.w_px) <= page_w_px,
+            "placement overflows x"
+        );
+        assert!(
+            p.y_px.saturating_add(p.h_px) <= page_h_px,
+            "placement overflows y"
+        );
     }
 
     #[test]
@@ -518,12 +523,27 @@ mod tests {
 
         let result = layout_queue(&items, 1000, 1400, 100, 0.25);
 
-        let page_a = result.placements.get(&a.id).expect("placement missing").page;
-        let page_b = result.placements.get(&b.id).expect("placement missing").page;
+        let page_a = result
+            .placements
+            .get(&a.id)
+            .expect("placement missing")
+            .page;
+        let page_b = result
+            .placements
+            .get(&b.id)
+            .expect("placement missing")
+            .page;
         let highest_page = page_a.max(page_b);
 
-        assert_eq!(page_b, highest_page, "fit-to-page item should be on the last used page");
-        assert_eq!(result.page_count, highest_page + 1, "page count should match highest placed page");
+        assert_eq!(
+            page_b, highest_page,
+            "fit-to-page item should be on the last used page"
+        );
+        assert_eq!(
+            result.page_count,
+            highest_page + 1,
+            "page count should match highest placed page"
+        );
     }
 
     #[test]
@@ -536,11 +556,20 @@ mod tests {
         let pa = result.placements.get(&a.id).expect("placement missing");
         let pb = result.placements.get(&b.id).expect("placement missing");
 
-        assert_eq!(result.page_count, 1, "both portrait duplicates should fit on one page after repack");
+        assert_eq!(
+            result.page_count, 1,
+            "both portrait duplicates should fit on one page after repack"
+        );
         assert_eq!(pa.page, 0, "first item should remain on page 1");
         assert_eq!(pb.page, 0, "second item should remain on page 1");
-        assert!(pa.y_px.saturating_add(pa.h_px) <= 1100, "first item overflowed page height");
-        assert!(pb.y_px.saturating_add(pb.h_px) <= 1100, "second item overflowed page height");
+        assert!(
+            pa.y_px.saturating_add(pa.h_px) <= 1100,
+            "first item overflowed page height"
+        );
+        assert!(
+            pb.y_px.saturating_add(pb.h_px) <= 1100,
+            "second item overflowed page height"
+        );
     }
 
     #[test]
@@ -567,10 +596,16 @@ mod tests {
         let pb = result.placements.get(&b.id).expect("placement missing");
         let pc = result.placements.get(&c.id).expect("placement missing");
 
-        assert_eq!(result.page_count, 1, "three 4x6 items should remain on one page");
+        assert_eq!(
+            result.page_count, 1,
+            "three 4x6 items should remain on one page"
+        );
         assert_eq!(pa.y_px, 0, "first row should start at top margin");
         assert_eq!(pb.y_px, 0, "first row should start at top margin");
         assert!(pc.y_px > 0, "third item should be on a lower row");
-        assert_eq!(pc.x_px, 300, "single item on second row should be horizontally centered");
+        assert_eq!(
+            pc.x_px, 300,
+            "single item on second row should be horizontally centered"
+        );
     }
 }

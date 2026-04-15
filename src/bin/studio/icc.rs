@@ -6,7 +6,7 @@ use crate::types::{IccProfileEntry, IccProfileSource};
 /// Extract file modification date as string
 pub(crate) fn extract_file_date(path: &PathBuf) -> String {
     use chrono::{DateTime, Local, Utc};
-    
+
     if let Ok(metadata) = std::fs::metadata(path) {
         if let Ok(modified) = metadata.modified() {
             let datetime: DateTime<Utc> = modified.into();
@@ -46,7 +46,11 @@ pub(crate) fn scan_icc_directories(tx: Sender<Vec<IccProfileEntry>>) {
     }
 
     // Sort by description for consistent ordering
-    profiles.sort_by(|a, b| a.description.to_lowercase().cmp(&b.description.to_lowercase()));
+    profiles.sort_by(|a, b| {
+        a.description
+            .to_lowercase()
+            .cmp(&b.description.to_lowercase())
+    });
 
     let _ = tx.send(profiles);
 }
@@ -61,7 +65,8 @@ fn scan_directory(dir: &PathBuf, source: IccProfileSource, profiles: &mut Vec<Ic
     if let Ok(read) = std::fs::read_dir(dir) {
         for entry in read.flatten() {
             let path = entry.path();
-            let extension = path.extension()
+            let extension = path
+                .extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_lowercase());
 
@@ -87,7 +92,8 @@ fn scan_directory(dir: &PathBuf, source: IccProfileSource, profiles: &mut Vec<Ic
                     (desc, file_date)
                 } else {
                     // Fallback to filename if profile loading fails
-                    let desc = path.file_name()
+                    let desc = path
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("Unknown")
                         .to_string();
@@ -96,7 +102,8 @@ fn scan_directory(dir: &PathBuf, source: IccProfileSource, profiles: &mut Vec<Ic
                 }
             } else {
                 // Fallback to filename if file read fails
-                let desc = path.file_name()
+                let desc = path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("Unknown")
                     .to_string();

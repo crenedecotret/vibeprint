@@ -27,8 +27,12 @@ pub(crate) fn submit_print_jobs_sync(
     let printer = printers.get(printer_idx).ok_or("No printer selected")?;
 
     for (i, temp_path) in temp_paths.iter().enumerate() {
-        let _ = log_tx.send(format!("Processing page {} of {}...", i + 1, temp_paths.len()));
-        
+        let _ = log_tx.send(format!(
+            "Processing page {} of {}...",
+            i + 1,
+            temp_paths.len()
+        ));
+
         // Generate unique temp file paths
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -61,7 +65,11 @@ pub(crate) fn submit_print_jobs_sync(
 
         if !gs_output.status.success() {
             let stderr = String::from_utf8_lossy(&gs_output.stderr);
-            return Err(format!("PDF conversion failed (page {}): {}", i + 1, stderr));
+            return Err(format!(
+                "PDF conversion failed (page {}): {}",
+                i + 1,
+                stderr
+            ));
         }
         let _ = log_tx.send(format!("Page {}: Sending to printer...", i + 1));
 
@@ -77,7 +85,7 @@ pub(crate) fn submit_print_jobs_sync(
         match lpr_result {
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                
+
                 if !output.status.success() {
                     return Err(format!("Print failed (page {}): {}", i + 1, stderr));
                 }
@@ -87,6 +95,6 @@ pub(crate) fn submit_print_jobs_sync(
             }
         }
     }
-    
+
     Ok(())
 }

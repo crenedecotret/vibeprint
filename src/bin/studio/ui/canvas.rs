@@ -18,7 +18,10 @@ use crate::App;
 impl App {
     pub(crate) fn draw_canvas(&mut self, ui: &mut egui::Ui) {
         // Paper dimensions in PostScript points — driven by selected_page_size_idx
-        let selected_ps = self.state.caps.as_ref()
+        let selected_ps = self
+            .state
+            .caps
+            .as_ref()
             .and_then(|c| c.page_sizes.get(self.state.selected_page_size_idx));
         let (paper_w_pt, paper_h_pt) = selected_ps
             .map(|ps| ps.paper_size)
@@ -26,10 +29,10 @@ impl App {
         // Calculate user-adjusted imageable area in points
         let user_border_pt = self.state.user_border_in * 72.0; // Convert inches to points
         let (ia_l, ia_b, ia_r, ia_t) = (
-            user_border_pt,                           // left
-            user_border_pt,                           // bottom  
-            paper_w_pt - user_border_pt,              // right
-            paper_h_pt - user_border_pt               // top
+            user_border_pt,              // left
+            user_border_pt,              // bottom
+            paper_w_pt - user_border_pt, // right
+            paper_h_pt - user_border_pt, // top
         );
 
         let (resp, _) = ui.allocate_painter(ui.available_size(), Sense::click());
@@ -46,10 +49,11 @@ impl App {
 
         let paper_px_w = paper_w_pt * scale;
         let paper_px_h = paper_h_pt * scale;
-        let paper_origin = inner.min + Vec2::new(
-            (inner.width()  - paper_px_w) / 2.0,
-            (inner.height() - paper_px_h) / 2.0,
-        );
+        let paper_origin = inner.min
+            + Vec2::new(
+                (inner.width() - paper_px_w) / 2.0,
+                (inner.height() - paper_px_h) / 2.0,
+            );
         let paper_rect = Rect::from_min_size(paper_origin, Vec2::new(paper_px_w, paper_px_h));
 
         let painter = ui.painter_at(canvas_area);
@@ -66,9 +70,17 @@ impl App {
             paper_origin + Vec2::new(ia_l * scale, (paper_h_pt - ia_t) * scale),
             paper_origin + Vec2::new(ia_r * scale, (paper_h_pt - ia_b) * scale),
         );
-        draw_dashed_rect(&painter, ia_rect, Color32::from_rgba_premultiplied(80, 140, 220, 200), 1.5, 6.0);
+        draw_dashed_rect(
+            &painter,
+            ia_rect,
+            Color32::from_rgba_premultiplied(80, 140, 220, 200),
+            1.5,
+            6.0,
+        );
 
-        if self.state.preview_dirty || self.state.preview_cache_page != Some(self.state.current_page) {
+        if self.state.preview_dirty
+            || self.state.preview_cache_page != Some(self.state.current_page)
+        {
             self.rebuild_canvas_texture(ui.ctx());
         }
         self.state.canvas_hit_rects.clear();
@@ -76,7 +88,12 @@ impl App {
         let sx = ia_rect.width() / ia_w_px.max(1) as f32;
         let sy = ia_rect.height() / ia_h_px.max(1) as f32;
 
-        for item in self.state.queue.iter().filter(|q| q.page == self.state.current_page) {
+        for item in self
+            .state
+            .queue
+            .iter()
+            .filter(|q| q.page == self.state.current_page)
+        {
             let (w_px, h_px) = self.queued_box_px(item);
             let r = Rect::from_min_size(
                 Pos2::new(
@@ -88,21 +105,28 @@ impl App {
             self.state.canvas_hit_rects.push((item.id, r));
 
             let src_size = item.src_size_px.or_else(|| {
-                self.state.full_images
+                self.state
+                    .full_images
                     .get(&item.filepath)
                     .map(|img| (img.size[0] as u32, img.size[1] as u32))
             });
 
             // For inner border: shrink the available area so image fits inside border
             // For outer border: center the original image area within the expanded placement rect
-            let display_rect = if item.border_type == vibeprint::layout_engine::BorderType::Inner && item.border_width_pt > 0.0 {
-                let border_px = (item.border_width_pt / 72.0 * self.state.target_dpi as f32 * sx).max(1.0);
+            let display_rect = if item.border_type == vibeprint::layout_engine::BorderType::Inner
+                && item.border_width_pt > 0.0
+            {
+                let border_px =
+                    (item.border_width_pt / 72.0 * self.state.target_dpi as f32 * sx).max(1.0);
                 Rect::from_min_size(
                     r.min + Vec2::splat(border_px),
                     r.size() - Vec2::splat(border_px * 2.0),
                 )
-            } else if item.border_type == vibeprint::layout_engine::BorderType::Outer && item.border_width_pt > 0.0 {
-                let border_px = (item.border_width_pt / 72.0 * self.state.target_dpi as f32 * sx).max(1.0);
+            } else if item.border_type == vibeprint::layout_engine::BorderType::Outer
+                && item.border_width_pt > 0.0
+            {
+                let border_px =
+                    (item.border_width_pt / 72.0 * self.state.target_dpi as f32 * sx).max(1.0);
                 // Center the original image area within the expanded rect
                 Rect::from_min_size(
                     r.min + Vec2::splat(border_px),
@@ -119,16 +143,19 @@ impl App {
             } else {
                 // When not cropping, aspect-fit with letterboxing
                 src_size
-                    .map(|(sw, sh)| aspect_fit_rect_in_box(display_rect, sw, sh, item.rotation > 0.0))
+                    .map(|(sw, sh)| {
+                        aspect_fit_rect_in_box(display_rect, sw, sh, item.rotation > 0.0)
+                    })
                     .unwrap_or(display_rect)
             };
 
             if let Some(tex) = self.state.preview_textures.get(&item.filepath) {
                 // Get crop UVs - when crop is enabled, we always have stored UVs
-                let (u0, v0, u1, v1) = match (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1) {
-                    (Some(cu0), Some(cv0), Some(cu1), Some(cv1)) => (cu0, cv0, cu1, cv1),
-                    _ => (0.0, 0.0, 1.0, 1.0),  // Fallback (shouldn't happen when crop_enabled)
-                };
+                let (u0, v0, u1, v1) =
+                    match (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1) {
+                        (Some(cu0), Some(cv0), Some(cu1), Some(cv1)) => (cu0, cv0, cu1, cv1),
+                        _ => (0.0, 0.0, 1.0, 1.0), // Fallback (shouldn't happen when crop_enabled)
+                    };
 
                 // Adjust UVs for rotation
                 // After 90° CW rotation:
@@ -160,14 +187,35 @@ impl App {
 
                 if item.rotation > 0.0 {
                     let mut mesh = egui::epaint::Mesh::with_texture(tex.id());
-                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_top(), uv: uv_lt, color: Color32::WHITE });
-                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_top(), uv: uv_rt, color: Color32::WHITE });
-                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.right_bottom(), uv: uv_rb, color: Color32::WHITE });
-                    mesh.vertices.push(egui::epaint::Vertex { pos: img_rect.left_bottom(), uv: uv_lb, color: Color32::WHITE });
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos: img_rect.left_top(),
+                        uv: uv_lt,
+                        color: Color32::WHITE,
+                    });
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos: img_rect.right_top(),
+                        uv: uv_rt,
+                        color: Color32::WHITE,
+                    });
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos: img_rect.right_bottom(),
+                        uv: uv_rb,
+                        color: Color32::WHITE,
+                    });
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos: img_rect.left_bottom(),
+                        uv: uv_lb,
+                        color: Color32::WHITE,
+                    });
                     mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
                     painter.add(egui::Shape::mesh(mesh));
                 } else {
-                    painter.image(tex.id(), img_rect, Rect::from_min_max(uv_lt, uv_rb), Color32::WHITE);
+                    painter.image(
+                        tex.id(),
+                        img_rect,
+                        Rect::from_min_max(uv_lt, uv_rb),
+                        Color32::WHITE,
+                    );
                 }
             } else {
                 painter.rect_filled(r, 0.0, Color32::from_gray(220));
@@ -175,27 +223,32 @@ impl App {
             }
 
             // Draw border preview if enabled
-            if item.border_type != vibeprint::layout_engine::BorderType::None && item.border_width_pt > 0.0 {
+            if item.border_type != vibeprint::layout_engine::BorderType::None
+                && item.border_width_pt > 0.0
+            {
                 match item.border_type {
                     vibeprint::layout_engine::BorderType::Inner => {
                         // Draw black border in gap between display_rect (shrunk) and r (full)
                         // Top strip
                         if display_rect.min.y > r.min.y {
-                            draw_solid_rect(&painter,
+                            draw_solid_rect(
+                                &painter,
                                 Rect::from_min_max(r.min, Pos2::new(r.max.x, display_rect.min.y)),
                                 Color32::BLACK,
                             );
                         }
                         // Bottom strip
                         if display_rect.max.y < r.max.y {
-                            draw_solid_rect(&painter,
+                            draw_solid_rect(
+                                &painter,
                                 Rect::from_min_max(Pos2::new(r.min.x, display_rect.max.y), r.max),
                                 Color32::BLACK,
                             );
                         }
                         // Left strip
                         if display_rect.min.x > r.min.x {
-                            draw_solid_rect(&painter,
+                            draw_solid_rect(
+                                &painter,
                                 Rect::from_min_max(
                                     Pos2::new(r.min.x, display_rect.min.y),
                                     Pos2::new(display_rect.min.x, display_rect.max.y),
@@ -205,7 +258,8 @@ impl App {
                         }
                         // Right strip
                         if display_rect.max.x < r.max.x {
-                            draw_solid_rect(&painter,
+                            draw_solid_rect(
+                                &painter,
                                 Rect::from_min_max(
                                     Pos2::new(display_rect.max.x, display_rect.min.y),
                                     Pos2::new(r.max.x, display_rect.max.y),
@@ -218,21 +272,24 @@ impl App {
                         // For outer border, fill the gap between the placement rect (r) and image rect (img_rect)
                         // Top strip
                         if img_rect.min.y > r.min.y {
-                            draw_solid_rect(&painter,
+                            draw_solid_rect(
+                                &painter,
                                 Rect::from_min_max(r.min, Pos2::new(r.max.x, img_rect.min.y)),
                                 Color32::BLACK,
                             );
                         }
                         // Bottom strip
                         if img_rect.max.y < r.max.y {
-                            draw_solid_rect(&painter,
+                            draw_solid_rect(
+                                &painter,
                                 Rect::from_min_max(Pos2::new(r.min.x, img_rect.max.y), r.max),
                                 Color32::BLACK,
                             );
                         }
                         // Left strip (between top and bottom of image)
                         if img_rect.min.x > r.min.x {
-                            draw_solid_rect(&painter,
+                            draw_solid_rect(
+                                &painter,
                                 Rect::from_min_max(
                                     Pos2::new(r.min.x, img_rect.min.y),
                                     Pos2::new(img_rect.min.x, img_rect.max.y),
@@ -242,7 +299,8 @@ impl App {
                         }
                         // Right strip (between top and bottom of image)
                         if img_rect.max.x < r.max.x {
-                            draw_solid_rect(&painter,
+                            draw_solid_rect(
+                                &painter,
                                 Rect::from_min_max(
                                     Pos2::new(img_rect.max.x, img_rect.min.y),
                                     Pos2::new(r.max.x, img_rect.max.y),
@@ -266,7 +324,8 @@ impl App {
         if resp.clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
                 if let Some((id, _)) = self
-                    .state.canvas_hit_rects
+                    .state
+                    .canvas_hit_rects
                     .iter()
                     .rev()
                     .find(|(_, r)| r.contains(pos))
@@ -286,8 +345,26 @@ impl App {
         let m_right = ia_r * scale;
         let m_top = (paper_h_pt - ia_t) * scale;
         let m_bottom = (paper_h_pt - ia_b) * scale;
-        draw_ruler_h(&painter, canvas_area, paper_origin.x, paper_px_w, scale, RULER_PX, m_left, m_right);
-        draw_ruler_v(&painter, canvas_area, paper_origin.y, paper_px_h, scale, RULER_PX, m_top, m_bottom);
+        draw_ruler_h(
+            &painter,
+            canvas_area,
+            paper_origin.x,
+            paper_px_w,
+            scale,
+            RULER_PX,
+            m_left,
+            m_right,
+        );
+        draw_ruler_v(
+            &painter,
+            canvas_area,
+            paper_origin.y,
+            paper_px_h,
+            scale,
+            RULER_PX,
+            m_top,
+            m_bottom,
+        );
 
         if self.state.softproof_enabled {
             painter.text(
@@ -301,13 +378,22 @@ impl App {
 
         // Status overlay (page size + DPI)
         let info = if let Some(caps) = &self.state.caps {
-            let ps = caps.page_sizes.get(self.state.selected_page_size_idx)
+            let ps = caps
+                .page_sizes
+                .get(self.state.selected_page_size_idx)
                 .map(|p| p.label.as_str())
                 .unwrap_or("?");
             let dpi = self.state.target_dpi;
-            format!("{ps}  ·  {dpi} dpi  ·  Page {} of {}", self.state.current_page + 1, self.state.page_count)
+            format!(
+                "{ps}  ·  {dpi} dpi  ·  Page {} of {}",
+                self.state.current_page + 1,
+                self.state.page_count
+            )
         } else {
-            format!("{:.0}×{:.0} pt  ·  {} dpi", paper_w_pt, paper_h_pt, self.state.target_dpi)
+            format!(
+                "{:.0}×{:.0} pt  ·  {} dpi",
+                paper_w_pt, paper_h_pt, self.state.target_dpi
+            )
         };
         painter.text(
             canvas_area.max - Vec2::new(8.0, 8.0),
@@ -321,11 +407,11 @@ impl App {
     pub(crate) fn draw_canvas_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(2.0);
         ui.horizontal_centered(|ui| {
-            let has_image = !self.state.queue.is_empty() || self.state.selected_source_image.is_some();
+            let has_image =
+                !self.state.queue.is_empty() || self.state.selected_source_image.is_some();
             let icon = "🔍"; // magnifying glass icon
-            let mut btn = egui::Button::new(
-                RichText::new(icon).strong().size(21.0)
-            ).min_size(Vec2::new(48.0, 36.0));
+            let mut btn = egui::Button::new(RichText::new(icon).strong().size(21.0))
+                .min_size(Vec2::new(48.0, 36.0));
             if self.state.softproof_enabled {
                 btn = btn.fill(Color32::from_rgb(60, 120, 200));
             }
@@ -335,15 +421,26 @@ impl App {
             }
 
             ui.add_space(16.0);
-            let prev = ui.add_enabled(self.state.current_page > 0, egui::Button::new("◀ Previous Page"));
+            let prev = ui.add_enabled(
+                self.state.current_page > 0,
+                egui::Button::new("◀ Previous Page"),
+            );
             if prev.clicked() {
                 self.state.current_page = self.state.current_page.saturating_sub(1);
                 self.mark_preview_dirty();
             }
-            ui.label(format!("Page {} of {}", self.state.current_page + 1, self.state.page_count.max(1)));
-            let next = ui.add_enabled(self.state.current_page + 1 < self.state.page_count, egui::Button::new("Next Page ▶"));
+            ui.label(format!(
+                "Page {} of {}",
+                self.state.current_page + 1,
+                self.state.page_count.max(1)
+            ));
+            let next = ui.add_enabled(
+                self.state.current_page + 1 < self.state.page_count,
+                egui::Button::new("Next Page ▶"),
+            );
             if next.clicked() {
-                self.state.current_page = (self.state.current_page + 1).min(self.state.page_count.saturating_sub(1));
+                self.state.current_page =
+                    (self.state.current_page + 1).min(self.state.page_count.saturating_sub(1));
                 self.mark_preview_dirty();
             }
         });
