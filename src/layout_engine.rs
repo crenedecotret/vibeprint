@@ -45,6 +45,7 @@ pub struct QueuedImage {
     pub filepath: PathBuf,
     pub size: PrintSize,
     pub fit_to_page: bool,
+    pub center_to_page: bool,
     pub source_icc: Option<PathBuf>,
     pub position: Point,
     pub page: usize,
@@ -106,6 +107,60 @@ pub fn layout_queue(
                     y_px: 0,
                     w_px: page_w_px.max(1),
                     h_px: page_h_px.max(1),
+                    rotation_deg: if rotate { 90.0 } else { 0.0 },
+                },
+            );
+
+            page = page.saturating_add(1);
+            cursor_x = 0;
+            cursor_y = 0;
+            row_h = 0;
+            continue;
+        }
+
+        // Center to page: place image alone and centered on its own page
+        if item.center_to_page {
+            if cursor_x > 0 || cursor_y > 0 || row_h > 0 {
+                page = page.saturating_add(1);
+            }
+
+            let (mut w_in, mut h_in) = item.size.as_inches();
+            w_in = w_in.max(0.01);
+            h_in = h_in.max(0.01);
+
+            // For outer borders, expand the cell size
+            if item.border_type == BorderType::Outer {
+                let border_in = item.border_width_pt / 72.0;
+                w_in += border_in * 2.0;
+                h_in += border_in * 2.0;
+            }
+
+            // Use same orientation logic as normal flow (cursor at 0,0 on fresh page)
+            let (box_w_px, box_h_px, rotate) = choose_orientation_for_flow_with_state(
+                item.src_size_px,
+                w_in,
+                h_in,
+                dpi,
+                0, // cursor_x - fresh page start
+                0, // cursor_y - fresh page start
+                0, // row_h - fresh page start
+                page_w_px,
+                page_h_px,
+                spacing_px,
+            );
+
+            // Calculate center position based on actual box size (including outer border expansion)
+            let x_px = (page_w_px.saturating_sub(box_w_px)) / 2;
+            let y_px = (page_h_px.saturating_sub(box_h_px)) / 2;
+
+            placements.insert(
+                item.id,
+                Placement {
+                    page,
+                    x_px,
+                    y_px,
+                    w_px: box_w_px,
+                    h_px: box_h_px,
                     rotation_deg: if rotate { 90.0 } else { 0.0 },
                 },
             );

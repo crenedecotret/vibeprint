@@ -577,6 +577,7 @@ impl App {
                 filepath: path.clone(),
                 size: print_size,
                 fit_to_page,
+                center_to_page: false,
                 source_icc: None,
                 position: Point::default(),
                 page: 0,

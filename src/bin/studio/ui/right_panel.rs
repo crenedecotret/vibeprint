@@ -733,6 +733,34 @@ impl App {
                     }
                 });
 
+                // ── Center to Page ─────────────────────────────────────────
+                ui.add_space(8.0);
+                let mut center_to_page = self
+                    .selected_queue()
+                    .map(|q| q.center_to_page)
+                    .unwrap_or(false);
+                let center_disabled = self
+                    .selected_queue()
+                    .map(|q| q.fit_to_page)
+                    .unwrap_or(false);
+                ui.add_enabled_ui(!center_disabled, |ui| {
+                    if ui
+                        .checkbox(&mut center_to_page, "Center to page")
+                        .changed()
+                    {
+                        if let Some(item) = self.selected_queue_mut() {
+                            item.center_to_page = center_to_page;
+                            self.relayout_queue();
+                            // Jump to the item's page after relayout
+                            if let Some(id) = self.state.selected_queue_id {
+                                if let Some(item) = self.state.queue.iter().find(|q| q.id == id) {
+                                    self.state.current_page = item.page;
+                                }
+                            }
+                        }
+                    }
+                });
+
                 // ── Border ────────────────────────────────────────────────
                 ui.add_space(12.0);
                 ui.separator();
