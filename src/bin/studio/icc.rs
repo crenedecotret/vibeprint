@@ -24,7 +24,9 @@ pub(crate) fn scan_icc_directories(tx: Sender<Vec<IccProfileEntry>>) {
     // Standard Linux ICC profile directories (system)
     let system_dirs = vec![
         PathBuf::from("/usr/share/color/icc"),
+        PathBuf::from("/usr/share/color"),
         PathBuf::from("/usr/local/share/color/icc"),
+        PathBuf::from("/var/lib/colord/icc"),
     ];
 
     // User-local directories

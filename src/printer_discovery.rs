@@ -1,4 +1,7 @@
-//! Hardware discovery layer — enumerates CUPS printer queues and parses their PPD files.
+//! Hardware discovery layer — enumerates CUPS printer queues via libcups API.
+//!
+//! Uses CUPS C API (cupsGetDests, cupsCopyDestInfo) instead of PPD parsing for robust
+//! handling of Gutenprint, Turboprint, driverless, and all printer types.
 //!
 //! Designed to be driven from a GUI thread: call [`spawn_discovery`] on startup and poll the
 //! returned [`Receiver`] without blocking the UI.
@@ -6,10 +9,19 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::ptr;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+
+mod cups_ffi;
+use cups_ffi::{
+    cups_dest_t, cups_dinfo_t,
+    cupsGetDests, cupsFreeDests,
+    get_dest_name, is_dest_default, get_dest_at,
+};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -54,10 +66,10 @@ pub struct PrinterCaps {
     pub name: String,
     /// Supported DPI values in ascending order, e.g. `[360, 720, 1440]`.
     pub resolutions: Vec<u32>,
-    /// Human-readable media type labels, e.g. `["Plain Paper", "Premium Glossy Photo"]`.
-    pub media_types: Vec<String>,
-    /// Source tray / input slot labels, e.g. `["Auto", "Manual", "Roll"]`.
-    pub input_slots: Vec<String>,
+    /// Media types as `(ipp_keyword, human_label)`, e.g. `[("photographic-glossy", "Glossy Photo Paper")]`.
+    pub media_types: Vec<(String, String)>,
+    /// Input slots as `(ipp_keyword, human_label)`, e.g. `[("auto", "Auto"), ("cd", "CD/DVD Tray")]`.
+    pub input_slots: Vec<(String, String)>,
     /// All supported page sizes with per-size imageable areas.
     pub page_sizes: Vec<PageSize>,
     /// Printable area for the PPD's default page size (Left, Bottom, Right, Top in points).
@@ -83,8 +95,43 @@ pub enum DiscoveryEvent {
 
 /// List all enabled CUPS printer queues and identify the system default.
 ///
-/// Requires `lpstat` (ships with CUPS on all Linux distros).
+/// Uses libcups `cupsGetDests()` API — works with all driver types including
+/// Gutenprint, Turboprint, driverless/IPP Everywhere.
 pub fn list_printers() -> Result<Vec<PrinterInfo>> {
+    // Try CUPS API first
+    let printers = list_printers_cups();
+    if !printers.is_empty() {
+        return Ok(printers);
+    }
+    
+    // Fallback to lpstat if CUPS API fails
+    list_printers_lpstat()
+}
+
+fn list_printers_cups() -> Vec<PrinterInfo> {
+    unsafe {
+        let mut dests: *mut cups_dest_t = ptr::null_mut();
+        let num_dests = cupsGetDests(&mut dests);
+        
+        if num_dests <= 0 || dests.is_null() {
+            return Vec::new();
+        }
+        
+        let mut printers = Vec::new();
+        for i in 0..num_dests {
+            let dest = get_dest_at(dests, i);
+            if let Some(name) = get_dest_name(dest) {
+                let is_default = is_dest_default(dest);
+                printers.push(PrinterInfo { name, is_default });
+            }
+        }
+        
+        cupsFreeDests(num_dests, dests);
+        printers
+    }
+}
+
+fn list_printers_lpstat() -> Result<Vec<PrinterInfo>> {
     let out = Command::new("lpstat")
         .arg("-e")
         .output()
@@ -107,74 +154,563 @@ pub fn list_printers() -> Result<Vec<PrinterInfo>> {
         .collect())
 }
 
-/// Return the path to the PPD file CUPS has installed for `printer_name`.
+/// Query capabilities for a named printer queue.
+/// Never fails — returns minimal defaults if all methods fail.
 ///
-/// Checks two locations in order:
-/// 1. The `Interface:` path reported by `lpstat -l -p` (handles non-standard driver layouts)
-/// 2. The standard `/etc/cups/ppd/<name>.ppd` (driver-based installs)
-///
-/// Returns `None` for driverless / IPP Everywhere printers — use [`query_printer_caps`]
-/// which falls back to `lpoptions` in that case.
-pub fn find_ppd_path(printer_name: &str) -> Option<PathBuf> {
-    // Primary: ask CUPS for the actual interface file via lpstat
-    if let Some(p) = find_ppd_via_lpstat(printer_name) {
-        return Some(p);
+/// Strategy: CUPS API for options (media types, slots, resolutions, color mode).
+/// PPD for page sizes when available — the CUPS API only exposes what the IPP driver
+/// declares, which for Gutenprint drivers is borderless-only. The PPD has the full list.
+pub fn query_printer_caps(name: &str) -> Result<PrinterCaps> {
+    // Get CUPS API caps first (options, slots, resolutions)
+    let mut cups_caps = query_printer_caps_cups_api(name).ok();
+
+    // Get PPD page sizes — overrides CUPS API page sizes when present
+    if let Some(ppd_path) = find_ppd_path(name) {
+        let parse_result = parse_ppd(name, &ppd_path);
+        // Clean up temp file if it was written to /tmp by fetch_ppd_from_cups
+        if ppd_path.starts_with("/tmp") {
+            let _ = std::fs::remove_file(&ppd_path);
+        }
+        match parse_result {
+            Ok(mut ppd_caps) => {
+                fill_standard_imageable_areas(&mut ppd_caps.page_sizes);
+                if let Some(ref mut cc) = cups_caps {
+                    // Merge: use PPD page sizes + PPD extra options, keep CUPS media types/slots/resolutions
+                    cc.page_sizes = ppd_caps.page_sizes;
+                    cc.printable_area = ppd_caps.printable_area;
+                    // Fill resolutions from PPD if CUPS only reported one
+                    if cc.resolutions.len() <= 1 && !ppd_caps.resolutions.is_empty() {
+                        cc.resolutions = ppd_caps.resolutions;
+                    }
+                    // Merge PPD-specific extra options not covered by CUPS API
+                    for opt in ppd_caps.extra_options {
+                        if !cc.extra_options.iter().any(|o| o.key == opt.key) {
+                            cc.extra_options.push(opt);
+                        }
+                    }
+                    return Ok(cc.clone());
+                } else {
+                    // No CUPS caps — supplement PPD with lpoptions resolutions
+                    if ppd_caps.resolutions.is_empty() {
+                        ppd_caps.resolutions = lpoptions_resolutions(name);
+                    }
+                    return Ok(ppd_caps);
+                }
+            }
+            Err(e) => eprintln!("PPD parsing failed for '{}': {}", name, e),
+        }
     }
-    // Fallback: conventional location
-    let p = PathBuf::from(format!("/etc/cups/ppd/{}.ppd", printer_name));
-    if p.exists() {
-        Some(p)
-    } else {
-        None
+
+    // No PPD — use CUPS API page sizes as-is (driverless/IPP Everywhere)
+    if let Some(caps) = cups_caps {
+        if !caps.page_sizes.is_empty() {
+            return Ok(caps);
+        }
     }
+
+    // Fallback: lpoptions subprocess
+    match caps_from_lpoptions(name) {
+        Ok(caps) => return Ok(caps),
+        Err(e) => eprintln!("lpoptions failed for '{}': {}", name, e),
+    }
+
+    // Last resort: minimal defaults so UI never gets stuck
+    Ok(minimal_default_caps(name))
 }
 
-fn find_ppd_via_lpstat(printer_name: &str) -> Option<PathBuf> {
-    let out = Command::new("lpstat")
-        .args(["-l", "-p", printer_name])
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines() {
-        if let Some(rest) = line.trim().strip_prefix("Interface:") {
-            let path = rest.trim();
-            if path.starts_with('/') && path.ends_with(".ppd") {
-                let p = PathBuf::from(path);
-                if p.exists() {
-                    return Some(p);
+/// Query printer capabilities fully via CUPS API — no PPD parsing, no subprocesses.
+/// Converts 1/100mm CUPS units to PostScript points (1pt = 25.4/72 mm).
+fn query_printer_caps_cups_api(name: &str) -> Result<PrinterCaps> {
+    use cups_ffi::*;
+    use std::ffi::CString;
+
+    unsafe {
+        let _c_name = CString::new(name)?;
+
+        // Get all destinations
+        let mut dests: *mut cups_dest_t = ptr::null_mut();
+        let num_dests = cupsGetDests(&mut dests);
+        if num_dests <= 0 || dests.is_null() {
+            anyhow::bail!("cupsGetDests returned no printers");
+        }
+
+        // Find this printer's destination entry
+        let mut found_dest: *mut cups_dest_t = ptr::null_mut();
+        for i in 0..num_dests {
+            let d = get_dest_at(dests, i);
+            if let Some(n) = get_dest_name(d) {
+                if n == name {
+                    found_dest = d;
+                    break;
                 }
             }
         }
+
+        if found_dest.is_null() {
+            cupsFreeDests(num_dests, dests);
+            anyhow::bail!("printer '{}' not found in CUPS", name);
+        }
+
+        // Get capability info from CUPS scheduler
+        let info = cupsCopyDestInfo(CUPS_HTTP_DEFAULT, found_dest);
+        if info.is_null() {
+            cupsFreeDests(num_dests, dests);
+            anyhow::bail!("cupsCopyDestInfo failed for '{}'", name);
+        }
+
+        let caps = build_cups_caps(name, found_dest, info);
+
+        cupsFreeDestInfo(info);
+        cupsFreeDests(num_dests, dests);
+
+        Ok(caps)
     }
-    None
 }
 
-/// Query the full capability set for a named printer queue.
-///
-/// Uses a tiered strategy so it works for all printer types:
-/// 1. **PPD** (driver-based: Epson / Canon / HP with full driver) — richest data.
-/// 2. **`lpoptions -p <name> -l`** (driverless IPP Everywhere, remote queues, any CUPS queue)
-///    — CUPS always synthesises this regardless of driver type.
-/// 3. **Standard imageable-area table** — fills in printable bounds for well-known paper sizes
-///    when no PPD margin data is available.
-pub fn query_printer_caps(name: &str) -> Result<PrinterCaps> {
-    match find_ppd_path(name) {
-        Some(ppd_path) => {
-            let mut caps = parse_ppd(name, &ppd_path)?;
-            // Some PPDs (e.g. Gutenprint Epson) encode resolution via non-standard keywords;
-            // if parse_ppd came up empty for resolutions, fill from lpoptions.
-            if caps.resolutions.is_empty() {
-                caps.resolutions = lpoptions_resolutions(name);
-            }
-            // Fill imageable areas that PPD left at the fallback value
-            fill_standard_imageable_areas(&mut caps.page_sizes);
-            Ok(caps)
+/// 1/100 mm → PostScript points (72pt per inch, 25.4mm per inch)
+#[inline]
+fn hundredths_mm_to_pt(v: i32) -> f32 {
+    v as f32 * 72.0 / 2540.0
+}
+
+/// IPP media-type keyword → human label mapping.
+fn ipp_media_type_label(kw: &str) -> String {
+    match kw {
+        "stationery"            => "Plain Paper",
+        "stationery-inkjet"     => "Inkjet Paper",
+        "photographic"          => "Photo Paper",
+        "photographic-glossy"   => "Glossy Photo Paper",
+        "photographic-semi-gloss" => "Semi-Gloss Photo Paper",
+        "photographic-matte"    => "Matte Photo Paper",
+        "photographic-film"     => "Film",
+        "transparency"          => "Transparency",
+        "envelope"              => "Envelope",
+        "envelope-plain"        => "Plain Envelope",
+        "disc"                  => "CD/DVD",
+        "labels"                => "Labels",
+        "cardstock"             => "Card Stock",
+        "postcard"              => "Postcard",
+        "glossy-film"           => "Glossy Film",
+        "back-film"             => "Back Light Film",
+        _ => {
+            // Convert kebab-case to Title Case as fallback
+            return kw.split('-')
+                .map(|w| {
+                    let mut c = w.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
         }
-        None => {
-            // Driverless / IPP Everywhere / remote queue — no static PPD file.
-            caps_from_lpoptions(name)
+    }.to_string()
+}
+
+/// IPP media-source keyword → human label mapping.
+fn ipp_media_source_label(kw: &str) -> String {
+    match kw {
+        "auto"          => "Auto",
+        "main"          => "Main Tray",
+        "manual"        => "Manual Feed",
+        "alternate"     => "Alternate Tray",
+        "top"           => "Top Tray",
+        "bottom"        => "Bottom Tray",
+        "large-capacity" => "Large Capacity",
+        "envelope"      => "Envelope Feeder",
+        "cd"            => "CD/DVD Tray",
+        "velvet"        => "Roll (Velvet)",
+        "matte"         => "Roll (Matte)",
+        "main-roll"     => "Roll (Main)",
+        "alternate-roll" => "Roll (Alternate)",
+        "standard"      => "Standard",
+        _ => {
+            return kw.split('-')
+                .map(|w| {
+                    let mut c = w.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+    }.to_string()
+}
+
+/// PWG media name → short human label.
+/// PWG keyword format: [namespace_]name_WxHunit[_borderless]
+/// e.g. "na_letter_8.5x11in" → "Letter"
+///      "iso_a4_210x297mm" → "A4"
+///      "na_letter_8.5x11in_borderless" → "Letter (Borderless)"
+///      "oe_photo-l_3.5x5in" → "Photo L"
+///      "custom_2x6in_2x6in_borderless" → "2x6in (Borderless)"
+fn pwg_media_label(pwg: &str) -> String {
+    // Known namespace prefixes to strip
+    let namespaces = ["na_", "iso_", "oe_", "jis_", "roc_", "asme_", "prc_"];
+
+    let mut s = pwg;
+    let mut borderless = false;
+
+    // Strip _borderless suffix
+    if let Some(base) = s.strip_suffix("_borderless") {
+        s = base;
+        borderless = true;
+    }
+
+    // Strip namespace prefix
+    for ns in &namespaces {
+        if let Some(rest) = s.strip_prefix(ns) {
+            s = rest;
+            break;
         }
     }
+
+    // Remove trailing _WxHunit dimension (e.g. "_8.5x11in", "_210x297mm")
+    // Find last underscore followed by digits
+    let label = if let Some(pos) = s.rfind('_') {
+        let after = &s[pos + 1..];
+        // If it looks like a dimension (starts with digit), strip it
+        if after.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            &s[..pos]
+        } else {
+            s
+        }
+    } else {
+        s
+    };
+
+    let mut result = title_case(label);
+    if borderless {
+        result.push_str(" (Borderless)");
+    }
+    result
+}
+
+fn title_case(s: &str) -> String {
+    s.split('-')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+unsafe fn build_cups_caps(
+    name: &str,
+    dest: *mut cups_dest_t,
+    info: *mut cups_dinfo_t,
+) -> PrinterCaps {
+    use cups_ffi::{CupsSize, cupsGetDestMediaCount, cupsGetDestMediaByIndex,
+        cupsFindDestSupported, CUPS_HTTP_DEFAULT, CUPS_MEDIA_FLAGS_DEFAULT,
+        cstr_from_array, ipp_attr_strings, ipp_attr_enums, ipp_attr_resolutions};
+    use std::ffi::CString;
+
+    // ── Page sizes ────────────────────────────────────────────────────────────
+    let media_count = cupsGetDestMediaCount(CUPS_HTTP_DEFAULT, dest, info, CUPS_MEDIA_FLAGS_DEFAULT);
+    let mut page_sizes: Vec<PageSize> = Vec::new();
+
+    for i in 0..media_count {
+        let mut size = CupsSize {
+            media: [0; 128],
+            width: 0,
+            length: 0,
+            bottom: 0,
+            left: 0,
+            right: 0,
+            top: 0,
+        };
+        if cupsGetDestMediaByIndex(CUPS_HTTP_DEFAULT, dest, info, i, CUPS_MEDIA_FLAGS_DEFAULT, &mut size) == 0 {
+            continue;
+        }
+
+        let media_name = cstr_from_array(&size.media);
+        if media_name.is_empty() { continue; }
+
+        // Convert 1/100mm → points
+        let w_pt = hundredths_mm_to_pt(size.width);
+        let h_pt = hundredths_mm_to_pt(size.length);
+        let l_pt = hundredths_mm_to_pt(size.left);
+        let b_pt = hundredths_mm_to_pt(size.bottom);
+        let r_pt = hundredths_mm_to_pt(size.right);
+        let t_pt = hundredths_mm_to_pt(size.top);
+
+        // Imageable area: left, bottom, (width - right margin), (height - top margin)
+        let ia = (l_pt, b_pt, w_pt - r_pt, h_pt - t_pt);
+
+        let label = pwg_media_label(&media_name);
+
+        page_sizes.push(PageSize {
+            name: media_name,
+            label,
+            paper_size: (w_pt, h_pt),
+            imageable_area: ia,
+        });
+    }
+
+    // ── Resolutions ───────────────────────────────────────────────────────────
+    let res_key = CString::new("printer-resolution").unwrap();
+    let res_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, res_key.as_ptr());
+    let mut resolutions = ipp_attr_resolutions(res_attr);
+    resolutions.sort_unstable();
+    resolutions.dedup();
+
+    // ── Media types ───────────────────────────────────────────────────────────
+    let mt_key = CString::new("media-type").unwrap();
+    let mt_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, mt_key.as_ptr());
+    let media_types: Vec<(String, String)> = ipp_attr_strings(mt_attr)
+        .into_iter()
+        .map(|kw| { let label = ipp_media_type_label(&kw); (kw, label) })
+        .collect();
+
+    // ── Input slots ───────────────────────────────────────────────────────────
+    let ms_key = CString::new("media-source").unwrap();
+    let ms_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, ms_key.as_ptr());
+    let input_slots: Vec<(String, String)> = ipp_attr_strings(ms_attr)
+        .into_iter()
+        .map(|kw| { let label = ipp_media_source_label(&kw); (kw, label) })
+        .collect();
+
+    // ── Extra options (color mode, quality, etc.) ─────────────────────────────
+    let mut extra_options: Vec<CupsOption> = Vec::new();
+
+    let color_key = CString::new("print-color-mode").unwrap();
+    let color_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, color_key.as_ptr());
+    let color_vals = ipp_attr_strings(color_attr);
+    if color_vals.len() > 1 {
+        extra_options.push(CupsOption {
+            key: "print-color-mode".to_string(),
+            label: "Color Mode".to_string(),
+            choices: color_vals.iter().map(|v| (v.clone(), title_case(v))).collect(),
+            default_idx: color_vals.iter().position(|v| v == "color").unwrap_or(0),
+        });
+    }
+
+    let sides_key = CString::new("sides").unwrap();
+    let sides_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, sides_key.as_ptr());
+    let sides_vals = ipp_attr_strings(sides_attr);
+    if sides_vals.len() > 1 {
+        let sides_labels: Vec<(String, String)> = sides_vals.iter().map(|v| {
+            let label = match v.as_str() {
+                "one-sided"            => "One Sided",
+                "two-sided-long-edge"  => "Two Sided (Long Edge)",
+                "two-sided-short-edge" => "Two Sided (Short Edge)",
+                _ => v.as_str(),
+            };
+            (v.clone(), label.to_string())
+        }).collect();
+        extra_options.push(CupsOption {
+            key: "sides".to_string(),
+            label: "Duplex".to_string(),
+            choices: sides_labels,
+            default_idx: 0,
+        });
+    }
+
+    // ── Print quality (IPP enum: 3=draft 4=normal 5=high) ────────────────────────
+    let pq_key = CString::new("print-quality").unwrap();
+    let pq_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, pq_key.as_ptr());
+    // Try as keyword strings first (some drivers), then as enum integers
+    let pq_vals = {
+        let s = ipp_attr_strings(pq_attr);
+        if s.is_empty() { ipp_attr_enums(pq_attr) } else { s }
+    };
+    if pq_vals.len() > 1 {
+        let pq_labels: Vec<(String, String)> = pq_vals.iter().map(|v| {
+            let label = match v.as_str() {
+                "3" | "draft"  => "Draft",
+                "4" | "normal" => "Normal",
+                "5" | "high"   => "High",
+                _ => v.as_str(),
+            };
+            (v.clone(), label.to_string())
+        }).collect();
+        let default_idx = pq_labels.iter().position(|(k, _)| k == "4" || k == "normal").unwrap_or(0);
+        extra_options.push(CupsOption {
+            key: "print-quality".to_string(),
+            label: "Print Quality".to_string(),
+            choices: pq_labels,
+            default_idx,
+        });
+    }
+
+    // ── Output bin ────────────────────────────────────────────────────────────
+    let ob_key = CString::new("output-bin").unwrap();
+    let ob_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, ob_key.as_ptr());
+    let ob_vals = ipp_attr_strings(ob_attr);
+    if ob_vals.len() > 1 {
+        let ob_labels: Vec<(String, String)> = ob_vals.iter().map(|v| {
+            let label = match v.as_str() {
+                "auto"          => "Auto",
+                "top"           => "Top Bin",
+                "middle"        => "Middle Bin",
+                "bottom"        => "Bottom Bin",
+                "side"          => "Side Bin",
+                "left"          => "Left Bin",
+                "right"         => "Right Bin",
+                "face-up"       => "Face Up",
+                "face-down"     => "Face Down",
+                "large-capacity" => "Large Capacity",
+                _ => v.as_str(),
+            };
+            (v.clone(), label.to_string())
+        }).collect();
+        extra_options.push(CupsOption {
+            key: "output-bin".to_string(),
+            label: "Output Bin".to_string(),
+            choices: ob_labels,
+            default_idx: 0,
+        });
+    }
+
+    // ── Print rendering intent ────────────────────────────────────────────────
+    let ri_key = CString::new("print-rendering-intent").unwrap();
+    let ri_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, ri_key.as_ptr());
+    let ri_vals = ipp_attr_strings(ri_attr);
+    if ri_vals.len() > 1 {
+        let ri_labels: Vec<(String, String)> = ri_vals.iter().map(|v| {
+            let label = match v.as_str() {
+                "auto"             => "Auto",
+                "perceptual"       => "Perceptual",
+                "relative"         => "Relative Colorimetric",
+                "relative-bpc"     => "Relative Colorimetric (BPC)",
+                "saturation"       => "Saturation",
+                "absolute"         => "Absolute Colorimetric",
+                _ => v.as_str(),
+            };
+            (v.clone(), label.to_string())
+        }).collect();
+        let default_idx = ri_labels.iter().position(|(k, _)| k == "auto" || k == "perceptual").unwrap_or(0);
+        extra_options.push(CupsOption {
+            key: "print-rendering-intent".to_string(),
+            label: "Rendering Intent".to_string(),
+            choices: ri_labels,
+            default_idx,
+        });
+    }
+
+    // ── Default printable area (first page size) ──────────────────────────────
+    let printable_area = page_sizes.first()
+        .map(|p| p.imageable_area)
+        .unwrap_or((12.0, 12.0, 600.0, 780.0));
+
+    PrinterCaps {
+        name: name.to_string(),
+        resolutions,
+        media_types,
+        input_slots,
+        page_sizes,
+        printable_area,
+        extra_options,
+    }
+}
+
+fn minimal_default_caps(name: &str) -> PrinterCaps {
+    PrinterCaps {
+        name: name.to_string(),
+        resolutions: vec![300, 600],
+        media_types: vec![("stationery".to_string(), "Plain Paper".to_string())],
+        input_slots: vec![("auto".to_string(), "Auto".to_string())],
+        page_sizes: vec![
+            PageSize {
+                name: "Letter".to_string(),
+                label: "Letter".to_string(),
+                paper_size: (612.0, 792.0),
+                imageable_area: (12.0, 12.0, 600.0, 780.0),
+            },
+            PageSize {
+                name: "A4".to_string(),
+                label: "A4".to_string(),
+                paper_size: (595.0, 842.0),
+                imageable_area: (12.0, 12.0, 583.0, 830.0),
+            },
+        ],
+        printable_area: (12.0, 12.0, 600.0, 780.0),
+        extra_options: Vec::new(),
+    }
+}
+
+/// Fetch the PPD for `printer_name` from the CUPS HTTP scheduler
+/// (`http://localhost:631/printers/<name>.ppd`) and write it to a temp file.
+///
+/// This is identical to what GTK/GIMP do: `ppdOpenFd(dup(fd))` on the
+/// downloaded PPD. Works for all driver types including driverless/IPP
+/// Everywhere, because CUPS synthesises a PPD for those too.
+/// Returns the temp file path on success, `None` on any error.
+pub fn find_ppd_path(printer_name: &str) -> Option<PathBuf> {
+    fetch_ppd_from_cups(printer_name)
+        .or_else(|| find_ppd_on_disk(printer_name))
+}
+
+/// Check all known on-disk PPD locations across distros.
+/// - `/etc/cups/ppd/`                        — standard (Fedora, Debian, Ubuntu classic)
+/// - `/var/snap/cups/common/etc/cups/ppd/`   — Ubuntu snap CUPS
+fn find_ppd_on_disk(printer_name: &str) -> Option<PathBuf> {
+    let candidates = [
+        format!("/etc/cups/ppd/{}.ppd", printer_name),
+        format!("/var/snap/cups/common/etc/cups/ppd/{}.ppd", printer_name),
+    ];
+    candidates.into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.exists())
+}
+
+/// Download the CUPS-synthesised PPD via HTTP and save to a temp file.
+fn fetch_ppd_from_cups(printer_name: &str) -> Option<PathBuf> {
+    use cups_ffi::{cupsServer, ippPort};
+    use std::ffi::CStr;
+    use std::io::Write;
+
+    // Ask libcups for the actual server address and port — works with
+    // localhost, Unix socket proxies, and remote CUPS servers alike.
+    let (host, port) = unsafe {
+        let h = cupsServer();
+        let host = if h.is_null() {
+            "localhost".to_string()
+        } else {
+            CStr::from_ptr(h).to_str().unwrap_or("localhost").to_string()
+        };
+        let port = ippPort();
+        (host, port)
+    };
+
+    // Unix socket paths start with '/' — CUPS HTTP API is still reachable
+    // via localhost in that case.
+    let host = if host.starts_with('/') { "localhost".to_string() } else { host };
+    let url = format!("http://{}:{}/printers/{}.ppd", host, port, printer_name);
+
+    // Use curl with a short connect+transfer timeout — same as a subprocess
+    // but without spawning lpstat which can block on CUPS being busy.
+    let out = Command::new("curl")
+        .args([
+            "--silent",
+            "--fail",
+            "--max-time", "5",       // 5 s total timeout
+            "--connect-timeout", "2", // 2 s connect timeout
+            &url,
+        ])
+        .output()
+        .ok()?;
+
+    if !out.status.success() || out.stdout.is_empty() {
+        return None;
+    }
+
+    // Write to temp file so parse_ppd can read it as a path
+    let mut tmp = tempfile::Builder::new()
+        .prefix("vibeprint_ppd_")
+        .suffix(".ppd")
+        .tempfile()
+        .ok()?;
+    tmp.write_all(&out.stdout).ok()?;
+    let (_, path) = tmp.keep().ok()?;
+    Some(path)
 }
 
 // ── lpoptions-based capability query (driverless / IPP fallback) ─────────────
@@ -189,8 +725,8 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
 
     let text = String::from_utf8_lossy(&out.stdout);
     let mut resolutions: Vec<u32> = Vec::new();
-    let mut media_types: Vec<String> = Vec::new();
-    let mut input_slots: Vec<String> = Vec::new();
+    let mut media_types: Vec<(String, String)> = Vec::new();
+    let mut input_slots: Vec<(String, String)> = Vec::new();
     let mut page_size_entries: Vec<(String, String)> = Vec::new();
     let mut extra_options: Vec<CupsOption> = Vec::new();
 
@@ -222,18 +758,20 @@ fn caps_from_lpoptions(name: &str) -> Result<PrinterCaps> {
             "MediaType" => {
                 for token in values_str.split_whitespace() {
                     let v = token.trim_start_matches('*');
+                    let key = v.split('/').next().unwrap_or(v).trim().to_string();
                     let label = v.split('/').nth(1).unwrap_or(v).trim().to_string();
-                    if !label.is_empty() && !media_types.contains(&label) {
-                        media_types.push(label);
+                    if !key.is_empty() && !media_types.iter().any(|(k, _)| k == &key) {
+                        media_types.push((key, label));
                     }
                 }
             }
             "InputSlot" | "MediaPosition" => {
                 for token in values_str.split_whitespace() {
                     let v = token.trim_start_matches('*');
+                    let key = v.split('/').next().unwrap_or(v).trim().to_string();
                     let label = v.split('/').nth(1).unwrap_or(v).trim().to_string();
-                    if !label.is_empty() && !input_slots.contains(&label) {
-                        input_slots.push(label);
+                    if !key.is_empty() && !input_slots.iter().any(|(k, _)| k == &key) {
+                        input_slots.push((key, label));
                     }
                 }
             }
@@ -434,6 +972,9 @@ fn detect_default_printer() -> Option<String> {
 }
 
 fn discovery_worker(tx: Sender<DiscoveryEvent>) {
+    let start_time = Instant::now();
+    let timeout = Duration::from_secs(10); // Max total discovery time
+    
     let printers = match list_printers() {
         Ok(p) if p.is_empty() => {
             let _ = tx.send(DiscoveryEvent::Warning(
@@ -449,15 +990,69 @@ fn discovery_worker(tx: Sender<DiscoveryEvent>) {
     };
 
     let _ = tx.send(DiscoveryEvent::PrintersListed(printers.clone()));
-
+    
+    // Track completion status
+    let printer_count = printers.len();
+    let mut completed_count = 0;
+    let mut first_caps_ready = false;
+    
+    // Query each printer with individual timeout
     for printer in &printers {
-        match query_printer_caps(&printer.name) {
-            Ok(caps) => {
-                let _ = tx.send(DiscoveryEvent::CapsReady(caps));
+        // Check if we're over timeout
+        if start_time.elapsed() > timeout {
+            let _ = tx.send(DiscoveryEvent::Warning(
+                format!("Discovery timeout: queried {}/{} printers", completed_count, printer_count)
+            ));
+            break;
+        }
+        
+        // Query with timeout per printer
+        let printer_name = printer.name.clone();
+        let tx_clone = tx.clone();
+        
+        match query_printer_caps_with_timeout(&printer_name, Duration::from_secs(5)) {
+            Ok(Some(caps)) => {
+                let _ = tx_clone.send(DiscoveryEvent::CapsReady(caps));
+                if !first_caps_ready {
+                    first_caps_ready = true;
+                    // Signal that we have at least one printer ready - UI can proceed
+                    let _ = tx_clone.send(DiscoveryEvent::Warning(
+                        "READY".to_string() // Special signal for app.rs
+                    ));
+                }
+            }
+            Ok(None) => {
+                let _ = tx_clone.send(DiscoveryEvent::Warning(
+                    format!("{}: timed out", printer_name)
+                ));
             }
             Err(e) => {
-                let _ = tx.send(DiscoveryEvent::Warning(format!("{}: {}", printer.name, e)));
+                let _ = tx_clone.send(DiscoveryEvent::Warning(
+                    format!("{}: {}", printer_name, e)
+                ));
             }
+        }
+        completed_count += 1;
+    }
+}
+
+/// Query printer caps with a timeout - uses thread to prevent blocking
+fn query_printer_caps_with_timeout(name: &str, timeout: Duration) -> Result<Option<PrinterCaps>> {
+    use std::sync::mpsc::RecvTimeoutError;
+    
+    let name = name.to_string();
+    let (tx, rx) = channel::<Result<PrinterCaps>>();
+    
+    thread::spawn(move || {
+        let result = query_printer_caps(&name);
+        let _ = tx.send(result);
+    });
+    
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result.map(Some),
+        Err(RecvTimeoutError::Timeout) => Ok(None),
+        Err(RecvTimeoutError::Disconnected) => {
+            anyhow::bail!("Query thread panicked")
         }
     }
 }
@@ -509,8 +1104,8 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
         .with_context(|| format!("failed to read PPD: {}", path.display()))?;
 
     let mut resolutions: Vec<u32> = Vec::new();
-    let mut media_types: Vec<String> = Vec::new();
-    let mut input_slots: Vec<String> = Vec::new();
+    let mut media_types: Vec<(String, String)> = Vec::new();
+    let mut input_slots: Vec<(String, String)> = Vec::new();
     let mut page_size_entries: Vec<(String, String)> = Vec::new();
     let mut imageable_areas: HashMap<String, (f32, f32, f32, f32)> = HashMap::new();
     let mut paper_dimensions: HashMap<String, (f32, f32)> = HashMap::new();
@@ -694,20 +1289,17 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
                         let key_part = key_part.trim();
                         // Now check if key_part has "/Label" separator
                         if let Some((key, label)) = key_part.split_once('/') {
+                            let key = key.trim().to_string();
                             let label = label.trim().to_string();
-                            let label = if label.is_empty() {
-                                key.to_string()
-                            } else {
-                                label
-                            };
-                            if !label.is_empty() && !media_types.contains(&label) {
-                                media_types.push(label);
+                            let label = if label.is_empty() { key.clone() } else { label };
+                            if !key.is_empty() && !media_types.iter().any(|(k, _)| k == &key) {
+                                media_types.push((key, label));
                             }
                         } else {
-                            // No "/" separator - use key as label
+                            // No "/" separator - use key as both key and label
                             let key = key_part.to_string();
-                            if !key.is_empty() && !media_types.contains(&key) {
-                                media_types.push(key);
+                            if !key.is_empty() && !media_types.iter().any(|(k, _)| k == &key) {
+                                media_types.push((key.clone(), key));
                             }
                         }
                     }
@@ -724,20 +1316,17 @@ fn parse_ppd(printer_name: &str, path: &Path) -> Result<PrinterCaps> {
                             let key_part = key_part.trim();
                             // Now check if key_part has "/Label" separator
                             if let Some((key, label)) = key_part.split_once('/') {
+                                let key = key.trim().to_string();
                                 let label = label.trim().to_string();
-                                let label = if label.is_empty() {
-                                    key.to_string()
-                                } else {
-                                    label
-                                };
-                                if !label.is_empty() && !input_slots.contains(&label) {
-                                    input_slots.push(label);
+                                let label = if label.is_empty() { key.clone() } else { label };
+                                if !key.is_empty() && !input_slots.iter().any(|(k, _)| k == &key) {
+                                    input_slots.push((key, label));
                                 }
                             } else {
-                                // No "/" separator - use key as label
+                                // No "/" separator - use key as both key and label
                                 let key = key_part.to_string();
-                                if !key.is_empty() && !input_slots.contains(&key) {
-                                    input_slots.push(key);
+                                if !key.is_empty() && !input_slots.iter().any(|(k, _)| k == &key) {
+                                    input_slots.push((key.clone(), key));
                                 }
                             }
                         }
@@ -1079,7 +1668,11 @@ mod tests {
         assert_eq!(caps.resolutions, vec![360, 720, 1440]);
         assert_eq!(
             caps.media_types,
-            vec!["Plain Paper", "Premium Glossy Photo", "Ultra Premium Matte"]
+            vec![
+                ("Plain".to_string(), "Plain Paper".to_string()),
+                ("GlossyPhoto".to_string(), "Premium Glossy Photo".to_string()),
+                ("Matte".to_string(), "Ultra Premium Matte".to_string()),
+            ]
         );
         assert_eq!(caps.page_sizes.len(), 2);
 

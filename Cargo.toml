@@ -19,6 +19,7 @@ flate2 = "1"
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
+tempfile = "3"
 x11 = { version = "2", features = ["xlib"], optional = true }
 libc = { version = "0.2", optional = true }
 
@@ -27,4 +28,3 @@ default = ["monitor-icc"]
 monitor-icc = ["x11", "libc"]
 
 [dev-dependencies]
-tempfile = "3"

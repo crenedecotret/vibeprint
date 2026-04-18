@@ -47,12 +47,12 @@ impl App {
                                 .selected_text(
                                     caps.media_types
                                         .get(self.state.props_media_idx)
-                                        .map(|s| s.as_str())
+                                        .map(|s| s.1.as_str())
                                         .unwrap_or("—"),
                                 )
                                 .show_ui(ui, |ui| {
-                                    for (i, m) in caps.media_types.iter().enumerate() {
-                                        ui.selectable_value(&mut self.state.props_media_idx, i, m);
+                                    for (i, (_, label)) in caps.media_types.iter().enumerate() {
+                                        ui.selectable_value(&mut self.state.props_media_idx, i, label);
                                     }
                                 });
                         }
@@ -92,12 +92,12 @@ impl App {
                                 .selected_text(
                                     caps.input_slots
                                         .get(self.state.props_slot_idx)
-                                        .map(|s| s.as_str())
+                                        .map(|s| s.1.as_str())
                                         .unwrap_or("—"),
                                 )
                                 .show_ui(ui, |ui| {
-                                    for (i, s) in caps.input_slots.iter().enumerate() {
-                                        ui.selectable_value(&mut self.state.props_slot_idx, i, s);
+                                    for (i, (_, label)) in caps.input_slots.iter().enumerate() {
+                                        ui.selectable_value(&mut self.state.props_slot_idx, i, label);
                                     }
                                 });
                             ui.end_row();
@@ -246,7 +246,7 @@ impl App {
                 let media = caps
                     .media_types
                     .get(self.state.props_media_idx)
-                    .map(|m| m.as_str())
+                    .map(|m| m.1.as_str())
                     .unwrap_or("—");
                 ui.label(RichText::new("Media Type:").weak());
                 ui.label(media);
@@ -257,7 +257,7 @@ impl App {
                 let slot = caps
                     .input_slots
                     .get(self.state.props_slot_idx)
-                    .map(|s| s.as_str())
+                    .map(|s| s.1.as_str())
                     .unwrap_or("—");
                 ui.label(RichText::new("Input Slot:").weak());
                 ui.label(slot);

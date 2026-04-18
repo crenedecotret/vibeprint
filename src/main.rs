@@ -334,8 +334,8 @@ fn print_printers(name: Option<&str>) -> Result<()> {
             println!("Printer:     {}", caps.name);
             println!("Resolutions: {:?} dpi", caps.resolutions);
             println!("Media types ({}):", caps.media_types.len());
-            for m in &caps.media_types {
-                println!("  - {}", m);
+            for (key, label) in &caps.media_types {
+                println!("  - {} ({})", label, key);
             }
             println!("Page sizes ({}):", caps.page_sizes.len());
             for ps in &caps.page_sizes {

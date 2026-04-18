@@ -882,6 +882,7 @@ impl App {
             v
         };
         let mut need_sync = false;
+        let mut first_caps_received = false;
         for ev in disc_events {
             match ev {
                 DiscoveryEvent::PrintersListed(p) => {
@@ -898,6 +899,9 @@ impl App {
                 DiscoveryEvent::CapsReady(c) => {
                     self.state.all_caps.insert(c.name.clone(), c);
                     need_sync = true;
+                    if !first_caps_received {
+                        first_caps_received = true;
+                    }
                 }
                 DiscoveryEvent::Warning(w) => self.state.log.push(format!("⚠ {w}")),
                 DiscoveryEvent::Error(e) => self.state.log.push(format!("✗ CUPS: {e}")),
@@ -905,15 +909,18 @@ impl App {
         }
         if need_sync {
             self.sync_caps_to_selection();
+            // Complete discovery when: first printer ready OR timeout after printers listed
             if !self.state.discovery_complete && !self.state.printers.is_empty() {
-                let all_have_caps = self
-                    .state
-                    .printers
-                    .iter()
-                    .all(|p| self.state.all_caps.contains_key(&p.name));
-                if all_have_caps {
+                let has_any_caps = !self.state.all_caps.is_empty();
+                if has_any_caps {
                     self.state.discovery_complete = true;
-                    self.state.log.push("Ready to print!".to_string());
+                    let ready_count = self.state.all_caps.len();
+                    let total_count = self.state.printers.len();
+                    if ready_count == total_count {
+                        self.state.log.push(format!("✓ {} printer(s) ready", ready_count));
+                    } else {
+                        self.state.log.push(format!("✓ {}/{} printer(s) ready", ready_count, total_count));
+                    }
                 }
             }
         }
