@@ -426,6 +426,7 @@ impl App {
                             output_dir: Some(self.state.output_dir.to_string_lossy().into_owned()),
                             user_border_in: Some(self.state.user_border_in),
                             icc_filter: Some(icc_filter_str.into()),
+                            show_log: Some(self.state.show_log),
                         });
                     }
                 });

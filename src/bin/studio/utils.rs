@@ -503,7 +503,7 @@ pub(crate) fn draw_tree_node(
 
         // Expand/collapse arrow
         if has_children {
-            let arrow = if is_expanded { "▼" } else { "▶" };
+            let arrow = if is_expanded { "−" } else { "+" };
             let resp = ui
                 .add(
                     egui::Label::new(

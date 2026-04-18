@@ -113,6 +113,8 @@ impl App {
             _ => IccProfileFilter::System,
         };
 
+        let saved_show_log = s.show_log.unwrap_or(false);
+
         let mut state = AppState::new(
             thumb_tx,
             thumb_rx,
@@ -130,6 +132,7 @@ impl App {
             s.user_border_in,
             monitor_icc::get_monitor_profile(),
             printer_discovery::spawn_discovery(),
+            saved_show_log,
         );
 
         if state.monitor_icc_profile.is_none() {

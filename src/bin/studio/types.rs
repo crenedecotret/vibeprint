@@ -209,6 +209,7 @@ pub(crate) struct Settings {
     pub output_dir: Option<String>,
     pub user_border_in: Option<f32>,
     pub icc_filter: Option<String>,
+    pub show_log: Option<bool>,
 }
 
 // ── App State ───────────────────────────────────────────────────────────────
@@ -291,6 +292,7 @@ pub(crate) struct AppState {
 
     // ── Status ──
     pub log: Vec<String>,
+    pub show_log: bool,
 
     // ── Saved-settings restoration ──
     pub pending_printer_name: Option<String>,
@@ -357,6 +359,7 @@ impl AppState {
         pending_user_border_in: Option<f32>,
         monitor_icc_profile: Option<Vec<u8>>,
         discovery_rx: Receiver<DiscoveryEvent>,
+        saved_show_log: bool,
     ) -> Self {
         Self {
             current_dir: home.clone(),
@@ -417,6 +420,7 @@ impl AppState {
             proc_rx: None,
             right_tab: RightTab::PrinterSettings,
             log: Vec::new(),
+            show_log: saved_show_log,
             pending_printer_name,
             pending_page_size_name,
             pending_user_border_in,

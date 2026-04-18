@@ -427,17 +427,19 @@ impl App {
 
         // ── Log (at the bottom) ───────────────────────────────────────────────
         ui.add_space(12.0);
-        ui.label(RichText::new("Log").strong().size(12.0));
+        ui.checkbox(&mut self.state.show_log, RichText::new("Show Log").strong().size(12.0));
         ui.separator();
-        egui::ScrollArea::vertical()
-            .id_salt("log_scroll")
-            .max_height(80.0)
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                for entry in &self.state.log {
-                    ui.label(RichText::new(entry).small().monospace());
-                }
-            });
+        if self.state.show_log {
+            egui::ScrollArea::vertical()
+                .id_salt("log_scroll")
+                .max_height(80.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    for entry in &self.state.log {
+                        ui.label(RichText::new(entry).small().monospace());
+                    }
+                });
+        }
     }
 
     fn draw_tab_image(&mut self, ui: &mut egui::Ui) {
