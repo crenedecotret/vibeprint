@@ -142,7 +142,8 @@ pub(crate) fn apply_preview_transform(
     };
 
     let monitor_profile = Profile::new_icc(monitor_profile_data).ok()?;
-    let flags = if bpc {
+    // BPC flag for the source→output (or source→monitor) leg — user controlled
+    let sim_flags = if bpc {
         Flags::BLACKPOINT_COMPENSATION | Flags::NO_CACHE
     } else {
         Flags::NO_CACHE
@@ -164,7 +165,7 @@ pub(crate) fn apply_preview_transform(
             &output_profile,
             PixelFormat::RGB_8,
             intent,
-            flags,
+            sim_flags,
         )
         .ok()?;
 
@@ -172,13 +173,14 @@ pub(crate) fn apply_preview_transform(
         let src = pixels.to_vec();
         to_output.transform_pixels(&src, &mut output_space);
 
+        // Display leg: output→monitor is a colorimetric adaptation — never apply BPC here
         let to_monitor = Transform::new_flags(
             &output_profile,
             PixelFormat::RGB_8,
             &monitor_profile,
             PixelFormat::RGB_8,
-            intent,
-            flags,
+            lcms2::Intent::RelativeColorimetric,
+            Flags::NO_CACHE,
         )
         .ok()?;
         to_monitor.transform_pixels(&output_space, pixels);
@@ -191,7 +193,7 @@ pub(crate) fn apply_preview_transform(
         &monitor_profile,
         PixelFormat::RGB_8,
         intent,
-        flags,
+        sim_flags,
     )
     .ok()?;
     let src = pixels.to_vec();
