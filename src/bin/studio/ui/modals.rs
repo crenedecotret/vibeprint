@@ -2,7 +2,7 @@ use eframe::egui::{self, Color32, Context, Pos2, Rect, RichText, Sense, Vec2};
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 
-use crate::icc::extract_file_date;
+use crate::icc::{apply_preview_transform, extract_file_date};
 use crate::processing::submit_print_jobs_sync;
 use crate::types::{IccProfileEntry, IccProfileFilter, IccProfileSource};
 use crate::App;
@@ -752,13 +752,52 @@ impl App {
                 let tex = if let Some(tex) = self.state.preview_textures.get(&tex_name_path) {
                     tex.clone()
                 } else {
+                    // Step 1: Start with full resolution image
+                    let mut preview_img = full_image.clone();
+
+                    // Step 2: Apply ICC color management at FULL RESOLUTION (before any resize)
+                    // This is critical for wide-gamut profiles like ProPhoto RGB
+                    if let Some(ref monitor_profile) = self.state.monitor_icc_profile {
+                        let mut pixel_bytes: Vec<u8> = preview_img
+                            .pixels
+                            .iter()
+                            .flat_map(|c| [c.r(), c.g(), c.b()])
+                            .collect();
+
+                        let src_icc = self
+                            .state
+                            .embedded_icc_by_path
+                            .get(&q.filepath)
+                            .and_then(|v| v.as_deref());
+
+                        if apply_preview_transform(
+                            monitor_profile,
+                            src_icc,
+                            self.state.output_icc.as_ref().map(|e| &e.path),
+                            &mut pixel_bytes,
+                            self.state.intent.to_lcms(),
+                            self.state.bpc,
+                            self.state.softproof_enabled,
+                        )
+                        .is_some()
+                        {
+                            preview_img.pixels = pixel_bytes
+                                .chunks_exact(3)
+                                .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
+                                .collect();
+                        }
+                    }
+
+                    // Step 3: Downscale AFTER color management (if needed)
                     let preview_img = if scale < 1.0 {
                         let preview_w = (img_w * scale) as u32;
                         let preview_h = (img_h * scale) as u32;
+
+                        // Convert ColorImage to RgbImage for resizing
                         let rgb_img = image::RgbImage::from_raw(
-                            full_image.size[0] as u32,
-                            full_image.size[1] as u32,
-                            full_image
+                            preview_img.size[0] as u32,
+                            preview_img.size[1] as u32,
+                            preview_img
                                 .pixels
                                 .iter()
                                 .flat_map(|p| [p.r(), p.g(), p.b()])
@@ -766,8 +805,8 @@ impl App {
                         )
                         .unwrap_or_else(|| {
                             image::RgbImage::new(
-                                full_image.size[0] as u32,
-                                full_image.size[1] as u32,
+                                preview_img.size[0] as u32,
+                                preview_img.size[1] as u32,
                             )
                         });
 
@@ -787,8 +826,9 @@ impl App {
                                 .collect(),
                         }
                     } else {
-                        full_image.clone()
+                        preview_img
                     };
+
                     let tex =
                         ctx.load_texture(&tex_name, preview_img, egui::TextureOptions::LINEAR);
                     self.state
