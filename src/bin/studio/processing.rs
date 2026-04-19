@@ -58,14 +58,6 @@ pub(crate) fn submit_print_jobs_sync(
 
     let opts_str = lpr_opts.join(" ");
 
-    // Page dimensions in PostScript points from the selected paper size.
-    // paper_size is stored in pts (72 pts/inch) — use directly for gs.
-    let (page_w_pts, page_h_pts) = caps
-        .page_sizes
-        .get(selected_page_size_idx)
-        .map(|ps| (ps.paper_size.0.round() as u32, ps.paper_size.1.round() as u32))
-        .unwrap_or((612, 792)); // fallback: Letter
-
     for (i, temp_path) in temp_paths.iter().enumerate() {
         let _ = log_tx.send(format!("Processing page {} of {}...", i + 1, temp_paths.len()));
 
@@ -80,6 +72,28 @@ pub(crate) fn submit_print_jobs_sync(
 
         let pdf_path = format!("/tmp/vibeprint_{}_{}.pdf", timestamp, pid);
         let pdf_q = shell_quote(&pdf_path);
+
+        // Read TIFF dimensions and DPI to compute exact PDF page size in PostScript points.
+        // This guarantees the PDF page matches the TIFF 1:1 regardless of border settings.
+        let (page_w_pts, page_h_pts) = {
+            let mut w_pts = 612u32;
+            let mut h_pts = 792u32;
+            if let Ok(mut dec) = tiff::decoder::Decoder::new(
+                std::fs::File::open(temp_path).unwrap()
+            ) {
+                if let Ok((w, h)) = dec.dimensions() {
+                    let res_unit = dec.get_tag_u32(tiff::tags::Tag::ResolutionUnit).unwrap_or(2);
+                    let xres = dec.get_tag_f32_vec(tiff::tags::Tag::XResolution)
+                        .ok().and_then(|v| v.into_iter().next()).unwrap_or(72.0);
+                    let dpi = if res_unit == 3 { xres * 2.54 } else { xres };
+                    if dpi > 0.0 {
+                        w_pts = ((w as f32 / dpi * 72.0).round()) as u32;
+                        h_pts = ((h as f32 / dpi * 72.0).round()) as u32;
+                    }
+                }
+            }
+            (w_pts, h_pts)
+        };
 
         let gs_cmd = format!(
             "tiff2ps {} | gs -q -o {} -sDEVICE=pdfwrite \
