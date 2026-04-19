@@ -133,6 +133,7 @@ impl App {
             monitor_icc::get_monitor_profile(),
             printer_discovery::spawn_discovery(),
             saved_show_log,
+            s.bpc.unwrap_or(true),
         );
         state.pending_extra_option_indices = s.extra_option_indices;
 

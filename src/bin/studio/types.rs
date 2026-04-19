@@ -362,6 +362,7 @@ impl AppState {
         monitor_icc_profile: Option<Vec<u8>>,
         discovery_rx: Receiver<DiscoveryEvent>,
         saved_show_log: bool,
+        saved_bpc: bool,
     ) -> Self {
         Self {
             current_dir: home.clone(),
@@ -415,7 +416,7 @@ impl AppState {
             target_dpi: saved_target_dpi,
             output_icc: saved_icc,
             intent: saved_intent,
-            bpc: true,
+            bpc: saved_bpc,
             softproof_enabled: false,
             output_dir: saved_out_dir,
             print_to_file: false,
