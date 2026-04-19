@@ -82,7 +82,14 @@ pub(crate) fn submit_print_jobs_sync(
         let pdf_q = shell_quote(&pdf_path);
 
         let gs_cmd = format!(
-            "tiff2ps {} | gs -q -o {} -sDEVICE=pdfwrite -sColorConversionStrategy=LeaveColorUnchanged -dNOTRANSPARENCY -dDEVICEWIDTHPOINTS={} -dDEVICEHEIGHTPOINTS={} -dFIXEDMEDIA -",
+            "tiff2ps {} | gs -q -o {} -sDEVICE=pdfwrite \
+             -sColorConversionStrategy=LeaveColorUnchanged \
+             -dNOTRANSPARENCY \
+             -dDEVICEWIDTHPOINTS={} -dDEVICEHEIGHTPOINTS={} -dFIXEDMEDIA \
+             -dAutoFilterColorImages=false -sColorImageFilter=FlateEncode \
+             -dAutoFilterGrayImages=false -sGrayImageFilter=FlateEncode \
+             -dDownsampleColorImages=false -dDownsampleGrayImages=false \
+             -",
             temp_path_q, pdf_q, page_w_pts, page_h_pts
         );
 
