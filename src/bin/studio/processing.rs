@@ -29,6 +29,9 @@ pub(crate) fn submit_print_jobs_sync(
     // Build the lpr -o option list from user selections
     let mut lpr_opts: Vec<String> = Vec::new();
 
+    // Prevent CUPS auto-scaling — our TIFF is already sized to imageable area
+    lpr_opts.push("-o print-scaling=none".to_string());
+
     // Paper size: use the PWG media name (e.g. "na_letter_8.5x11in")
     if let Some(ps) = caps.page_sizes.get(selected_page_size_idx) {
         lpr_opts.push(format!("-o media={}", ps.name));
@@ -55,6 +58,14 @@ pub(crate) fn submit_print_jobs_sync(
 
     let opts_str = lpr_opts.join(" ");
 
+    // Page dimensions in PostScript points from the selected paper size.
+    // paper_size is stored in pts (72 pts/inch) — use directly for gs.
+    let (page_w_pts, page_h_pts) = caps
+        .page_sizes
+        .get(selected_page_size_idx)
+        .map(|ps| (ps.paper_size.0.round() as u32, ps.paper_size.1.round() as u32))
+        .unwrap_or((612, 792)); // fallback: Letter
+
     for (i, temp_path) in temp_paths.iter().enumerate() {
         let _ = log_tx.send(format!("Processing page {} of {}...", i + 1, temp_paths.len()));
 
@@ -71,8 +82,8 @@ pub(crate) fn submit_print_jobs_sync(
         let pdf_q = shell_quote(&pdf_path);
 
         let gs_cmd = format!(
-            "tiff2ps {} | gs -dVERBOSE -o {} -sDEVICE=pdfwrite -sColorConversionStrategy=LeaveColorUnchanged -dNOTRANSPARENCY -",
-            temp_path_q, pdf_q
+            "tiff2ps {} | gs -q -o {} -sDEVICE=pdfwrite -sColorConversionStrategy=LeaveColorUnchanged -dNOTRANSPARENCY -dDEVICEWIDTHPOINTS={} -dDEVICEHEIGHTPOINTS={} -dFIXEDMEDIA -",
+            temp_path_q, pdf_q, page_w_pts, page_h_pts
         );
 
         let gs_output = std::process::Command::new("sh")
@@ -94,16 +105,13 @@ pub(crate) fn submit_print_jobs_sync(
         let lpr_result = std::process::Command::new("sh")
             .arg("-c")
             .arg(&lpr_cmd)
-            .output();
+            .output()
+            .map_err(|e| format!("Failed to run lpr: {}", e))?;
 
-        match lpr_result {
-            Ok(output) => {
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    return Err(format!("Print failed (page {}): {}", i + 1, stderr));
-                }
-            }
-            Err(e) => return Err(format!("Failed to submit print job: {}", e)),
+        if !lpr_result.status.success() {
+            let stderr = String::from_utf8_lossy(&lpr_result.stderr);
+            let _ = std::fs::remove_file(&pdf_path);
+            return Err(format!("lpr failed (page {}): {}", i + 1, stderr));
         }
 
         let _ = std::fs::remove_file(&pdf_path);

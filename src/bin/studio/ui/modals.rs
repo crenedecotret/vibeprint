@@ -280,6 +280,39 @@ impl App {
                     });
             }
 
+            ui.add_space(8.0);
+            ui.separator();
+            ui.label(RichText::new("lpr command:").weak());
+            {
+                let mut lpr_parts = vec![
+                    format!("lpr -P '{}'", printer_name),
+                    "-o print-scaling=none".to_string(),
+                ];
+                if let Some(ps) = caps.page_sizes.get(self.state.selected_page_size_idx) {
+                    lpr_parts.push(format!("-o media={}", ps.name));
+                }
+                if let Some((key, _)) = caps.media_types.get(self.state.props_media_idx) {
+                    lpr_parts.push(format!("-o media-type={}", key));
+                }
+                if let Some((key, _)) = caps.input_slots.get(self.state.props_slot_idx) {
+                    lpr_parts.push(format!("-o media-source={}", key));
+                }
+                for opt in &caps.extra_options {
+                    if let Some(&idx) = self.state.extra_option_indices.get(&opt.key) {
+                        if let Some((choice_key, _)) = opt.choices.get(idx) {
+                            lpr_parts.push(format!("-o {}={}", opt.key, choice_key));
+                        }
+                    }
+                }
+                lpr_parts.push("<file.pdf>".to_string());
+                let cmd = lpr_parts.join(" ");
+                egui::ScrollArea::horizontal()
+                    .id_salt("lpr_cmd_scroll")
+                    .show(ui, |ui| {
+                        ui.label(RichText::new(&cmd).monospace().small().weak());
+                    });
+            }
+
             ui.add_space(12.0);
 
             ui.horizontal(|ui| {
@@ -427,6 +460,7 @@ impl App {
                             user_border_in: Some(self.state.user_border_in),
                             icc_filter: Some(icc_filter_str.into()),
                             show_log: Some(self.state.show_log),
+                            extra_option_indices: Some(self.state.extra_option_indices.clone()),
                         });
                     }
                 });

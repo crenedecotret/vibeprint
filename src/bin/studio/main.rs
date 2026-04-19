@@ -62,6 +62,7 @@ impl eframe::App for App {
             user_border_in: Some(self.state.user_border_in),
             icc_filter: Some(icc_filter_str.into()),
             show_log: Some(self.state.show_log),
+            extra_option_indices: Some(self.state.extra_option_indices.clone()),
         });
     }
 

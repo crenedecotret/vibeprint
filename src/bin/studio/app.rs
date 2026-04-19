@@ -134,6 +134,7 @@ impl App {
             printer_discovery::spawn_discovery(),
             saved_show_log,
         );
+        state.pending_extra_option_indices = s.extra_option_indices;
 
         if state.monitor_icc_profile.is_none() {
             state.log.push("⚠ No monitor ICC profile found".into());
@@ -799,6 +800,17 @@ impl App {
                 self.state
                     .extra_option_indices
                     .insert(opt.key.clone(), opt.default_idx);
+            }
+            if let Some(saved) = self.state.pending_extra_option_indices.take() {
+                for (key, idx) in saved {
+                    if self.state.extra_option_indices.contains_key(&key) {
+                        let max = caps.extra_options.iter()
+                            .find(|o| o.key == key)
+                            .map(|o| o.choices.len().saturating_sub(1))
+                            .unwrap_or(0);
+                        self.state.extra_option_indices.insert(key, idx.min(max));
+                    }
+                }
             }
             self.state.caps = Some(caps.clone());
 

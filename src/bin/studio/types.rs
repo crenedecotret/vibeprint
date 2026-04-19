@@ -210,6 +210,7 @@ pub(crate) struct Settings {
     pub user_border_in: Option<f32>,
     pub icc_filter: Option<String>,
     pub show_log: Option<bool>,
+    pub extra_option_indices: Option<std::collections::HashMap<String, usize>>,
 }
 
 // ── App State ───────────────────────────────────────────────────────────────
@@ -261,6 +262,7 @@ pub(crate) struct AppState {
     pub props_slot_idx: usize,
     pub selected_page_size_idx: usize,
     pub extra_option_indices: HashMap<String, usize>,
+    pub pending_extra_option_indices: Option<HashMap<String, usize>>,
 
     // ── Border override ──
     pub reported_border_in: f32,
@@ -403,6 +405,7 @@ impl AppState {
             props_slot_idx: 0,
             selected_page_size_idx: 0,
             extra_option_indices: HashMap::new(),
+            pending_extra_option_indices: None,
             reported_border_in: 0.25,
             user_border_in: 0.25,
             border_edit_string: format!("{:.3}", 0.25),
