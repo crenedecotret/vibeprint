@@ -73,38 +73,55 @@ pub(crate) fn submit_print_jobs_sync(
         let pdf_path = format!("/tmp/vibeprint_{}_{}.pdf", timestamp, pid);
         let pdf_q = shell_quote(&pdf_path);
 
-        // Read TIFF dimensions and DPI to compute exact PDF page size in PostScript points.
-        // This guarantees the PDF page matches the TIFF 1:1 regardless of border settings.
-        let (page_w_pts, page_h_pts) = {
-            let mut w_pts = 612u32;
-            let mut h_pts = 792u32;
+        // PDF page = full physical paper size in pts.
+        // The TIFF is sized to the imageable area (paper minus borders).
+        // tiff2ps places the image at PostScript origin (0,0) = bottom-left.
+        // We wrap the PS with a translate to offset the image by the border amount
+        // so it sits correctly on the physical sheet.
+        let (paper_w_pts, paper_h_pts) = caps
+            .page_sizes
+            .get(selected_page_size_idx)
+            .map(|ps| (ps.paper_size.0, ps.paper_size.1))
+            .unwrap_or((612.0, 792.0));
+
+        // Derive TIFF image size in pts from its pixel dimensions and embedded DPI.
+        let (img_w_pts, img_h_pts) = {
+            let mut w = paper_w_pts;
+            let mut h = paper_h_pts;
             if let Ok(mut dec) = tiff::decoder::Decoder::new(
                 std::fs::File::open(temp_path).unwrap()
             ) {
-                if let Ok((w, h)) = dec.dimensions() {
+                if let Ok((px_w, px_h)) = dec.dimensions() {
                     let res_unit = dec.get_tag_u32(tiff::tags::Tag::ResolutionUnit).unwrap_or(2);
                     let xres = dec.get_tag_f32_vec(tiff::tags::Tag::XResolution)
                         .ok().and_then(|v| v.into_iter().next()).unwrap_or(72.0);
                     let dpi = if res_unit == 3 { xres * 2.54 } else { xres };
                     if dpi > 0.0 {
-                        w_pts = ((w as f32 / dpi * 72.0).round()) as u32;
-                        h_pts = ((h as f32 / dpi * 72.0).round()) as u32;
+                        w = px_w as f32 / dpi * 72.0;
+                        h = px_h as f32 / dpi * 72.0;
                     }
                 }
             }
-            (w_pts, h_pts)
+            (w, h)
         };
 
+        // Offset in pts: center the image in the remaining space (paper - image) / 2
+        // This matches how the imageable area is centered on the physical sheet.
+        let offset_x = ((paper_w_pts - img_w_pts) / 2.0).max(0.0);
+        let offset_y = ((paper_h_pts - img_h_pts) / 2.0).max(0.0);
+
+        // Pipe: tiff2ps → prepend a translate → gs with full paper size
         let gs_cmd = format!(
-            "tiff2ps {} | gs -q -o {} -sDEVICE=pdfwrite \
+            "{{ echo 'gsave {:.4} {:.4} translate'; tiff2ps {}; echo 'grestore'; }} \
+             | gs -q -o {} -sDEVICE=pdfwrite \
              -sColorConversionStrategy=LeaveColorUnchanged \
              -dNOTRANSPARENCY \
-             -dDEVICEWIDTHPOINTS={} -dDEVICEHEIGHTPOINTS={} -dFIXEDMEDIA \
+             -dDEVICEWIDTHPOINTS={:.4} -dDEVICEHEIGHTPOINTS={:.4} -dFIXEDMEDIA \
              -dAutoFilterColorImages=false -sColorImageFilter=FlateEncode \
              -dAutoFilterGrayImages=false -sGrayImageFilter=FlateEncode \
              -dDownsampleColorImages=false -dDownsampleGrayImages=false \
              -",
-            temp_path_q, pdf_q, page_w_pts, page_h_pts
+            offset_x, offset_y, temp_path_q, pdf_q, paper_w_pts, paper_h_pts
         );
 
         let gs_output = std::process::Command::new("sh")
