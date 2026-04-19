@@ -211,6 +211,8 @@ pub(crate) struct Settings {
     pub icc_filter: Option<String>,
     pub show_log: Option<bool>,
     pub extra_option_indices: Option<std::collections::HashMap<String, usize>>,
+    pub media_type_key: Option<String>,
+    pub input_slot_key: Option<String>,
 }
 
 // ── App State ───────────────────────────────────────────────────────────────
@@ -263,6 +265,8 @@ pub(crate) struct AppState {
     pub selected_page_size_idx: usize,
     pub extra_option_indices: HashMap<String, usize>,
     pub pending_extra_option_indices: Option<HashMap<String, usize>>,
+    pub pending_media_type_key: Option<String>,
+    pub pending_input_slot_key: Option<String>,
 
     // ── Border override ──
     pub reported_border_in: f32,
@@ -407,6 +411,8 @@ impl AppState {
             selected_page_size_idx: 0,
             extra_option_indices: HashMap::new(),
             pending_extra_option_indices: None,
+            pending_media_type_key: None,
+            pending_input_slot_key: None,
             reported_border_in: 0.25,
             user_border_in: 0.25,
             border_edit_string: format!("{:.3}", 0.25),

@@ -136,6 +136,8 @@ impl App {
             s.bpc.unwrap_or(true),
         );
         state.pending_extra_option_indices = s.extra_option_indices;
+        state.pending_media_type_key = s.media_type_key;
+        state.pending_input_slot_key = s.input_slot_key;
 
         if state.monitor_icc_profile.is_none() {
             state.log.push("⚠ No monitor ICC profile found".into());
@@ -780,8 +782,12 @@ impl App {
             return;
         }
         if let Some(caps) = self.state.all_caps.get(&name) {
-            self.state.props_media_idx = 0;
-            self.state.props_slot_idx = 0;
+            self.state.props_media_idx = self.state.pending_media_type_key.as_deref()
+                .and_then(|k| caps.media_types.iter().position(|(key, _)| key == k))
+                .unwrap_or(0);
+            self.state.props_slot_idx = self.state.pending_input_slot_key.as_deref()
+                .and_then(|k| caps.input_slots.iter().position(|(key, _)| key == k))
+                .unwrap_or(0);
 
             self.state.selected_page_size_idx =
                 if let Some(ref sz_name) = self.state.pending_page_size_name {

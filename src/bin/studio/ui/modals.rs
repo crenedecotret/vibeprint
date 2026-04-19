@@ -461,6 +461,12 @@ impl App {
                             icc_filter: Some(icc_filter_str.into()),
                             show_log: Some(self.state.show_log),
                             extra_option_indices: Some(self.state.extra_option_indices.clone()),
+                            media_type_key: self.state.caps.as_ref()
+                                .and_then(|c| c.media_types.get(self.state.props_media_idx))
+                                .map(|(k, _)| k.clone()),
+                            input_slot_key: self.state.caps.as_ref()
+                                .and_then(|c| c.input_slots.get(self.state.props_slot_idx))
+                                .map(|(k, _)| k.clone()),
                         });
                     }
                 });
