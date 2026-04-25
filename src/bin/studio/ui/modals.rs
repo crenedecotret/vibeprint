@@ -1390,9 +1390,12 @@ impl App {
                         ui.add_space(4.0);
                         if size_ok && !fits {
                             ui.label(
-                                RichText::new("⚠ Exceeds printable area")
-                                    .color(Color32::from_rgb(220, 120, 40))
-                                    .size(11.0),
+                                RichText::new(format!(
+                                    "⚠ Max available: {:.2}\" × {:.2}\"",
+                                    ia_w_in, ia_h_in
+                                ))
+                                .color(Color32::from_rgb(220, 120, 40))
+                                .size(11.0),
                             );
                         } else {
                             ui.label(RichText::new(" ").size(11.0));
