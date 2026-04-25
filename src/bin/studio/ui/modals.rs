@@ -1264,10 +1264,14 @@ impl App {
         let mut parsed_w: Option<f32> = None;
         let mut parsed_h: Option<f32> = None;
 
+        let screen = ctx.screen_rect();
+        let width = (screen.width() * 0.25).clamp(320.0, 450.0);
+        let height = (screen.height() * 0.22).clamp(180.0, 260.0);
+
         egui::Window::new("Custom Print Size")
             .collapsible(false)
             .resizable(false)
-            .fixed_size([340.0, 200.0])
+            .fixed_size([width, height])
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
