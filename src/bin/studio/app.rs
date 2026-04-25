@@ -632,7 +632,9 @@ impl App {
         };
         let size = src.size;
         let src_size = (size[0] as u32, size[1] as u32);
-        let print_size = PrintSize { width: w_in, height: h_in, unit: Unit::Inches };
+        // Normalize to portrait notation (w <= h) matching PRINT_SIZES convention
+        let (nw, nh) = if w_in <= h_in { (w_in, h_in) } else { (h_in, w_in) };
+        let print_size = PrintSize { width: nw, height: nh, unit: Unit::Inches };
 
         self.state.queue.push(vibeprint::layout_engine::QueuedImage {
             id: uuid::Uuid::new_v4(),
@@ -680,6 +682,8 @@ impl App {
     pub(crate) fn update_selected_queue_size(&mut self, w_in: f32, h_in: f32) {
         use vibeprint::layout_engine::{PrintSize, Unit};
         let sel = self.state.selected_queue_id;
+        // Normalize to portrait notation (w <= h) matching PRINT_SIZES convention
+        let (w_in, h_in) = if w_in <= h_in { (w_in, h_in) } else { (h_in, w_in) };
 
         if let Some(item) = self.selected_queue_mut() {
             let old_size = item.size.as_inches();
