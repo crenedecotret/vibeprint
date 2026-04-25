@@ -88,17 +88,17 @@ pub(crate) fn submit_print_jobs_sync(
         let (img_w_pts, img_h_pts) = {
             let mut w = paper_w_pts;
             let mut h = paper_h_pts;
-            if let Ok(mut dec) = tiff::decoder::Decoder::new(
-                std::fs::File::open(temp_path).unwrap()
-            ) {
-                if let Ok((px_w, px_h)) = dec.dimensions() {
-                    let res_unit = dec.get_tag_u32(tiff::tags::Tag::ResolutionUnit).unwrap_or(2);
-                    let xres = dec.get_tag_f32_vec(tiff::tags::Tag::XResolution)
-                        .ok().and_then(|v| v.into_iter().next()).unwrap_or(72.0);
-                    let dpi = if res_unit == 3 { xres * 2.54 } else { xres };
-                    if dpi > 0.0 {
-                        w = px_w as f32 / dpi * 72.0;
-                        h = px_h as f32 / dpi * 72.0;
+            if let Ok(file) = std::fs::File::open(temp_path) {
+                if let Ok(mut dec) = tiff::decoder::Decoder::new(file) {
+                    if let Ok((px_w, px_h)) = dec.dimensions() {
+                        let res_unit = dec.get_tag_u32(tiff::tags::Tag::ResolutionUnit).unwrap_or(2);
+                        let xres = dec.get_tag_f32_vec(tiff::tags::Tag::XResolution)
+                            .ok().and_then(|v| v.into_iter().next()).unwrap_or(72.0);
+                        let dpi = if res_unit == 3 { xres * 2.54 } else { xres };
+                        if dpi > 0.0 {
+                            w = px_w as f32 / dpi * 72.0;
+                            h = px_h as f32 / dpi * 72.0;
+                        }
                     }
                 }
             }

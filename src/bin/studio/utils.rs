@@ -595,36 +595,52 @@ pub(crate) fn extract_embedded_icc(path: &std::path::Path) -> Option<Vec<u8>> {
 
     match ext.as_str() {
         "jpg" | "jpeg" => {
-            // Look for APP2 marker (0xFFE2) followed by "ICC_PROFILE"
-            let mut i = 0;
-            while i < data.len().saturating_sub(16) {
-                if data[i] == 0xFF && data[i + 1] == 0xE2 {
-                    // Found APP2 marker, check for ICC_PROFILE signature
-                    let len = ((data[i + 2] as usize) << 8) | (data[i + 3] as usize);
-                    if i + 4 + 11 < data.len() && &data[i + 4..i + 4 + 11] == b"ICC_PROFILE" {
-                        // ICC profile data starts after "ICC_PROFILE\0" + sequence byte
-                        let icc_start = i + 4 + 14; // Skip "ICC_PROFILE\0" + 2 bytes (sequence/chunk)
-                        let icc_len = len.saturating_sub(16);
-                        if icc_start + icc_len <= data.len() {
-                            return Some(data[icc_start..icc_start + icc_len].to_vec());
-                        }
-                    }
-                    i += 2 + len;
-                } else if data[i] == 0xFF
-                    && (data[i + 1] == 0xD8 || data[i + 1] == 0xD9 || data[i + 1] >= 0xE0)
-                {
-                    // Skip other markers
-                    let len = if data[i + 1] == 0xD8 {
-                        0
-                    } else {
-                        ((data[i + 2] as usize) << 8) | (data[i + 3] as usize)
-                    };
-                    i += 2 + len;
-                } else {
-                    i += 1;
+            // Collect all APP2 ICC_PROFILE chunks, then reassemble sorted by sequence number
+            if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+                return None;
+            }
+            let mut icc_segments: Vec<(u8, Vec<u8>)> = Vec::new();
+            let mut i = 2usize;
+            while i + 1 < data.len() {
+                if data[i] != 0xFF {
+                    break;
+                }
+                let marker = data[i + 1];
+                i += 2;
+                // Markers without a length field
+                if marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7) {
+                    continue;
+                }
+                // SOS starts compressed data — stop scanning
+                if marker == 0xDA {
+                    break;
+                }
+                if i + 2 > data.len() {
+                    break;
+                }
+                let seg_len = ((data[i] as usize) << 8) | (data[i + 1] as usize);
+                if seg_len < 2 || i + seg_len > data.len() {
+                    break;
+                }
+                let payload = &data[i + 2..i + seg_len];
+                i += seg_len;
+                // APP2 (FF E2): ICC_PROFILE
+                if marker == 0xE2 && payload.len() > 14 && &payload[0..12] == b"ICC_PROFILE\0" {
+                    let seq_num = payload[12];
+                    let chunk_data = payload[14..].to_vec();
+                    icc_segments.push((seq_num, chunk_data));
                 }
             }
-            None
+            if icc_segments.is_empty() {
+                None
+            } else {
+                icc_segments.sort_by_key(|(seq, _)| *seq);
+                let mut combined = Vec::new();
+                for (_, chunk) in icc_segments {
+                    combined.extend_from_slice(&chunk);
+                }
+                Some(combined)
+            }
         }
         "png" => {
             // Look for iCCP chunk

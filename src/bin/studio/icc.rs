@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
@@ -15,6 +16,13 @@ pub(crate) fn extract_file_date(path: &PathBuf) -> String {
         }
     }
     "Unknown".to_string()
+}
+
+/// Extract file size in bytes
+pub(crate) fn extract_file_size(path: &PathBuf) -> u64 {
+    std::fs::metadata(path)
+        .map(|m| m.len())
+        .unwrap_or(0)
 }
 
 /// Scan ICC directories and send results through channel
@@ -47,6 +55,36 @@ pub(crate) fn scan_icc_directories(tx: Sender<Vec<IccProfileEntry>>) {
         scan_directory(&dir, IccProfileSource::User, &mut profiles);
     }
 
+    // Deduplicate by canonical file path to handle overlapping recursive scans
+    // (e.g., /usr/share/color recursing into /usr/share/color/icc)
+    {
+        let mut seen: HashSet<PathBuf> = HashSet::with_capacity(profiles.len());
+        profiles.retain(|p| {
+            let key = std::fs::canonicalize(&p.path).unwrap_or_else(|_| p.path.clone());
+            seen.insert(key)
+        });
+    }
+
+    // Secondary dedup: identical description + file_size (e.g. copies in
+    // different sub-dirs with different canonical paths or modification dates).
+    // Prefer User over System.
+    {
+        let mut content_seen: HashMap<(String, u64), IccProfileEntry> = HashMap::new();
+        for p in profiles {
+            let key = (p.description.to_lowercase(), p.file_size);
+            match content_seen.get_mut(&key) {
+                Some(existing) if p.source == IccProfileSource::User => {
+                    *existing = p;
+                }
+                None => {
+                    content_seen.insert(key, p);
+                }
+                _ => {}
+            }
+        }
+        profiles = content_seen.into_values().collect();
+    }
+
     // Sort by description for consistent ordering
     profiles.sort_by(|a, b| {
         a.description
@@ -58,15 +96,32 @@ pub(crate) fn scan_icc_directories(tx: Sender<Vec<IccProfileEntry>>) {
 }
 
 fn scan_directory(dir: &PathBuf, source: IccProfileSource, profiles: &mut Vec<IccProfileEntry>) {
+    scan_directory_recursive(dir, source, profiles, 0);
+}
+
+fn scan_directory_recursive(
+    dir: &PathBuf,
+    source: IccProfileSource,
+    profiles: &mut Vec<IccProfileEntry>,
+    depth: u32,
+) {
     use lcms2::Profile;
 
-    if !dir.exists() {
+    const MAX_DEPTH: u32 = 3;
+
+    if !dir.exists() || depth > MAX_DEPTH {
         return;
     }
 
     if let Ok(read) = std::fs::read_dir(dir) {
         for entry in read.flatten() {
             let path = entry.path();
+
+            if path.is_dir() {
+                scan_directory_recursive(&path, source, profiles, depth + 1);
+                continue;
+            }
+
             let extension = path
                 .extension()
                 .and_then(|e| e.to_str())
@@ -77,7 +132,7 @@ fn scan_directory(dir: &PathBuf, source: IccProfileSource, profiles: &mut Vec<Ic
             }
 
             // Try to extract the internal profile description and date
-            let (description, date) = if let Ok(bytes) = std::fs::read(&path) {
+            let (description, date, file_size) = if let Ok(bytes) = std::fs::read(&path) {
                 if let Ok(profile) = Profile::new_icc(&bytes) {
                     // Try to get the profile description tag
                     let desc = profile
@@ -91,7 +146,8 @@ fn scan_directory(dir: &PathBuf, source: IccProfileSource, profiles: &mut Vec<Ic
                         });
 
                     let file_date = extract_file_date(&path);
-                    (desc, file_date)
+                    let file_size = extract_file_size(&path);
+                    (desc, file_date, file_size)
                 } else {
                     // Fallback to filename if profile loading fails
                     let desc = path
@@ -100,7 +156,8 @@ fn scan_directory(dir: &PathBuf, source: IccProfileSource, profiles: &mut Vec<Ic
                         .unwrap_or("Unknown")
                         .to_string();
                     let file_date = extract_file_date(&path);
-                    (desc, file_date)
+                    let file_size = extract_file_size(&path);
+                    (desc, file_date, file_size)
                 }
             } else {
                 // Fallback to filename if file read fails
@@ -110,13 +167,15 @@ fn scan_directory(dir: &PathBuf, source: IccProfileSource, profiles: &mut Vec<Ic
                     .unwrap_or("Unknown")
                     .to_string();
                 let file_date = extract_file_date(&path);
-                (desc, file_date)
+                let file_size = extract_file_size(&path);
+                (desc, file_date, file_size)
             };
 
             profiles.push(IccProfileEntry {
                 path,
                 description,
                 date,
+                file_size,
                 source,
             });
         }
@@ -170,8 +229,7 @@ pub(crate) fn apply_preview_transform(
         .ok()?;
 
         let mut output_space = vec![0u8; pixels.len()];
-        let src = pixels.to_vec();
-        to_output.transform_pixels(&src, &mut output_space);
+        to_output.transform_pixels(pixels, &mut output_space);
 
         // Display leg: output→monitor is a colorimetric adaptation — never apply BPC here
         let to_monitor = Transform::new_flags(
@@ -196,7 +254,6 @@ pub(crate) fn apply_preview_transform(
         sim_flags,
     )
     .ok()?;
-    let src = pixels.to_vec();
-    to_monitor.transform_pixels(&src, pixels);
+    to_monitor.transform_in_place(pixels);
     Some(())
 }

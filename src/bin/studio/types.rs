@@ -54,6 +54,7 @@ pub(crate) struct IccProfileEntry {
     pub path: PathBuf,
     pub description: String,
     pub date: String,
+    pub file_size: u64,
     pub source: IccProfileSource,
 }
 
@@ -258,6 +259,7 @@ pub(crate) struct AppState {
     pub tree_expanded: HashMap<PathBuf, bool>,
     pub addr_bar: String,
     pub thumb_zoom: f32,
+    pub thumb_pool: rayon::ThreadPool,
 
     // ── CUPS ──
     pub printers: Vec<PrinterInfo>,
@@ -415,6 +417,10 @@ impl AppState {
             tree_expanded: HashMap::new(),
             addr_bar: String::new(),
             thumb_zoom: 1.0,
+            thumb_pool: rayon::ThreadPoolBuilder::new()
+                .num_threads(4)
+                .build()
+                .expect("failed to create thumbnail thread pool"),
             printers: Vec::new(),
             all_caps: HashMap::new(),
             caps: None,

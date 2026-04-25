@@ -12,7 +12,7 @@ use vibeprint::{
     processor::{self},
 };
 
-use crate::icc::{apply_preview_transform, extract_file_date};
+use crate::icc::{apply_preview_transform, extract_file_date, extract_file_size};
 use crate::types::{
     AppState, Engine, IccProfileEntry, IccProfileFilter, IccProfileSource, Intent, LoadKind,
     ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX, PRINT_SIZES, QUEUE_SPACING_IN,
@@ -55,7 +55,7 @@ impl App {
             .map(PathBuf::from)
             .filter(|p| p.is_file())
             .map(|path| {
-                let (description, date) = if let Ok(bytes) = std::fs::read(&path) {
+                let (description, date, file_size) = if let Ok(bytes) = std::fs::read(&path) {
                     if let Ok(profile) = lcms2::Profile::new_icc(&bytes) {
                         let desc = profile
                             .info(lcms2::InfoType::Description, lcms2::Locale::none())
@@ -66,7 +66,8 @@ impl App {
                                     .to_string()
                             });
                         let d = extract_file_date(&path);
-                        (desc, d)
+                        let s = extract_file_size(&path);
+                        (desc, d, s)
                     } else {
                         (
                             path.file_name()
@@ -74,6 +75,7 @@ impl App {
                                 .unwrap_or("Unknown")
                                 .to_string(),
                             extract_file_date(&path),
+                            extract_file_size(&path),
                         )
                     }
                 } else {
@@ -83,12 +85,14 @@ impl App {
                             .unwrap_or("Unknown")
                             .to_string(),
                         extract_file_date(&path),
+                        extract_file_size(&path),
                     )
                 };
                 IccProfileEntry {
                     path,
                     description,
                     date,
+                    file_size,
                     source: IccProfileSource::User,
                 }
             });
@@ -190,7 +194,7 @@ impl App {
                     let tx = self.state.thumb_tx.clone();
                     let p = path.clone();
                     let px = self.thumb_load_px();
-                    thread::spawn(move || load_thumb(p, px, tx));
+                    self.state.thumb_pool.spawn(move || load_thumb(p, px, tx));
                 }
                 self.state.image_files.push(path);
             }
@@ -215,7 +219,7 @@ impl App {
             }
             let tx = self.state.thumb_tx.clone();
             let p = path.clone();
-            thread::spawn(move || load_thumb(p, px, tx));
+            self.state.thumb_pool.spawn(move || load_thumb(p, px, tx));
         }
     }
 
@@ -1224,12 +1228,6 @@ impl App {
                     q.crop_enabled,
                     stored_uv,
                 );
-                // Debug: log the crop UVs and check if they would be detected as crop
-                if q.crop_enabled {
-                    let has_crop = (uvs.2 - uvs.0) < 0.999 || (uvs.3 - uvs.1) < 0.999;
-                    self.state.log.push(format!("Debug: crop UVs: {:.3},{:.3},{:.3},{:.3} rot={} src={}x{} box={}x{} has_crop={}",
-                        uvs.0, uvs.1, uvs.2, uvs.3, will_rotate, src_w, src_h, w, h, has_crop));
-                }
                 uvs
             } else {
                 (0.0, 0.0, 1.0, 1.0)
@@ -1238,11 +1236,6 @@ impl App {
             // Use the same rotation logic as the layout engine for consistency
             let will_rotate =
                 vibeprint::layout_engine::should_rotate_for_full_page(q.src_size_px, w, h);
-            // Always log rotation and crop state for debugging
-            self.state.log.push(format!(
-                "Debug: queue item - rotation={:.1} crop={} will_rotate={}",
-                q.rotation, q.crop_enabled, will_rotate
-            ));
             // Calculate border width in pixels for the processor
             let border_width_px = if q.border_type != vibeprint::layout_engine::BorderType::None {
                 ((q.border_width_pt / 72.0) * self.state.target_dpi as f32).round() as u32

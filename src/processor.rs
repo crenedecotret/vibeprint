@@ -179,11 +179,8 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
 
         // Apply crop if specified (crop_u0/v0/u1/v1 are in 0-1 range)
         let has_crop = (p.crop_u1 - p.crop_u0) < 0.999 || (p.crop_v1 - p.crop_v0) < 0.999;
-        eprintln!(
-            "Debug: crop UVs {:.3},{:.3},{:.3},{:.3} has_crop={} orig_size={}x{}",
-            p.crop_u0, p.crop_v0, p.crop_u1, p.crop_v1, has_crop, ow, oh
-        );
-        let cropped_img = if has_crop {
+        let cropped_owned;
+        let cropped_img: &Rgb16Image = if has_crop {
             // Calculate crop region in pixels
             let crop_x = ((ow as f64 * p.crop_u0 as f64).round() as u32).min(ow - 1);
             let crop_y = ((oh as f64 * p.crop_v0 as f64).round() as u32).min(oh - 1);
@@ -194,22 +191,11 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
                 .max(1)
                 .min(oh - crop_y);
 
-            eprintln!(
-                "Debug: crop region {}x{} at ({},{}) size {}x{}",
-                crop_w, crop_h, crop_x, crop_y, crop_w, crop_h
-            );
-
             let cropped = image::imageops::crop_imm(&img16, crop_x, crop_y, crop_w, crop_h);
-            let result = cropped.to_image();
-            eprintln!(
-                "Debug: cropped image size: {}x{}",
-                result.width(),
-                result.height()
-            );
-            result
+            cropped_owned = cropped.to_image();
+            &cropped_owned
         } else {
-            eprintln!("Debug: no crop applied, using original image");
-            img16.clone()
+            &img16
         };
 
         let (cw, ch) = (cropped_img.width(), cropped_img.height());
@@ -225,11 +211,6 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         } else {
             (p.dest_w_px, p.dest_h_px)
         };
-
-        eprintln!(
-            "Debug: after crop: {}x{} (scale dest: {}x{}, full dest: {}x{})",
-            cw, ch, scale_dest_w, scale_dest_h, p.dest_w_px, p.dest_h_px
-        );
 
         // When crop is enabled with border, stretch to fill inner area (crop UVs preserve aspect)
         // Otherwise use aspect-fit scaling
@@ -255,13 +236,7 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
             )
         };
 
-        eprintln!("Debug: resize target {}x{}", new_w, new_h);
         let resized = resize_rgb16(&cropped_img, new_w, new_h, &opts.engine);
-        eprintln!(
-            "Debug: after resize: {}x{}",
-            resized.width(),
-            resized.height()
-        );
         let radius_px = ((opts.target_dpi as u64 * 100) / 720) as f64 / 100.0;
         let sharpened = if opts.sharpen > 0 {
             let sigma = ((radius_px as u64 * 100) / 2) as f64 / 100.0;
@@ -279,22 +254,9 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
             opts.intent,
             opts.bpc,
         )?;
-        eprintln!(
-            "Debug: after ICC transform: {}x{}",
-            transformed.width(),
-            transformed.height()
-        );
         let placed = if p.rotate_cw {
-            eprintln!("Debug: applying 90° CW rotation");
-            let rotated = rotate_90_cw_rgb16(&transformed);
-            eprintln!(
-                "Debug: after rotation: {}x{}",
-                rotated.width(),
-                rotated.height()
-            );
-            rotated
+            rotate_90_cw_rgb16(&transformed)
         } else {
-            eprintln!("Debug: no rotation applied");
             transformed
         };
 
@@ -312,10 +274,6 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
                     // Image fills inner area completely - position at top-left
                     let cx = p.dest_x_px + border;
                     let cy = p.dest_y_px + border;
-                    eprintln!(
-                        "Debug: inner border with crop - compositing at ({},{}), image {}x{}",
-                        cx, cy, pw, ph
-                    );
                     (cx, cy)
                 } else {
                     // No crop - center within inner area
@@ -323,20 +281,12 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
                     let inner_h = p.dest_h_px.saturating_sub(border * 2);
                     let cx = p.dest_x_px + border + (inner_w.saturating_sub(pw) / 2);
                     let cy = p.dest_y_px + border + (inner_h.saturating_sub(ph) / 2);
-                    eprintln!(
-                        "Debug: inner border no crop - compositing at ({},{}), image {}x{}",
-                        cx, cy, pw, ph
-                    );
                     (cx, cy)
                 }
             } else {
                 // Outer border or no border: center within full dest box
                 let cx = p.dest_x_px + p.dest_w_px.saturating_sub(pw) / 2;
                 let cy = p.dest_y_px + p.dest_h_px.saturating_sub(ph) / 2;
-                eprintln!(
-                    "Debug: compositing at ({},{}) on page, placed size: {}x{}",
-                    cx, cy, pw, ph
-                );
                 (cx, cy)
             };
 
@@ -855,6 +805,8 @@ fn resize_ewa_cubic(
     dst_h: u32,
     kernel: fn(f64) -> f64,
 ) -> Rgb16Image {
+    use rayon::prelude::*;
+
     let src_w = img.width() as f64;
     let src_h = img.height() as f64;
     let scale_x = src_w / (dst_w as f64);
@@ -866,10 +818,13 @@ fn resize_ewa_cubic(
 
     let src_max_x = img.width() as i64 - 1;
     let src_max_y = img.height() as i64 - 1;
+    let src_stride = img.width() as usize * 3;
+    let raw = img.as_raw();
     let mut output: Vec<u16> = vec![0u16; (dst_w * dst_h * 3) as usize];
+    let row_len = dst_w as usize * 3;
 
-    for oy in 0..dst_h {
-        for ox in 0..dst_w {
+    output.par_chunks_mut(row_len).enumerate().for_each(|(oy, row)| {
+        for ox in 0..dst_w as usize {
             let ix = (ox as f64 + 0.5) * scale_x - 0.5;
             let iy = (oy as f64 + 0.5) * scale_y - 0.5;
 
@@ -885,6 +840,8 @@ fn resize_ewa_cubic(
 
             for sy in y0..=y1 {
                 let dy = (sy as f64 - iy) / radius_y;
+                let csy = sy.clamp(0, src_max_y) as usize;
+                let row_base = csy * src_stride;
                 for sx in x0..=x1 {
                     let dx = (sx as f64 - ix) / radius_x;
                     // EWA: circular support — skip samples outside the unit disc
@@ -896,27 +853,23 @@ fn resize_ewa_cubic(
                     if w == 0.0 {
                         continue;
                     }
-                    let csx = sx.clamp(0, src_max_x) as u32;
-                    let csy = sy.clamp(0, src_max_y) as u32;
-                    let px = img.get_pixel(csx, csy);
-                    sum_r += w * px[0] as f64;
-                    sum_g += w * px[1] as f64;
-                    sum_b += w * px[2] as f64;
+                    let csx = sx.clamp(0, src_max_x) as usize;
+                    let pi = row_base + csx * 3;
+                    sum_r += w * raw[pi] as f64;
+                    sum_g += w * raw[pi + 1] as f64;
+                    sum_b += w * raw[pi + 2] as f64;
                     sum_w += w;
                 }
             }
 
-            let idx = ((oy * dst_w + ox) * 3) as usize;
+            let idx = ox * 3;
             if sum_w > 1e-10 {
-                let r = (sum_r / sum_w).round().clamp(0.0, 65535.0) as u16;
-                let g = (sum_g / sum_w).round().clamp(0.0, 65535.0) as u16;
-                let b = (sum_b / sum_w).round().clamp(0.0, 65535.0) as u16;
-                output[idx] = r;
-                output[idx + 1] = g;
-                output[idx + 2] = b;
+                row[idx] = (sum_r / sum_w).round().clamp(0.0, 65535.0) as u16;
+                row[idx + 1] = (sum_g / sum_w).round().clamp(0.0, 65535.0) as u16;
+                row[idx + 2] = (sum_b / sum_w).round().clamp(0.0, 65535.0) as u16;
             }
         }
-    }
+    });
 
     ImageBuffer::from_raw(dst_w, dst_h, output).expect("resize_ewa_cubic: buffer size mismatch")
 }
@@ -1230,30 +1183,29 @@ fn transform_rgb16_icc(
     )
     .context("failed to create lcms2 transform")?;
 
-    let input_raw: Vec<u16> = img.as_raw().clone();
+    let input_raw = img.as_raw();
     if input_raw.len() % 3 != 0 {
         bail!("expected interleaved RGB16 buffer length to be divisible by 3");
     }
 
-    let mut input_pixels: Vec<Rgb16Pixel> = Vec::with_capacity(input_raw.len() / 3);
-    for ch in input_raw.chunks_exact(3) {
-        input_pixels.push(Rgb16Pixel {
-            r: ch[0],
-            g: ch[1],
-            b: ch[2],
-        });
-    }
-
+    let pixel_count = input_raw.len() / 3;
+    // SAFETY: Rgb16Pixel is #[repr(C)] with 3 u16 fields — identical layout to [u16; 3].
+    // input_raw length is verified divisible by 3 above.
+    let input_pixels: &[Rgb16Pixel] =
+        unsafe { std::slice::from_raw_parts(input_raw.as_ptr() as *const Rgb16Pixel, pixel_count) };
     let mut output_pixels: Vec<Rgb16Pixel> =
-        vec![Rgb16Pixel { r: 0, g: 0, b: 0 }; input_pixels.len()];
-    transform.transform_pixels(&input_pixels, &mut output_pixels);
+        vec![Rgb16Pixel { r: 0, g: 0, b: 0 }; pixel_count];
+    transform.transform_pixels(input_pixels, &mut output_pixels);
 
-    let mut output_raw: Vec<u16> = Vec::with_capacity(input_raw.len());
-    for px in output_pixels {
-        output_raw.push(px.r);
-        output_raw.push(px.g);
-        output_raw.push(px.b);
-    }
+    // Reinterpret Vec<Rgb16Pixel> as Vec<u16> without copying
+    let output_raw: Vec<u16> = {
+        let mut v = std::mem::ManuallyDrop::new(output_pixels);
+        let ptr = v.as_mut_ptr() as *mut u16;
+        let len = v.len() * 3;
+        let cap = v.capacity() * 3;
+        // SAFETY: same layout guarantee as above, and Vec allocation is compatible
+        unsafe { Vec::from_raw_parts(ptr, len, cap) }
+    };
 
     let out = ImageBuffer::<Rgb<u16>, Vec<u16>>::from_raw(img.width(), img.height(), output_raw)
         .context("failed to construct transformed RGB16 image")?;
@@ -1377,6 +1329,8 @@ fn map_sharpening_slider(value: f64) -> f64 {
 }
 
 fn gaussian_blur_rgb16(img: &Rgb16Image, sigma: f64) -> Rgb16Image {
+    use rayon::prelude::*;
+
     let w = img.width() as usize;
     let h = img.height() as usize;
 
@@ -1397,10 +1351,11 @@ fn gaussian_blur_rgb16(img: &Rgb16Image, sigma: f64) -> Rgb16Image {
     }
 
     let raw = img.as_raw();
+    let row_stride = w * 3;
 
     // Horizontal pass — store as f32 to avoid double rounding
     let mut horiz = vec![0.0f32; w * h * 3];
-    for y in 0..h {
+    horiz.par_chunks_mut(row_stride).enumerate().for_each(|(y, row)| {
         for x in 0..w {
             for c in 0..3usize {
                 let mut acc = 0.0f64;
@@ -1408,14 +1363,14 @@ fn gaussian_blur_rgb16(img: &Rgb16Image, sigma: f64) -> Rgb16Image {
                     let sx = (x as i64 + ki as i64 - radius as i64).clamp(0, w as i64 - 1) as usize;
                     acc += kv * raw[(y * w + sx) * 3 + c] as f64;
                 }
-                horiz[(y * w + x) * 3 + c] = acc as f32;
+                row[x * 3 + c] = acc as f32;
             }
         }
-    }
+    });
 
     // Vertical pass — output u16
     let mut result = vec![0u16; w * h * 3];
-    for y in 0..h {
+    result.par_chunks_mut(row_stride).enumerate().for_each(|(y, row)| {
         for x in 0..w {
             for c in 0..3usize {
                 let mut acc = 0.0f64;
@@ -1423,10 +1378,10 @@ fn gaussian_blur_rgb16(img: &Rgb16Image, sigma: f64) -> Rgb16Image {
                     let sy = (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
                     acc += kv * horiz[(sy * w + x) * 3 + c] as f64;
                 }
-                result[(y * w + x) * 3 + c] = ((acc as u64 * 10000) / 10000).clamp(0, 65535) as u16;
+                row[x * 3 + c] = acc.round().clamp(0.0, 65535.0) as u16;
             }
         }
-    }
+    });
 
     ImageBuffer::from_raw(w as u32, h as u32, result).expect("gaussian_blur_rgb16: buffer mismatch")
 }

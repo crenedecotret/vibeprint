@@ -91,96 +91,34 @@ pub fn apply_monitor_profile(
 ) -> Option<()> {
     use lcms2::{PixelFormat, Profile, Transform};
 
-    // Verify monitor profile
     if monitor_profile_data.len() < 128 {
-        eprintln!(
-            "Monitor ICC: Profile too small ({} bytes)",
-            monitor_profile_data.len()
-        );
         return None;
     }
 
-    // Load source profile (image embedded or sRGB fallback)
     let source_profile = if let Some(src_data) = source_profile_data {
-        eprintln!(
-            "Monitor ICC: Using image embedded profile ({} bytes)",
-            src_data.len()
-        );
-        match Profile::new_icc(src_data) {
-            Ok(p) => {
-                eprintln!("Monitor ICC: Image profile loaded successfully");
-                p
-            }
-            Err(e) => {
-                eprintln!(
-                    "Monitor ICC: Failed to load image profile: {:?}, falling back to sRGB",
-                    e
-                );
-                Profile::new_srgb()
-            }
-        }
+        Profile::new_icc(src_data).unwrap_or_else(|_| Profile::new_srgb())
     } else {
-        eprintln!("Monitor ICC: No image profile, using sRGB fallback");
         Profile::new_srgb()
     };
 
-    // Load monitor profile
-    let monitor_profile = match Profile::new_icc(monitor_profile_data) {
-        Ok(p) => {
-            eprintln!("Monitor ICC: Monitor profile loaded successfully");
-            p
-        }
-        Err(e) => {
-            eprintln!("Monitor ICC: Failed to load monitor profile: {:?}", e);
-            return None;
-        }
+    let monitor_profile = Profile::new_icc(monitor_profile_data).ok()?;
+
+    let flags = if bpc {
+        lcms2::Flags::BLACKPOINT_COMPENSATION | lcms2::Flags::NO_CACHE
+    } else {
+        lcms2::Flags::NO_CACHE
     };
-
-    eprintln!("Monitor ICC: Using intent {:?}, BPC={}", intent, bpc);
-
-    // Create transform: Source profile → Monitor profile
-    // Note: BPC is handled by lcms2 based on the profile and intent
-    let transform = match Transform::new(
+    let transform = Transform::new_flags(
         &source_profile,
         PixelFormat::RGB_8,
         &monitor_profile,
         PixelFormat::RGB_8,
         intent,
-    ) {
-        Ok(t) => {
-            eprintln!("Monitor ICC: Transform created successfully");
-            t
-        }
-        Err(e) => {
-            eprintln!("Monitor ICC: Failed to create transform: {:?}", e);
-            return None;
-        }
-    };
+        flags,
+    )
+    .ok()?;
 
-    // Sample a few pixels before transform
-    if !pixels.is_empty() {
-        eprintln!(
-            "Monitor ICC: First pixel before: R={} G={} B={}",
-            pixels[0], pixels[1], pixels[2]
-        );
-    }
-
-    // Apply transform
-    let src = pixels.to_vec();
-    transform.transform_pixels(&src, pixels);
-
-    // Sample after
-    if !pixels.is_empty() {
-        eprintln!(
-            "Monitor ICC: First pixel after: R={} G={} B={}",
-            pixels[0], pixels[1], pixels[2]
-        );
-    }
-
-    eprintln!(
-        "Monitor ICC: Transform applied to {} pixels",
-        pixels.len() / 3
-    );
+    transform.transform_in_place(pixels);
 
     Some(())
 }

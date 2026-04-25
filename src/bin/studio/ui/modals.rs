@@ -2,7 +2,7 @@ use eframe::egui::{self, Color32, Context, Pos2, Rect, RichText, Sense, Vec2};
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 
-use crate::icc::{apply_preview_transform, extract_file_date};
+use crate::icc::{apply_preview_transform, extract_file_date, extract_file_size};
 use crate::processing::submit_print_jobs_sync;
 use crate::types::{CustomSizeMode, IccProfileEntry, IccProfileFilter, IccProfileSource};
 use crate::App;
@@ -595,6 +595,7 @@ impl App {
                         self.state.output_icc = Some(entry.clone());
                     } else {
                         let date = extract_file_date(&path);
+                        let file_size = extract_file_size(&path);
                         let description = path
                             .file_name()
                             .and_then(|n| n.to_str())
@@ -604,6 +605,7 @@ impl App {
                             path,
                             description,
                             date,
+                            file_size,
                             source: IccProfileSource::User,
                         });
                     }
@@ -647,10 +649,12 @@ impl App {
                                     .unwrap_or("Unknown")
                                     .to_string()
                             };
+                            let file_size = extract_file_size(&p);
                             self.state.output_icc = Some(IccProfileEntry {
                                 path: p,
                                 description,
                                 date,
+                                file_size,
                                 source: IccProfileSource::User,
                             });
                             self.state.show_icc_picker = false;
@@ -817,7 +821,7 @@ impl App {
                             &mut pixel_bytes,
                             self.state.intent.to_lcms(),
                             self.state.bpc,
-                            self.state.softproof_enabled,
+                            false, // no soft proof in crop editor
                         )
                         .is_some()
                         {
