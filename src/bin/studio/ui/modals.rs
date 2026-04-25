@@ -1261,145 +1261,165 @@ impl App {
 
         let mut close = false;
         let mut confirmed: Option<(f32, f32)> = None;
+        let mut parsed_w: Option<f32> = None;
+        let mut parsed_h: Option<f32> = None;
 
         egui::Window::new("Custom Print Size")
             .collapsible(false)
             .resizable(false)
-            .min_width(260.0)
+            .fixed_size([340.0, 200.0])
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
 
-                // ── Mode selector ────────────────────────────────────────────
+                // Two-pane layout: left for mode selection, right for inputs
                 ui.horizontal(|ui| {
-                    ui.radio_value(
-                        &mut self.state.custom_size_mode,
-                        CustomSizeMode::Specific,
-                        "Specific size",
-                    );
-                    ui.radio_value(
-                        &mut self.state.custom_size_mode,
-                        CustomSizeMode::LongSide,
-                        "Long side",
-                    );
+                    // ── Left pane: Mode selection ─────────────────────────────
+                    ui.vertical(|ui| {
+                        ui.set_width(120.0);
+                        ui.add_space(4.0);
+                        ui.radio_value(
+                            &mut self.state.custom_size_mode,
+                            CustomSizeMode::Specific,
+                            "Specific size",
+                        );
+                        ui.add_space(8.0);
+                        ui.radio_value(
+                            &mut self.state.custom_size_mode,
+                            CustomSizeMode::LongSide,
+                            "Long side",
+                        );
+                    });
+
+                    ui.add_space(8.0);
+
+                    // ── Right pane: Input area (fixed height) ───────────────
+                    ui.vertical(|ui| {
+                        ui.set_min_width(180.0);
+                        ui.set_min_height(100.0);
+
+                        match self.state.custom_size_mode {
+                            CustomSizeMode::Specific => {
+                                ui.label("Print size:");
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.state.custom_size_w_str)
+                                            .desired_width(60.0),
+                                    );
+                                    ui.label("×");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.state.custom_size_h_str)
+                                            .desired_width(60.0),
+                                    );
+                                    ui.label("in");
+                                });
+                                parsed_w = self.state.custom_size_w_str.parse::<f32>().ok();
+                                parsed_h = self.state.custom_size_h_str.parse::<f32>().ok();
+
+                                // Reserve space for result line to maintain height
+                                ui.add_space(4.0);
+                                ui.label(RichText::new(" ").size(11.0));
+                            }
+                            CustomSizeMode::LongSide => {
+                                ui.label("Print size:");
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.state.custom_size_long_str)
+                                            .desired_width(60.0),
+                                    );
+                                    ui.label("in (long side)");
+                                });
+
+                                if let Some(asp) = aspect {
+                                    if let Ok(long) = self.state.custom_size_long_str.parse::<f32>() {
+                                        let (w, h) = if asp >= 1.0 {
+                                            let h = long / asp;
+                                            (long, h)
+                                        } else {
+                                            let w = long * asp;
+                                            (w, long)
+                                        };
+                                        parsed_w = Some(w);
+                                        parsed_h = Some(h);
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            RichText::new(format!("→  {:.3}\" × {:.3}\"", w, h))
+                                                .weak()
+                                                .size(11.0),
+                                        );
+                                    } else {
+                                        parsed_w = None;
+                                        parsed_h = None;
+                                        // Reserve space
+                                        ui.add_space(4.0);
+                                        ui.label(RichText::new(" ").size(11.0));
+                                    }
+                                } else {
+                                    parsed_w = None;
+                                    parsed_h = None;
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        RichText::new("No aspect ratio available")
+                                            .weak()
+                                            .size(11.0),
+                                    );
+                                }
+                            }
+                        }
+
+                        // ── Validation message (fixed position) ───────────────
+                        let size_ok = match (parsed_w, parsed_h) {
+                            (Some(w), Some(h)) => w > 0.0 && h > 0.0,
+                            _ => false,
+                        };
+                        let fits = match (parsed_w, parsed_h) {
+                            (Some(w), Some(h)) => {
+                                let (fits, _) = crate::utils::check_size_fit(w, h, ia_w_in, ia_h_in);
+                                fits
+                            }
+                            _ => false,
+                        };
+
+                        ui.add_space(4.0);
+                        if size_ok && !fits {
+                            ui.label(
+                                RichText::new("⚠ Exceeds printable area")
+                                    .color(Color32::from_rgb(220, 120, 40))
+                                    .size(11.0),
+                            );
+                        } else {
+                            ui.label(RichText::new(" ").size(11.0));
+                        }
+                    });
                 });
 
                 ui.add_space(8.0);
 
-                // ── Input fields ─────────────────────────────────────────────
-                let (parsed_w, parsed_h) = match self.state.custom_size_mode {
-                    CustomSizeMode::Specific => {
-                        egui::Grid::new("custom_size_grid")
-                            .num_columns(4)
-                            .spacing([4.0, 4.0])
-                            .show(ui, |ui| {
-                                ui.label("W:");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.state.custom_size_w_str)
-                                        .desired_width(60.0),
-                                );
-                                ui.label("H:");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.state.custom_size_h_str)
-                                        .desired_width(60.0),
-                                );
-                                ui.label("in");
-                                ui.end_row();
-                            });
-                        let pw = self.state.custom_size_w_str.parse::<f32>().ok();
-                        let ph = self.state.custom_size_h_str.parse::<f32>().ok();
-                        (pw, ph)
-                    }
-                    CustomSizeMode::LongSide => {
-                        egui::Grid::new("custom_size_long_grid")
-                            .num_columns(3)
-                            .spacing([4.0, 4.0])
-                            .show(ui, |ui| {
-                                ui.label("Long side:");
-                                ui.add(
-                                    egui::TextEdit::singleline(
-                                        &mut self.state.custom_size_long_str,
-                                    )
-                                    .desired_width(60.0),
-                                );
-                                ui.label("in");
-                                ui.end_row();
-                            });
-                        if let Some(asp) = aspect {
-                            if let Ok(long) =
-                                self.state.custom_size_long_str.parse::<f32>()
-                            {
-                                let (w, h) = if asp >= 1.0 {
-                                    // landscape: long = w
-                                    let h = long / asp;
-                                    (long, h)
-                                } else {
-                                    // portrait: long = h
-                                    let w = long * asp;
-                                    (w, long)
-                                };
-                                ui.add_space(4.0);
-                                ui.label(
-                                    RichText::new(format!(
-                                        "→  {:.3}\" × {:.3}\"",
-                                        w, h
-                                    ))
-                                    .weak()
-                                    .size(11.0),
-                                );
-                                (Some(w), Some(h))
-                            } else {
-                                (None, None)
-                            }
-                        } else {
-                            ui.label(
-                                RichText::new("No image aspect ratio available")
-                                    .weak()
-                                    .size(11.0),
-                            );
-                            (None, None)
-                        }
-                    }
-                };
-
-                // ── Validation ───────────────────────────────────────────────
-                let size_ok = match (parsed_w, parsed_h) {
-                    (Some(w), Some(h)) => w > 0.0 && h > 0.0,
-                    _ => false,
-                };
-                let fits = match (parsed_w, parsed_h) {
-                    (Some(w), Some(h)) => {
-                        let (fits, _) = crate::utils::check_size_fit(w, h, ia_w_in, ia_h_in);
-                        fits
-                    }
-                    _ => false,
-                };
-
-                if size_ok && !fits {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("⚠ Exceeds printable area")
-                            .color(Color32::from_rgb(220, 120, 40))
-                            .size(11.0),
-                    );
-                }
-
-                ui.add_space(10.0);
+                // ── Buttons ─────────────────────────────────────────────────
                 ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            size_ok && fits,
-                            egui::Button::new("Confirm"),
-                        )
-                        .clicked()
-                    {
-                        if let (Some(w), Some(h)) = (parsed_w, parsed_h) {
-                            confirmed = Some((w, h));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Cancel").clicked() {
+                            close = true;
                         }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
+                        let size_ok = match (parsed_w, parsed_h) {
+                            (Some(w), Some(h)) => w > 0.0 && h > 0.0,
+                            _ => false,
+                        };
+                        let fits = match (parsed_w, parsed_h) {
+                            (Some(w), Some(h)) => {
+                                let (f, _) = crate::utils::check_size_fit(w, h, ia_w_in, ia_h_in);
+                                f
+                            }
+                            _ => false,
+                        };
+                        if ui.add_enabled(size_ok && fits, egui::Button::new("OK")).clicked() {
+                            if let (Some(w), Some(h)) = (parsed_w, parsed_h) {
+                                confirmed = Some((w, h));
+                            }
+                        }
+                    });
                 });
             });
 
