@@ -1303,11 +1303,12 @@ impl App {
                                 ui.label("Print size:");
                                 ui.add_space(4.0);
                                 ui.horizontal(|ui| {
+                                    ui.label("W");
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.state.custom_size_w_str)
                                             .desired_width(60.0),
                                     );
-                                    ui.label("×");
+                                    ui.label("× H");
                                     ui.add(
                                         egui::TextEdit::singleline(&mut self.state.custom_size_h_str)
                                             .desired_width(60.0),
