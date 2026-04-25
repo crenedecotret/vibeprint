@@ -1405,9 +1405,6 @@ impl App {
                 // ── Buttons ─────────────────────────────────────────────────
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
                         let size_ok = match (parsed_w, parsed_h) {
                             (Some(w), Some(h)) => w > 0.0 && h > 0.0,
                             _ => false,
@@ -1423,6 +1420,9 @@ impl App {
                             if let (Some(w), Some(h)) = (parsed_w, parsed_h) {
                                 confirmed = Some((w, h));
                             }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
                         }
                     });
                 });
