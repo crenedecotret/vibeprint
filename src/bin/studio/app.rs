@@ -621,6 +621,77 @@ impl App {
         true
     }
 
+    pub(crate) fn enqueue_staged_with_size(&mut self, w_in: f32, h_in: f32) -> bool {
+        use vibeprint::layout_engine::{PrintSize, Unit};
+        let Some(path) = self.state.staged.clone() else {
+            return false;
+        };
+        let Some(src) = self.state.staged_source_image.as_ref() else {
+            self.state.log.push("⚠ Image still loading…".into());
+            return false;
+        };
+        let size = src.size;
+        let src_size = (size[0] as u32, size[1] as u32);
+        let print_size = PrintSize { width: w_in, height: h_in, unit: Unit::Inches };
+
+        self.state.queue.push(vibeprint::layout_engine::QueuedImage {
+            id: uuid::Uuid::new_v4(),
+            filepath: path.clone(),
+            size: print_size,
+            fit_to_page: false,
+            center_to_page: false,
+            source_icc: None,
+            position: vibeprint::layout_engine::Point::default(),
+            page: 0,
+            rotation: 0.0,
+            placed_w_px: 0,
+            placed_h_px: 0,
+            src_size_px: Some(src_size),
+            crop_enabled: false,
+            crop_u0: None,
+            crop_v0: None,
+            crop_u1: None,
+            crop_v1: None,
+            border_type: vibeprint::layout_engine::BorderType::None,
+            border_width_pt: 4.0,
+        });
+        self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
+        self.state.selected = Some(path.clone());
+        self.state.selected_source_image = Some(src.clone());
+        self.state.selected_embedded_icc = self.state.staged_embedded_icc.clone();
+        self.state.canvas_img_size = Some(size);
+        self.state.full_images.insert(path.clone(), src.clone());
+        self.state.embedded_icc_by_path.insert(path, self.state.staged_embedded_icc.clone());
+
+        self.state.staged = None;
+        self.state.staged_embedded_icc = None;
+        self.state.staged_source_image = None;
+        self.state.staged_img_size = None;
+
+        self.relayout_queue();
+        if let Some(id) = self.state.selected_queue_id {
+            if let Some(item) = self.state.queue.iter().find(|q| q.id == id) {
+                self.state.current_page = item.page;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn update_selected_queue_size(&mut self, w_in: f32, h_in: f32) {
+        use vibeprint::layout_engine::{PrintSize, Unit};
+        let sel = self.state.selected_queue_id;
+        if let Some(item) = self.selected_queue_mut() {
+            item.size = PrintSize { width: w_in, height: h_in, unit: Unit::Inches };
+            item.fit_to_page = false;
+        }
+        self.relayout_queue();
+        if let Some(id) = sel {
+            if let Some(item) = self.state.queue.iter().find(|q| q.id == id) {
+                self.state.current_page = item.page;
+            }
+        }
+    }
+
     pub(crate) fn selected_queue_mut(
         &mut self,
     ) -> Option<&mut vibeprint::layout_engine::QueuedImage> {

@@ -105,6 +105,9 @@ impl eframe::App for App {
         if self.state.show_crop_editor {
             self.show_crop_editor(ctx);
         }
+        if self.state.show_custom_size_modal {
+            self.show_custom_size_modal(ctx);
+        }
 
         // Show splash screen during printer discovery
         if !self.state.discovery_complete {

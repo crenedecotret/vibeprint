@@ -17,7 +17,15 @@ pub(crate) const RIGHT_W: f32 = 295.0;
 pub(crate) const THUMB_PX: u32 = 96;
 pub(crate) const RULER_PX: f32 = 22.0;
 pub(crate) const FIT_PAGE_IDX: usize = 15; // sentinel index = "Fit to Page"
+pub(crate) const CUSTOM_SIZE_IDX: usize = 16; // sentinel index = "Custom size…"
 pub(crate) const QUEUE_SPACING_IN: f32 = 0.25;
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum CustomSizeMode {
+    #[default]
+    Specific,
+    LongSide,
+}
 
 /// Standard print sizes (width × height in inches, label). Width is always the shorter side.
 pub(crate) const PRINT_SIZES: &[(f32, f32, &str)] = &[
@@ -331,6 +339,13 @@ pub(crate) struct AppState {
     pub auto_enqueue_path: Option<PathBuf>,
     pub auto_enqueue_pending: bool,
 
+    // ── Custom size modal ──
+    pub show_custom_size_modal: bool,
+    pub custom_size_mode: CustomSizeMode,
+    pub custom_size_w_str: String,
+    pub custom_size_h_str: String,
+    pub custom_size_long_str: String,
+
     // ── Crop editor modal ──
     pub show_crop_editor: bool,
     pub crop_editor_queue_id: Option<Uuid>,
@@ -463,6 +478,11 @@ impl AppState {
             crop_editor_resizing: false,
             crop_editor_resize_start_pos: None,
             crop_editor_resize_start_uv: None,
+            show_custom_size_modal: false,
+            custom_size_mode: CustomSizeMode::Specific,
+            custom_size_w_str: String::new(),
+            custom_size_h_str: String::new(),
+            custom_size_long_str: String::new(),
         }
     }
 }

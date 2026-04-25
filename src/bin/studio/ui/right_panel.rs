@@ -537,6 +537,34 @@ impl App {
                     }
                 }
 
+                // Custom size… option
+                let is_custom_selected = selected_size_idx.is_none()
+                    && self.selected_queue().map(|q| !q.fit_to_page).unwrap_or(false);
+                let custom_text = RichText::new("Custom size…")
+                    .size(13.0)
+                    .color(if is_custom_selected {
+                        Color32::from_rgb(60, 120, 200)
+                    } else {
+                        Color32::from_gray(210)
+                    });
+                if ui.selectable_label(false, custom_text).clicked() {
+                    // Pre-fill fields from current item or blank
+                    let (w_str, h_str, long_str) =
+                        if let Some(qi) = self.selected_queue() {
+                            let (w, h) = qi.size.as_inches();
+                            let long = w.max(h);
+                            (format!("{:.3}", w), format!("{:.3}", h), format!("{:.3}", long))
+                        } else if self.state.staged.is_some() {
+                            (String::new(), String::new(), String::new())
+                        } else {
+                            (String::new(), String::new(), String::new())
+                        };
+                    self.state.custom_size_w_str = w_str;
+                    self.state.custom_size_h_str = h_str;
+                    self.state.custom_size_long_str = long_str;
+                    self.state.show_custom_size_modal = true;
+                }
+
                 ui.separator();
 
                 ui.add_space(8.0);
