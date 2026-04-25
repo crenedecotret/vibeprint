@@ -1259,7 +1259,7 @@ impl App {
             None
         };
 
-        let mut open = self.state.show_custom_size_modal;
+        let mut close = false;
         let mut confirmed: Option<(f32, f32)> = None;
 
         egui::Window::new("Custom Print Size")
@@ -1267,7 +1267,6 @@ impl App {
             .resizable(false)
             .min_width(260.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
 
@@ -1399,12 +1398,14 @@ impl App {
                         }
                     }
                     if ui.button("Cancel").clicked() {
-                        self.state.show_custom_size_modal = false;
+                        close = true;
                     }
                 });
             });
 
-        self.state.show_custom_size_modal = open;
+        if close {
+            self.state.show_custom_size_modal = false;
+        }
 
         if let Some((w, h)) = confirmed {
             self.state.show_custom_size_modal = false;

@@ -540,12 +540,7 @@ impl App {
                 // Custom Size option
                 let is_custom_selected = selected_size_idx.is_none()
                     && self.selected_queue().map(|q| !q.fit_to_page).unwrap_or(false);
-                let custom_label = if is_custom_selected {
-                    "Custom Size (Selected)"
-                } else {
-                    "Custom Size"
-                };
-                let custom_text = RichText::new(custom_label)
+                let custom_text = RichText::new("Custom Size")
                     .size(13.0)
                     .color(if is_custom_selected {
                         Color32::from_rgb(60, 120, 200)
