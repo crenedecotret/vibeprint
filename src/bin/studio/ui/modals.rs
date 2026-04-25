@@ -1275,6 +1275,15 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!(
+                        "Printable area: {:.2}\" × {:.2}\"",
+                        ia_w_in, ia_h_in
+                    ))
+                    .weak()
+                    .size(11.0),
+                );
+                ui.add_space(6.0);
 
                 // Two-pane layout: left for mode selection, right for inputs
                 ui.horizontal(|ui| {
@@ -1390,12 +1399,9 @@ impl App {
                         ui.add_space(4.0);
                         if size_ok && !fits {
                             ui.label(
-                                RichText::new(format!(
-                                    "⚠ Max available: {:.2}\" × {:.2}\"",
-                                    ia_w_in, ia_h_in
-                                ))
-                                .color(Color32::from_rgb(220, 120, 40))
-                                .size(11.0),
+                                RichText::new("⚠ Exceeds printable area")
+                                    .color(Color32::from_rgb(220, 120, 40))
+                                    .size(11.0),
                             );
                         } else {
                             ui.label(RichText::new(" ").size(11.0));
