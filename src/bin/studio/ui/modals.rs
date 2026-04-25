@@ -1275,14 +1275,16 @@ impl App {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
-                ui.label(
-                    RichText::new(format!(
-                        "Printable area: {:.2}\" × {:.2}\"",
-                        ia_w_in, ia_h_in
-                    ))
-                    .weak()
-                    .size(11.0),
-                );
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "Printable area: {:.2}\" × {:.2}\"",
+                            ia_w_in, ia_h_in
+                        ))
+                        .color(Color32::WHITE)
+                        .size(11.0),
+                    );
+                });
                 ui.add_space(6.0);
 
                 // Two-pane layout: left for mode selection, right for inputs
