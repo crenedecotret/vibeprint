@@ -680,9 +680,87 @@ impl App {
     pub(crate) fn update_selected_queue_size(&mut self, w_in: f32, h_in: f32) {
         use vibeprint::layout_engine::{PrintSize, Unit};
         let sel = self.state.selected_queue_id;
+
         if let Some(item) = self.selected_queue_mut() {
+            let old_size = item.size.as_inches();
+            let new_size = (w_in, h_in);
+
             item.size = PrintSize { width: w_in, height: h_in, unit: Unit::Inches };
             item.fit_to_page = false;
+
+            // Clamp border_width_pt to 20% of new longest side
+            let max_border_pt = w_in.max(h_in) * 0.2 * 72.0;
+            let old_border_pt = item.border_width_pt;
+            item.border_width_pt = item.border_width_pt.min(max_border_pt);
+            let new_border_pt = item.border_width_pt;
+
+            // Recalculate crop UVs when aspect ratio changes significantly
+            let old_border_in = old_border_pt / 72.0;
+            let new_border_in = new_border_pt / 72.0;
+            let is_inner = item.border_type == vibeprint::layout_engine::BorderType::Inner;
+            let (old_vis_w, old_vis_h) = if is_inner && old_border_in > 0.0 {
+                ((old_size.0 - old_border_in * 2.0).max(0.1), (old_size.1 - old_border_in * 2.0).max(0.1))
+            } else {
+                old_size
+            };
+            let (new_vis_w, new_vis_h) = if is_inner && new_border_in > 0.0 {
+                ((new_size.0 - new_border_in * 2.0).max(0.1), (new_size.1 - new_border_in * 2.0).max(0.1))
+            } else {
+                new_size
+            };
+            let old_vis_aspect = old_vis_w / old_vis_h;
+            let new_vis_aspect = new_vis_w / new_vis_h;
+
+            if let (Some(u0), Some(v0), Some(u1), Some(v1)) =
+                (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1)
+            {
+                let aspect_diff = (old_vis_aspect - new_vis_aspect).abs()
+                    / old_vis_aspect.max(new_vis_aspect);
+                if aspect_diff > 0.05 {
+                    let (sw, sh) = item.src_size_px.unwrap_or((1, 1));
+                    let src_landscape = (sw as f32) > (sh as f32);
+                    let (oriented_w, oriented_h) =
+                        if src_landscape { (h_in, w_in) } else { (w_in, h_in) };
+
+                    let fitted_no_rot = {
+                        let s = (oriented_w / sw as f32).min(oriented_h / sh as f32);
+                        (sw as f32 * s) * (sh as f32 * s)
+                    };
+                    let fitted_rot = {
+                        let s = (oriented_w / sh as f32).min(oriented_h / sw as f32);
+                        (sh as f32 * s) * (sw as f32 * s)
+                    };
+                    let will_rotate = fitted_rot > fitted_no_rot;
+                    let (full_w, full_h) = if will_rotate {
+                        (oriented_h, oriented_w)
+                    } else {
+                        (oriented_w, oriented_h)
+                    };
+
+                    let border_in = item.border_width_pt / 72.0;
+                    let (vis_w, vis_h) = if is_inner && border_in > 0.0 {
+                        ((full_w - border_in * 2.0).max(0.1), (full_h - border_in * 2.0).max(0.1))
+                    } else {
+                        (full_w, full_h)
+                    };
+
+                    let old_center_u = (u0 + u1) / 2.0;
+                    let old_center_v = (v0 + v1) / 2.0;
+                    let old_crop_area = (u1 - u0) * (v1 - v0);
+
+                    let sw_f = sw as f32;
+                    let sh_f = sh as f32;
+                    let src_aspect = if will_rotate { sh_f / sw_f } else { sw_f / sh_f };
+                    let target_aspect = (vis_w / vis_h) / src_aspect;
+
+                    let new_crop_w = (old_crop_area * target_aspect).sqrt();
+                    let new_crop_h = (old_crop_area / target_aspect).sqrt();
+                    item.crop_u0 = Some((old_center_u - new_crop_w / 2.0).max(0.0));
+                    item.crop_v0 = Some((old_center_v - new_crop_h / 2.0).max(0.0));
+                    item.crop_u1 = Some((old_center_u + new_crop_w / 2.0).min(1.0));
+                    item.crop_v1 = Some((old_center_v + new_crop_h / 2.0).min(1.0));
+                }
+            }
         }
         self.relayout_queue();
         if let Some(id) = sel {
