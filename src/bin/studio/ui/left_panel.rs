@@ -207,31 +207,22 @@ impl App {
                         let cell_size = Vec2::new(disp_w, disp_h + 14.0);
                         let (resp, _) = ui.allocate_painter(cell_size, Sense::click());
                         let painter = ui.painter_at(resp.rect);
+                        let img_rect =
+                            Rect::from_min_size(resp.rect.min, Vec2::new(disp_w, disp_h));
 
-                        let fill = if is_staged {
-                            Color32::from_rgb(255, 215, 0)
-                        } else if is_hi {
+                        let fill = if is_hi {
                             Color32::from_rgb(45, 55, 70)
                         } else {
-                            Color32::from_gray(40)
+                            Color32::TRANSPARENT
                         };
-                        painter.rect_filled(resp.rect, 4.0, fill);
-                        if is_staged {
+                        painter.rect_filled(img_rect, 4.0, fill);
+                        if is_hi {
                             painter.rect_stroke(
-                                resp.rect,
-                                4.0,
-                                Stroke::new(1.5, Color32::from_rgb(160, 100, 0)),
-                            );
-                        } else if is_hi {
-                            painter.rect_stroke(
-                                resp.rect,
+                                img_rect,
                                 4.0,
                                 Stroke::new(1.5, Color32::from_rgb(100, 130, 180)),
                             );
                         }
-
-                        let img_rect =
-                            Rect::from_min_size(resp.rect.min, Vec2::new(disp_w, disp_h));
                         match self.state.thumbs.get(path) {
                             Some(ThumbState::Ready(tex)) => {
                                 painter.image(
@@ -262,6 +253,11 @@ impl App {
                         }
 
                         let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        let text_color = if is_staged {
+                            Color32::from_rgb(100, 180, 255)
+                        } else {
+                            Color32::LIGHT_GRAY
+                        };
                         painter.text(
                             Pos2::new(resp.rect.min.x + 2.0, resp.rect.min.y + disp_h + 1.0),
                             egui::Align2::LEFT_TOP,
@@ -271,8 +267,16 @@ impl App {
                                 name.as_ref()
                             },
                             egui::FontId::proportional(14.0),
-                            Color32::LIGHT_GRAY,
+                            text_color,
                         );
+                        if is_staged {
+                            let inset = img_rect.shrink(1.5);
+                            painter.rect_stroke(
+                                inset,
+                                3.0,
+                                Stroke::new(3.0, Color32::from_rgb(100, 180, 255)),
+                            );
+                        }
 
                         if resp.clicked() {
                             self.state.highlighted = Some(path.clone());
