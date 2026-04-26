@@ -201,6 +201,18 @@ pub(crate) enum ProcessTarget {
     Print,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum IccPickerContext {
+    Output,
+    Monitor,
+}
+
+impl Default for IccPickerContext {
+    fn default() -> Self {
+        IccPickerContext::Output
+    }
+}
+
 // ── Persistent Settings ────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -222,6 +234,7 @@ pub(crate) struct Settings {
     pub extra_option_indices: Option<std::collections::HashMap<String, usize>>,
     pub media_type_key: Option<String>,
     pub input_slot_key: Option<String>,
+    pub monitor_icc_override: Option<String>,
 }
 
 // ── App State ───────────────────────────────────────────────────────────────
@@ -320,6 +333,10 @@ pub(crate) struct AppState {
 
     // ── Monitor ICC profile ──
     pub monitor_icc_profile: Option<Vec<u8>>,
+    pub monitor_icc_override: Option<String>,
+    /// UI-only: tracks whether the Preferences "Override" checkbox is ticked,
+    /// independent of whether a profile has actually been chosen yet.
+    pub pref_override_checked: bool,
 
     // ── Printing ──
     pub show_print_confirm: bool,
@@ -336,6 +353,7 @@ pub(crate) struct AppState {
     pub icc_scan_rx: Option<Receiver<Vec<IccProfileEntry>>>,
     pub icc_auto_switch_pending: bool,
     pub saved_icc_filter_for_restore: IccProfileFilter,
+    pub icc_picker_context: IccPickerContext,
 
     // ── CLI auto-load ──
     pub auto_enqueue_path: Option<PathBuf>,
@@ -362,6 +380,12 @@ pub(crate) struct AppState {
     pub crop_editor_resizing: bool,
     pub crop_editor_resize_start_pos: Option<egui::Pos2>,
     pub crop_editor_resize_start_uv: Option<(f32, f32, f32, f32)>,
+
+    // ── Preferences modal ──
+    pub show_preferences: bool,
+
+    // ── About modal ──
+    pub show_about: bool,
 }
 
 impl AppState {
@@ -457,6 +481,8 @@ impl AppState {
             pending_user_border_in,
             discovery_complete: false,
             monitor_icc_profile,
+            monitor_icc_override: None,
+            pref_override_checked: false,
             show_print_confirm: false,
             pending_print_paths: Vec::new(),
             print_rx: None,
@@ -489,6 +515,9 @@ impl AppState {
             custom_size_w_str: String::new(),
             custom_size_h_str: String::new(),
             custom_size_long_str: String::new(),
+            show_preferences: false,
+            show_about: false,
+            icc_picker_context: IccPickerContext::Output,
         }
     }
 }

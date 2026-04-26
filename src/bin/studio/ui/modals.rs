@@ -467,6 +467,7 @@ impl App {
                             input_slot_key: self.state.caps.as_ref()
                                 .and_then(|c| c.input_slots.get(self.state.props_slot_idx))
                                 .map(|(k, _)| k.clone()),
+                            monitor_icc_override: self.state.monitor_icc_override.clone(),
                         });
                     }
                 });
@@ -591,23 +592,42 @@ impl App {
                     });
 
                 if let Some(path) = selected_path {
-                    if let Some(entry) = self.state.icc_profiles.iter().find(|e| e.path == path) {
-                        self.state.output_icc = Some(entry.clone());
-                    } else {
-                        let date = extract_file_date(&path);
-                        let file_size = extract_file_size(&path);
-                        let description = path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("Unknown")
-                            .to_string();
-                        self.state.output_icc = Some(IccProfileEntry {
-                            path,
-                            description,
-                            date,
-                            file_size,
-                            source: IccProfileSource::User,
-                        });
+                    use crate::types::IccPickerContext;
+                    match self.state.icc_picker_context {
+                        IccPickerContext::Output => {
+                            if let Some(entry) =
+                                self.state.icc_profiles.iter().find(|e| e.path == path)
+                            {
+                                self.state.output_icc = Some(entry.clone());
+                            } else {
+                                let date = extract_file_date(&path);
+                                let file_size = extract_file_size(&path);
+                                let description = path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("Unknown")
+                                    .to_string();
+                                self.state.output_icc = Some(IccProfileEntry {
+                                    path,
+                                    description,
+                                    date,
+                                    file_size,
+                                    source: IccProfileSource::User,
+                                });
+                            }
+                        }
+                        IccPickerContext::Monitor => match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                self.state.monitor_icc_override =
+                                    Some(path.to_string_lossy().into_owned());
+                                self.state.monitor_icc_profile = Some(bytes);
+                            }
+                            Err(e) => {
+                                self.state
+                                    .log
+                                    .push(format!("Failed to read ICC {}: {}", path.display(), e));
+                            }
+                        },
                     }
                     self.state.show_icc_picker = false;
                     self.mark_preview_dirty();
@@ -626,37 +646,59 @@ impl App {
                             .add_filter("ICC Profile", &["icc", "icm"])
                             .pick_file()
                         {
-                            let date = extract_file_date(&p);
-                            let description = if let Ok(bytes) = std::fs::read(&p) {
-                                if let Ok(profile) = lcms2::Profile::new_icc(&bytes) {
-                                    profile
-                                        .info(lcms2::InfoType::Description, lcms2::Locale::none())
-                                        .unwrap_or_else(|| {
+                            use crate::types::IccPickerContext;
+                            match self.state.icc_picker_context {
+                                IccPickerContext::Output => {
+                                    let date = extract_file_date(&p);
+                                    let description = if let Ok(bytes) = std::fs::read(&p) {
+                                        if let Ok(profile) = lcms2::Profile::new_icc(&bytes) {
+                                            profile
+                                                .info(
+                                                    lcms2::InfoType::Description,
+                                                    lcms2::Locale::none(),
+                                                )
+                                                .unwrap_or_else(|| {
+                                                    p.file_name()
+                                                        .and_then(|n| n.to_str())
+                                                        .unwrap_or("Unknown")
+                                                        .to_string()
+                                                })
+                                        } else {
                                             p.file_name()
                                                 .and_then(|n| n.to_str())
                                                 .unwrap_or("Unknown")
                                                 .to_string()
-                                        })
-                                } else {
-                                    p.file_name()
-                                        .and_then(|n| n.to_str())
-                                        .unwrap_or("Unknown")
-                                        .to_string()
+                                        }
+                                    } else {
+                                        p.file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("Unknown")
+                                            .to_string()
+                                    };
+                                    let file_size = extract_file_size(&p);
+                                    self.state.output_icc = Some(IccProfileEntry {
+                                        path: p,
+                                        description,
+                                        date,
+                                        file_size,
+                                        source: IccProfileSource::User,
+                                    });
                                 }
-                            } else {
-                                p.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("Unknown")
-                                    .to_string()
-                            };
-                            let file_size = extract_file_size(&p);
-                            self.state.output_icc = Some(IccProfileEntry {
-                                path: p,
-                                description,
-                                date,
-                                file_size,
-                                source: IccProfileSource::User,
-                            });
+                                IccPickerContext::Monitor => match std::fs::read(&p) {
+                                    Ok(bytes) => {
+                                        self.state.monitor_icc_override =
+                                            Some(p.to_string_lossy().into_owned());
+                                        self.state.monitor_icc_profile = Some(bytes);
+                                    }
+                                    Err(e) => {
+                                        self.state.log.push(format!(
+                                            "Failed to read ICC {}: {}",
+                                            p.display(),
+                                            e
+                                        ));
+                                    }
+                                },
+                            }
                             self.state.show_icc_picker = false;
                             self.mark_preview_dirty();
                         }
@@ -1455,5 +1497,189 @@ impl App {
                 self.update_selected_queue_size(w, h);
             }
         }
+    }
+
+    pub(crate) fn show_preferences(&mut self, ctx: &Context) {
+        use crate::types::IccPickerContext;
+
+        // Hide preferences modal while ICC picker is open
+        if self.state.show_icc_picker {
+            return;
+        }
+
+        let screen = ctx.screen_rect();
+        let width = (screen.width() * 0.30).clamp(300.0, 440.0);
+
+        egui::Window::new("Preferences")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_width(width);
+                ui.add_space(12.0);
+
+                // Current profile display (description from ICC, or filename fallback)
+                let current_label = if let Some(ref bytes) = self.state.monitor_icc_profile {
+                    if let Ok(profile) = lcms2::Profile::new_icc(bytes) {
+                        profile
+                            .info(lcms2::InfoType::Description, lcms2::Locale::none())
+                            .unwrap_or_else(|| "Unknown".to_string())
+                    } else {
+                        "Auto-detected".to_string()
+                    }
+                } else {
+                    "Auto-detected".to_string()
+                };
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Current:").weak().size(12.0));
+                    ui.add(
+                        egui::Label::new(RichText::new(current_label).monospace().size(12.0))
+                            .truncate(),
+                    );
+                });
+
+                ui.add_space(12.0);
+
+                // Checkbox with browse button inline
+                ui.horizontal(|ui| {
+                    let mut checked = self.state.pref_override_checked;
+                    if ui.checkbox(&mut checked, "Override auto-detected monitor ICC profile").changed() {
+                        self.state.pref_override_checked = checked;
+                        if !checked {
+                            self.state.monitor_icc_override = None;
+                            self.state.monitor_icc_profile =
+                                vibeprint::monitor_icc::get_monitor_profile();
+                            self.mark_preview_dirty();
+                        }
+                    }
+
+                    ui.add_space(8.0);
+
+                    if self.state.pref_override_checked {
+                        if self.state.icc_scan_pending {
+                            ui.spinner();
+                            ui.label("Scanning…");
+                        } else if ui.button("Browse…").clicked() {
+                            self.state.icc_picker_context = IccPickerContext::Monitor;
+                            use crate::icc::scan_icc_directories;
+                            use std::sync::mpsc::channel;
+                            let (tx, rx) = channel::<Vec<crate::types::IccProfileEntry>>();
+                            self.state.icc_scan_rx = Some(rx);
+                            self.state.icc_scan_pending = true;
+                            self.state.icc_profiles.clear();
+                            self.state.icc_filter_text.clear();
+                            std::thread::spawn(move || scan_icc_directories(tx));
+                            self.state.show_icc_picker = true;
+                        }
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let btn_size = Vec2::new(60.0, 26.0);
+                        if ui.add_sized(btn_size, egui::Button::new("OK")).clicked() {
+                            self.state.show_preferences = false;
+                        }
+                    });
+                });
+
+                ui.add_space(4.0);
+            });
+    }
+
+    pub(crate) fn show_about(&mut self, ctx: &Context) {
+        let screen = ctx.screen_rect();
+        let width = (screen.width() * 0.30).clamp(340.0, 460.0);
+
+        egui::Window::new("About VibePrint Studio")
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_width(width);
+                ui.add_space(16.0);
+
+                // Icon - embedded in binary via include_bytes!
+                static ICON_BYTES: &[u8] = include_bytes!("../../../../assets/icons/vibeprint-studio.png");
+                if let Ok(img) = image::load_from_memory(ICON_BYTES) {
+                    let rgba = img.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                    ui.vertical_centered(|ui| {
+                        let icon_size = 64.0;
+                        let texture = ui.ctx().load_texture("about_icon", color_image, egui::TextureOptions::LINEAR);
+                        ui.image(egui::load::SizedTexture::new(texture.id(), [icon_size, icon_size]));
+                    });
+                    ui.add_space(8.0);
+                }
+
+                // App name
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("VibePrint Studio").size(18.0).strong());
+                });
+                ui.add_space(4.0);
+
+                // Version
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("Version 0.1.0").weak());
+                });
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(12.0);
+
+                // Description
+                ui.label(
+                    RichText::new("ICC-aware print layout engine built entirely in Rust.")
+                        .size(12.0)
+                        .color(egui::Color32::from_gray(200)),
+                );
+                ui.add_space(12.0);
+
+                // Repository
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Repository:").weak().size(11.0));
+                    ui.hyperlink_to(
+                        RichText::new("github.com/crenedecotret/vibeprint")
+                            .monospace()
+                            .size(11.0)
+                            .color(egui::Color32::from_gray(180)),
+                        "https://github.com/crenedecotret/vibeprint",
+                    );
+                });
+                ui.add_space(4.0);
+
+                // License
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("License:").weak().size(11.0));
+                    ui.label(
+                        RichText::new("GPL v3")
+                            .monospace()
+                            .size(11.0)
+                            .color(egui::Color32::from_gray(180)),
+                    );
+                });
+
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(12.0);
+
+                // Close button - larger and centered
+                ui.vertical_centered(|ui| {
+                    let ok_btn = egui::Button::new(RichText::new("OK").size(13.0))
+                        .min_size(Vec2::new(120.0, 32.0));
+                    if ui.add(ok_btn).clicked() {
+                        self.state.show_about = false;
+                    }
+                });
+                ui.add_space(8.0);
+            });
     }
 }

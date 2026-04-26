@@ -17,9 +17,11 @@ impl App {
         // ── Toolbar ───────────────────────────────────────────────────────
         ui.add_space(3.0);
         ui.horizontal(|ui| {
+            let btn_size = Vec2::new(24.0, 22.0);
+
+            // Navigation buttons (left side)
             let can_back = !self.state.nav_history.is_empty();
             let can_fwd = !self.state.nav_forward.is_empty();
-            let btn_size = Vec2::new(24.0, 22.0);
             if ui
                 .add_enabled(can_back, egui::Button::new("◀").min_size(btn_size))
                 .on_hover_text("Back")
@@ -41,6 +43,22 @@ impl App {
             {
                 self.navigate(home.clone());
             }
+
+            // Push hamburger menu to the right
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("☰", |ui| {
+                    ui.set_min_width(140.0);
+                    if ui.button("About VibePrint Studio…").clicked() {
+                        self.state.show_about = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Preferences…").clicked() {
+                        self.state.show_preferences = true;
+                        ui.close_menu();
+                    };
+                });
+            });
         });
 
         // ── Address bar ───────────────────────────────────────────────────

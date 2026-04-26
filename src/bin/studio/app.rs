@@ -119,6 +119,30 @@ impl App {
 
         let saved_show_log = s.show_log.unwrap_or(false);
 
+        // Load monitor ICC profile from settings or auto-detect
+        let mut deferred_logs: Vec<String> = Vec::new();
+        let monitor_icc_profile = match s.monitor_icc_override {
+            Some(ref path) => {
+                let path = PathBuf::from(path);
+                if path.is_file() {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        Some(bytes)
+                    } else {
+                        deferred_logs.push(format!(
+                            "⚠ Failed to read monitor ICC: {}",
+                            path.display()
+                        ));
+                        monitor_icc::get_monitor_profile()
+                    }
+                } else {
+                    deferred_logs
+                        .push(format!("⚠ Monitor ICC not found: {}", path.display()));
+                    monitor_icc::get_monitor_profile()
+                }
+            }
+            None => monitor_icc::get_monitor_profile(),
+        };
+
         let mut state = AppState::new(
             thumb_tx,
             thumb_rx,
@@ -134,7 +158,7 @@ impl App {
             s.printer_name,
             s.page_size_name,
             s.user_border_in,
-            monitor_icc::get_monitor_profile(),
+            monitor_icc_profile,
             printer_discovery::spawn_discovery(),
             saved_show_log,
             s.bpc.unwrap_or(true),
@@ -142,6 +166,9 @@ impl App {
         state.pending_extra_option_indices = s.extra_option_indices;
         state.pending_media_type_key = s.media_type_key;
         state.pending_input_slot_key = s.input_slot_key;
+        state.monitor_icc_override = s.monitor_icc_override.clone();
+        state.pref_override_checked = s.monitor_icc_override.is_some();
+        state.log.extend(deferred_logs);
 
         if state.monitor_icc_profile.is_none() {
             state.log.push("⚠ No monitor ICC profile found".into());

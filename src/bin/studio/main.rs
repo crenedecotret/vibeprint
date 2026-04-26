@@ -13,6 +13,24 @@ use app::{save_settings, App};
 use types::{Engine, IccProfileFilter, Intent, LEFT_W, RIGHT_W};
 
 use eframe::egui;
+use image;
+
+/// VibePrint Studio icon embedded directly in the binary
+static APP_ICON_BYTES: &[u8] = include_bytes!("../../../assets/icons/vibeprint-studio.png");
+
+/// Load the embedded icon
+fn load_app_icon() -> Option<egui::IconData> {
+    if let Ok(img) = image::load_from_memory(APP_ICON_BYTES) {
+        let rgba = img.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        return Some(egui::IconData {
+            rgba: rgba.into_raw(),
+            width,
+            height,
+        });
+    }
+    None
+}
 
 impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -69,6 +87,7 @@ impl eframe::App for App {
             input_slot_key: self.state.caps.as_ref()
                 .and_then(|c| c.input_slots.get(self.state.props_slot_idx))
                 .map(|(k, _)| k.clone()),
+            monitor_icc_override: self.state.monitor_icc_override.clone(),
         });
     }
 
@@ -107,6 +126,12 @@ impl eframe::App for App {
         }
         if self.state.show_custom_size_modal {
             self.show_custom_size_modal(ctx);
+        }
+        if self.state.show_about {
+            self.show_about(ctx);
+        }
+        if self.state.show_preferences {
+            self.show_preferences(ctx);
         }
 
         // Show splash screen during printer discovery
@@ -208,11 +233,18 @@ fn main() -> eframe::Result<()> {
         None
     };
 
+    // Build viewport with optional custom icon
+    let mut viewport_builder = eframe::egui::ViewportBuilder::default()
+        .with_title("VibePrint Studio")
+        .with_inner_size([1280.0, 800.0])
+        .with_min_inner_size([900.0, 600.0]);
+
+    if let Some(icon) = load_app_icon() {
+        viewport_builder = viewport_builder.with_icon(icon);
+    }
+
     let opts = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("VibePrint Studio")
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([900.0, 600.0]),
+        viewport: viewport_builder,
         ..Default::default()
     };
 

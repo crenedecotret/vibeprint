@@ -1,6 +1,8 @@
 use eframe::egui::{self, Color32, RichText, Vec2};
 
-use crate::types::{Engine, Intent, ProcState, RightTab, FIT_PAGE_IDX, PRINT_SIZES};
+use crate::types::{
+    Engine, IccPickerContext, Intent, ProcState, RightTab, FIT_PAGE_IDX, PRINT_SIZES,
+};
 use crate::utils::check_size_fit;
 use crate::App;
 
@@ -256,6 +258,8 @@ impl App {
                     if self.state.icc_scan_pending {
                         ui.label("Scanning...");
                     } else if ui.small_button("…").clicked() {
+                        // Set picker context to Output ICC selection
+                        self.state.icc_picker_context = IccPickerContext::Output;
                         use crate::icc::scan_icc_directories;
                         use std::sync::mpsc::channel;
                         let (tx, rx) = channel::<Vec<crate::types::IccProfileEntry>>();
