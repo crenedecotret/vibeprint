@@ -1220,7 +1220,7 @@ fn save_rgb8_tiff_with_dpi(
     output_icc_bytes: &[u8],
     description: &str,
 ) -> Result<()> {
-    use tiff::encoder::{colortype, TiffEncoder, Compression};
+    use tiff::encoder::{colortype, Compression, DeflateLevel, TiffEncoder};
     use tiff::tags::Tag;
 
     if dpi <= 0.0 {
@@ -1231,7 +1231,7 @@ fn save_rgb8_tiff_with_dpi(
         .with_context(|| format!("failed to create output file: {}", path.display()))?;
     let mut encoder = TiffEncoder::new(file)
         .context("failed to create TIFF encoder")?
-        .with_compression(Compression::Lzw);
+        .with_compression(Compression::Deflate(DeflateLevel::Balanced));
     let mut image = encoder
         .new_image::<colortype::RGB8>(img.width(), img.height())
         .context("failed to create 8-bit TIFF image")?;
@@ -1266,7 +1266,7 @@ fn save_rgb16_tiff_with_dpi(
     output_icc_bytes: &[u8],
     description: &str,
 ) -> Result<()> {
-    use tiff::encoder::{colortype, TiffEncoder, Compression};
+    use tiff::encoder::{colortype, Compression, DeflateLevel, TiffEncoder};
     use tiff::tags::Tag;
 
     if dpi <= 0.0 {
@@ -1277,7 +1277,7 @@ fn save_rgb16_tiff_with_dpi(
         .with_context(|| format!("failed to create output file: {}", path.display()))?;
     let mut encoder = TiffEncoder::new(file)
         .context("failed to create TIFF encoder")?
-        .with_compression(Compression::Lzw);
+        .with_compression(Compression::Deflate(DeflateLevel::Balanced));
     let mut image = encoder
         .new_image::<colortype::RGB16>(img.width(), img.height())
         .context("failed to create TIFF image")?;

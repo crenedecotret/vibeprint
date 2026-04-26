@@ -1,4 +1,4 @@
-use std::{fs::File, io::BufReader, path::Path};
+use std::{fs::File, io::BufReader, path::Path, process::Command};
 
 use anyhow::{Context, Result};
 use tempfile::tempdir;
@@ -966,6 +966,221 @@ fn pipeline_validation_suite() -> Result<()> {
     assert!(
         r != expected_mid || g != expected_mid || b != expected_mid,
         "expected ICC transform to shift mid-gray away from exact 32768"
+    );
+
+    Ok(())
+}
+
+/// Validates that the print pipeline (tiff2ps → gs → PDF) preserves pixel data exactly,
+/// regardless of TIFF compression method (LZW or Deflate).
+/// This test ensures printer output is "unmolested" through the conversion chain.
+#[test]
+fn print_pipeline_pdf_output_is_unmodified() -> Result<()> {
+    let tmp = tempdir().context("failed to create tempdir")?;
+    let input_path = tmp.path().join("test_input.tif");
+    let output_path = tmp.path().join("test_output.tif");
+    let output_icc_path = tmp.path().join("test_profile.icc");
+    let pdf_path = tmp.path().join("test_output.pdf");
+
+    // Create a wide gamut profile for the test
+    let wide_bytes = make_wide_gamut_profile_bytes()?;
+    std::fs::write(&output_icc_path, &wide_bytes)?;
+
+    // Create a synthetic 64x64 test pattern with known values
+    let input_w = 64u32;
+    let input_h = 64u32;
+    let input_dpi = 360.0f64;
+    {
+        use tiff::encoder::{colortype, Compression, DeflateLevel, TiffEncoder};
+        use tiff::tags::Tag;
+
+        let mut data: Vec<u16> = vec![0; (input_w * input_h * 3) as usize];
+        for y in 0..input_h {
+            for x in 0..input_w {
+                let r = ((x * 1000) % 65535) as u16;
+                let g = ((y * 1000) % 65535) as u16;
+                let b = (((x + y) * 500) % 65535) as u16;
+                let idx = ((y * input_w + x) * 3) as usize;
+                data[idx] = r;
+                data[idx + 1] = g;
+                data[idx + 2] = b;
+            }
+        }
+
+        let file = File::create(&input_path)?;
+        let mut encoder = TiffEncoder::new(file)?
+            .with_compression(Compression::Deflate(DeflateLevel::Balanced));
+        let mut image = encoder.new_image::<colortype::RGB16>(input_w, input_h)?;
+
+        let (n, d) = dpi_to_rational(input_dpi);
+        let _ = image
+            .encoder()
+            .write_tag(Tag::XResolution, tiff::encoder::Rational { n, d });
+        let _ = image
+            .encoder()
+            .write_tag(Tag::YResolution, tiff::encoder::Rational { n, d });
+        let _ = image.encoder().write_tag(Tag::ResolutionUnit, 2u16);
+        image.write_data(&data)?;
+    }
+
+    // Process through vibeprint pipeline
+    let target_dpi = 720.0;
+    vibeprint::processor::process(vibeprint::processor::ProcessOptions {
+        input: input_path,
+        output: output_path.clone(),
+        input_icc: None,
+        output_icc: Some(output_icc_path),
+        default_wide_output_when_unset: false,
+        target_dpi,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: true,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 16,
+        sharpen: 0,
+        page_layout: None,
+    })?;
+
+    // Read the processed TIFF pixels
+    let processed_pixels = read_tiff_pixels_u16(&output_path)?;
+    let (out_w, out_h) = {
+        let file = File::open(&output_path)?;
+        let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))?;
+        decoder.dimensions()?
+    };
+
+    // Run the print pipeline: tiff2ps → gs → PDF
+    // Use smaller 4x4 inch page to avoid decoder limits (288 pts = 4 inches)
+    let paper_w_pts = 288.0f32;
+    let paper_h_pts = 288.0f32;
+    let img_w_pts = out_w as f32 / target_dpi as f32 * 72.0;
+    let img_h_pts = out_h as f32 / target_dpi as f32 * 72.0;
+    let offset_x = ((paper_w_pts - img_w_pts) / 2.0).max(0.0);
+    let offset_y = ((paper_h_pts - img_h_pts) / 2.0).max(0.0);
+
+    fn shell_quote(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "'\"'\"'"))
+    }
+
+    let tiff_path_q = shell_quote(&output_path.display().to_string());
+    let pdf_path_q = shell_quote(&pdf_path.display().to_string());
+
+    let gs_cmd = format!(
+        "{{ echo 'gsave {:.4} {:.4} translate'; tiff2ps {}; echo 'grestore'; }} \
+         | gs -q -o {} -sDEVICE=pdfwrite \
+         -sColorConversionStrategy=LeaveColorUnchanged \
+         -dNOTRANSPARENCY \
+         -dDEVICEWIDTHPOINTS={:.4} -dDEVICEHEIGHTPOINTS={:.4} -dFIXEDMEDIA \
+         -dAutoFilterColorImages=false -sColorImageFilter=FlateEncode \
+         -dAutoFilterGrayImages=false -sGrayImageFilter=FlateEncode \
+         -dDownsampleColorImages=false -dDownsampleGrayImages=false \
+         -",
+        offset_x, offset_y, tiff_path_q, pdf_path_q, paper_w_pts, paper_h_pts
+    );
+
+    let gs_output = Command::new("sh")
+        .arg("-c")
+        .arg(&gs_cmd)
+        .output()
+        .context("Failed to run Ghostscript PDF conversion")?;
+
+    if !gs_output.status.success() {
+        let stderr = String::from_utf8_lossy(&gs_output.stderr);
+        anyhow::bail!("PDF conversion failed: {}", stderr);
+    }
+
+    assert!(pdf_path.exists(), "PDF output file was not created");
+
+    // Extract pixels from PDF using Ghostscript (tiff48nc = 16-bit RGB)
+    let extracted_tiff_path = tmp.path().join("extracted_from_pdf.tif");
+    let extract_cmd = format!(
+        "gs -q -o {} -sDEVICE=tiff48nc -r{} -dNOPAUSE -dBATCH {}",
+        shell_quote(&extracted_tiff_path.display().to_string()),
+        target_dpi as u32,
+        shell_quote(&pdf_path.display().to_string())
+    );
+
+    let extract_output = Command::new("sh")
+        .arg("-c")
+        .arg(&extract_cmd)
+        .output()
+        .context("Failed to extract pixels from PDF")?;
+
+    if !extract_output.status.success() {
+        let stderr = String::from_utf8_lossy(&extract_output.stderr);
+        anyhow::bail!("PDF pixel extraction failed: {}", stderr);
+    }
+
+    // Read extracted pixels (16-bit)
+    let extracted_pixels = read_tiff_pixels_u16(&extracted_tiff_path)?;
+    let (extracted_w, extracted_h) = {
+        let file = File::open(&extracted_tiff_path)?;
+        let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))?;
+        decoder.dimensions()?
+    };
+
+    // Calculate expected image position in extracted PDF
+    let pdf_w_px = ((paper_w_pts / 72.0 * target_dpi as f32).round()) as u32;
+    let pdf_h_px = ((paper_h_pts / 72.0 * target_dpi as f32).round()) as u32;
+    let margin_left = ((pdf_w_px - out_w) / 2).max(0) as usize;
+    let margin_top = ((pdf_h_px - out_h) / 2).max(0) as usize;
+
+    // Extract the image region from PDF-extracted data
+    let mut pdf_image_pixels: Vec<u16> = Vec::with_capacity(processed_pixels.len());
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let pdf_x = margin_left + x as usize;
+            let pdf_y = margin_top + y as usize;
+            if pdf_x < extracted_w as usize && pdf_y < extracted_h as usize {
+                let idx = ((pdf_y * extracted_w as usize + pdf_x) * 3) as usize;
+                if idx + 2 < extracted_pixels.len() {
+                    pdf_image_pixels.push(extracted_pixels[idx]);
+                    pdf_image_pixels.push(extracted_pixels[idx + 1]);
+                    pdf_image_pixels.push(extracted_pixels[idx + 2]);
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        pdf_image_pixels.len(),
+        processed_pixels.len(),
+        "PDF extracted pixel count mismatch"
+    );
+
+    // Compare pixels with tolerance
+    let tolerance = 256u16;
+    let mut max_diff = 0u16;
+    let mut diff_count = 0usize;
+
+    for (_i, (orig, extracted)) in processed_pixels.iter().zip(&pdf_image_pixels).enumerate() {
+        let diff = if orig > extracted { orig - extracted } else { extracted - orig };
+        if diff > max_diff {
+            max_diff = diff;
+        }
+        if diff > tolerance {
+            diff_count += 1;
+        }
+    }
+
+    let total_pixels = processed_pixels.len() / 3;
+    let diff_percent = (diff_count as f64 / total_pixels as f64) * 100.0;
+
+    println!(
+        "PDF pipeline: {}x{} image, {} pixels, {} diffs ({:.2}%), max_diff={}",
+        out_w, out_h, total_pixels, diff_count, diff_percent, max_diff
+    );
+
+    assert!(
+        diff_percent < 1.0,
+        "PDF pipeline modified too many pixels: {}% differ by >{}",
+        diff_percent,
+        tolerance
+    );
+
+    assert!(
+        max_diff < tolerance * 2,
+        "PDF pipeline introduced large pixel errors: max_diff={}",
+        max_diff
     );
 
     Ok(())
