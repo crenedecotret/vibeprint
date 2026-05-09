@@ -339,13 +339,8 @@ fn choose_orientation_for_flow_with_state(
         if alt_cost < pref_cost {
             return (alt_w_px, alt_h_px, alt_rotate);
         }
-        if alt_cost == pref_cost {
-            let pref_cap = packing_capacity(pref_w_px, pref_h_px, page_w_px, page_h_px, spacing_px);
-            let alt_cap = packing_capacity(alt_w_px, alt_h_px, page_w_px, page_h_px, spacing_px);
-            if alt_cap > pref_cap {
-                return (alt_w_px, alt_h_px, alt_rotate);
-            }
-        }
+        // Don't use packing capacity to override source-based preference
+        // Source orientation should be respected when both fit equally
         return (pref_w_px, pref_h_px, pref_rotate);
     }
 
