@@ -58,6 +58,7 @@ pub struct QueuedImage {
     pub crop_v0: Option<f32>,
     pub crop_u1: Option<f32>,
     pub crop_v1: Option<f32>,
+    pub crop_inverted: bool,
     pub border_type: BorderType,
     pub border_width_pt: f32,
 }
@@ -128,12 +129,12 @@ pub fn layout_queue(
             w_in = w_in.max(0.01);
             h_in = h_in.max(0.01);
 
-            // For outer borders, expand the cell size
-            if item.border_type == BorderType::Outer {
-                let border_in = item.border_width_pt / 72.0;
-                w_in += border_in * 2.0;
-                h_in += border_in * 2.0;
-            }
+            // Store border expansion amount to apply AFTER orientation selection
+            let border_expansion_in = if item.border_type == BorderType::Outer {
+                item.border_width_pt / 72.0
+            } else {
+                0.0
+            };
 
             // Use same orientation logic as normal flow (cursor at 0,0 on fresh page)
             let (box_w_px, box_h_px, rotate) = choose_orientation_for_flow_with_state(
@@ -148,6 +149,11 @@ pub fn layout_queue(
                 page_h_px,
                 spacing_px,
             );
+
+            // Apply border expansion AFTER orientation is decided
+            let border_px = (border_expansion_in * dpi as f32).round() as u32;
+            let box_w_px = box_w_px.saturating_add(border_px * 2);
+            let box_h_px = box_h_px.saturating_add(border_px * 2);
 
             // Calculate center position based on actual box size (including outer border expansion)
             let x_px = (page_w_px.saturating_sub(box_w_px)) / 2;
@@ -176,12 +182,12 @@ pub fn layout_queue(
         w_in = w_in.max(0.01);
         h_in = h_in.max(0.01);
 
-        // For outer borders, expand the cell size so layout accounts for the border
-        if item.border_type == BorderType::Outer {
-            let border_in = item.border_width_pt / 72.0;
-            w_in += border_in * 2.0;
-            h_in += border_in * 2.0;
-        }
+        // Store border expansion amount to apply AFTER orientation selection
+        let border_expansion_in = if item.border_type == BorderType::Outer {
+            item.border_width_pt / 72.0
+        } else {
+            0.0
+        };
 
         let (box_w_px, box_h_px, rotate) = choose_orientation_for_flow_with_state(
             item.src_size_px,
@@ -195,6 +201,11 @@ pub fn layout_queue(
             page_h_px,
             spacing_px,
         );
+
+        // Apply border expansion AFTER orientation is decided
+        let border_px = (border_expansion_in * dpi as f32).round() as u32;
+        let box_w_px = box_w_px.saturating_add(border_px * 2);
+        let box_h_px = box_h_px.saturating_add(border_px * 2);
 
         if cursor_x > 0 && cursor_x.saturating_add(box_w_px) > page_w_px {
             cursor_x = 0;
@@ -487,14 +498,15 @@ mod tests {
             placed_w_px: 0,
             placed_h_px: 0,
             src_size_px: Some(src),
-            crop_enabled: false,
-            crop_u0: None,
-            crop_v0: None,
-            crop_u1: None,
-            crop_v1: None,
-            border_type: BorderType::None,
-            border_width_pt: 0.0,
-        }
+crop_enabled: false,
+             crop_u0: None,
+             crop_v0: None,
+             crop_u1: None,
+             crop_v1: None,
+             crop_inverted: false,
+             border_type: BorderType::None,
+             border_width_pt: 0.0,
+         }
     }
 
     fn queued_fit(id: Uuid, src: (u32, u32)) -> QueuedImage {
@@ -515,14 +527,15 @@ mod tests {
             placed_w_px: 0,
             placed_h_px: 0,
             src_size_px: Some(src),
-            crop_enabled: false,
-            crop_u0: None,
-            crop_v0: None,
-            crop_u1: None,
-            crop_v1: None,
-            border_type: BorderType::None,
-            border_width_pt: 0.0,
-        }
+crop_enabled: false,
+             crop_u0: None,
+             crop_v0: None,
+             crop_u1: None,
+             crop_v1: None,
+             crop_inverted: false,
+             border_type: BorderType::None,
+             border_width_pt: 0.0,
+         }
     }
 
     #[test]

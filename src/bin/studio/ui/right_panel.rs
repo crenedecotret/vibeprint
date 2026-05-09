@@ -585,77 +585,97 @@ impl App {
                     if crop_response.changed() {
                         // Get imageable size before mutable borrow
                         let (ia_w_in, ia_h_in) = self.imageable_size_in();
-                        if let Some(item) = self.selected_queue_mut() {
-                            item.crop_enabled = crop_enabled;
-                            if crop_enabled {
-                                // Calculate and store auto-crop UVs for the target cell
-                                let (w_in, h_in) = if item.fit_to_page {
-                                    (ia_w_in, ia_h_in)
-                                } else {
-                                    item.size.as_inches()
-                                };
+if let Some(item) = self.selected_queue_mut() {
+                                    item.crop_enabled = crop_enabled;
+                                    if crop_enabled {
+                                        // Calculate and store auto-crop UVs for the target cell
+                                        let (w_in, h_in) = if item.fit_to_page {
+                                            (ia_w_in, ia_h_in)
+                                        } else {
+                                            item.size.as_inches()
+                                        };
 
-                                // Calculate oriented box and rotation
-                                let (sw, sh) = item.src_size_px.unwrap_or((1, 1));
-                                let src_landscape = (sw as f32) > (sh as f32);
-                                let (oriented_w, oriented_h) = if src_landscape {
-                                    (h_in, w_in)
-                                } else {
-                                    (w_in, h_in)
-                                };
+                                        // Calculate oriented box and rotation
+                                        let (sw, sh) = item.src_size_px.unwrap_or((1, 1));
+                                        let src_landscape = (sw as f32) > (sh as f32);
+                                        let (oriented_w, oriented_h) = if src_landscape {
+                                            (h_in, w_in)
+                                        } else {
+                                            (w_in, h_in)
+                                        };
 
-                                // Calculate if rotation is needed
-                                let fitted_area_no_rotate = {
-                                    let s = (oriented_w / sw as f32).min(oriented_h / sh as f32);
-                                    (sw as f32 * s) * (sh as f32 * s)
-                                };
-                                let fitted_area_rotate = {
-                                    let s = (oriented_w / sh as f32).min(oriented_h / sw as f32);
-                                    (sh as f32 * s) * (sw as f32 * s)
-                                };
-                                let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+                                        // Calculate if rotation is needed
+                                        let fitted_area_no_rotate = {
+                                            let s = (oriented_w / sw as f32).min(oriented_h / sh as f32);
+                                            (sw as f32 * s) * (sh as f32 * s)
+                                        };
+                                        let fitted_area_rotate = {
+                                            let s = (oriented_w / sh as f32).min(oriented_h / sw as f32);
+                                            (sh as f32 * s) * (sw as f32 * s)
+                                        };
+                                        let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
 
-                                // For crop calculation, swap dimensions if rotation is needed
-                                let (calc_w, calc_h) = if will_rotate {
-                                    (oriented_h, oriented_w)
-                                } else {
-                                    (oriented_w, oriented_h)
-                                };
+                                        // For crop calculation, swap dimensions if rotation is needed
+                                        let (calc_w, calc_h) = if will_rotate {
+                                            (oriented_h, oriented_w)
+                                        } else {
+                                            (oriented_w, oriented_h)
+                                        };
 
-                                // Adjust for inner border
-                                let (calc_w, calc_h) = if item.border_type
-                                    == vibeprint::layout_engine::BorderType::Inner
-                                    && item.border_width_pt > 0.0
-                                {
-                                    let border_in = item.border_width_pt / 72.0;
-                                    (
-                                        (calc_w - border_in * 2.0).max(0.1),
-                                        (calc_h - border_in * 2.0).max(0.1),
-                                    )
-                                } else {
-                                    (calc_w, calc_h)
-                                };
+                                        // For outer borders, expand the cell size to match layout engine.
+                                        // IMPORTANT: When crop_inverted, swap dimensions BEFORE expansion
+                                        // so the border is applied to the correct (swapped) dimensions.
+                                        let (calc_w, calc_h) = if item.border_type
+                                            == vibeprint::layout_engine::BorderType::Outer
+                                            && item.border_width_pt > 0.0
+                                        {
+                                            let border_in = item.border_width_pt / 72.0;
+                                            let (expand_w, expand_h) = if item.crop_inverted {
+                                                (calc_h, calc_w) // Swap before expansion
+                                            } else {
+                                                (calc_w, calc_h)
+                                            };
+                                            let (expanded_w, expanded_h) = (
+                                                expand_w + border_in * 2.0,
+                                                expand_h + border_in * 2.0,
+                                            );
+                                            if item.crop_inverted {
+                                                (expanded_h, expanded_w) // Swap back
+                                            } else {
+                                                (expanded_w, expanded_h)
+                                            }
+                                        } else {
+                                            (calc_w, calc_h)
+                                        };
 
-                                // Calculate auto-crop UVs
-                                let (u0, v0, u1, v1) = crate::utils::calc_crop_uv(
-                                    calc_w,
-                                    calc_h,
-                                    sw,
-                                    sh,
-                                    will_rotate,
-                                    true,
-                                    None,
-                                );
-                                item.crop_u0 = Some(u0);
-                                item.crop_v0 = Some(v0);
-                                item.crop_u1 = Some(u1);
-                                item.crop_v1 = Some(v1);
+                                        // Calculate auto-crop UVs
+                                        // When inverted, flip the rotation decision to match processor logic
+                                        let will_rotate_for_uv = if item.crop_inverted {
+                                            !will_rotate
+                                        } else {
+                                            will_rotate
+                                        };
+                                        let (u0, v0, u1, v1) = crate::utils::calc_crop_uv(
+                                            calc_w,
+                                            calc_h,
+                                            sw,
+                                            sh,
+                                            will_rotate_for_uv,
+                                            true,
+                                            None,
+                                        );
+                                        item.crop_u0 = Some(u0);
+                                        item.crop_v0 = Some(v0);
+                                        item.crop_u1 = Some(u1);
+                                        item.crop_v1 = Some(v1);
+                                        item.crop_inverted = false;
                             } else {
                                 // When disabling crop, clear custom UVs to restore full image
                                 item.crop_u0 = None;
                                 item.crop_v0 = None;
                                 item.crop_u1 = None;
                                 item.crop_v1 = None;
+                                item.crop_inverted = false;
                             }
                             self.mark_preview_dirty();
                         }
@@ -679,22 +699,26 @@ impl App {
                     {
                         if let Some(q) = self.selected_queue() {
                             // Initialize crop editor with current UVs or auto-calculated
-                            let (ia_w_in, ia_h_in) = self.imageable_size_in();
+                            // Extract all data from q before modifying state
+                            let crop_inverted = q.crop_inverted;
                             let stored_uv = match (q.crop_u0, q.crop_v0, q.crop_u1, q.crop_v1) {
                                 (Some(u0), Some(v0), Some(u1), Some(v1)) => Some((u0, v0, u1, v1)),
                                 _ => None,
                             };
                             let (w_in, h_in) = if q.fit_to_page {
-                                (ia_w_in, ia_h_in)
+                                self.imageable_size_in()
                             } else {
                                 q.size.as_inches()
                             };
-
-                            // Calculate oriented box and rotation like modals.rs
                             let (sw, sh) = q.src_size_px.unwrap_or((1, 1));
                             let src_w = sw as f32;
                             let src_h = sh as f32;
                             let src_landscape = src_w > src_h;
+                            let border_type = q.border_type;
+                            let border_width_pt = q.border_width_pt;
+                            
+                            // Now safe to modify state
+                            self.state.crop_editor_inverted = crop_inverted;
 
                             // Orient print size to match image aspect ratio
                             let (oriented_w, oriented_h) = if src_landscape {
@@ -722,27 +746,41 @@ impl App {
                                 (oriented_w, oriented_h)
                             };
 
-                            // Adjust for inner border: crop should fit in the inner area
-                            let (calc_w, calc_h) = if q.border_type
-                                == vibeprint::layout_engine::BorderType::Inner
-                                && q.border_width_pt > 0.0
+                            // For outer borders, expand the cell size to match layout engine.
+                            // IMPORTANT: When crop_inverted, swap dimensions BEFORE expansion
+                            // so the border is applied to the correct (swapped) dimensions.
+                            let (final_w, final_h) = if border_type
+                                == vibeprint::layout_engine::BorderType::Outer
+                                && border_width_pt > 0.0
                             {
-                                let border_in = q.border_width_pt / 72.0; // Convert pt to inches
-                                (
-                                    (calc_w - border_in * 2.0).max(0.1),
-                                    (calc_h - border_in * 2.0).max(0.1),
-                                )
+                                let border_in = border_width_pt / 72.0;
+                                let (expand_w, expand_h) = if crop_inverted {
+                                    (calc_h, calc_w) // Swap before expansion
+                                } else {
+                                    (calc_w, calc_h)
+                                };
+                                let (expanded_w, expanded_h) = (
+                                    expand_w + border_in * 2.0,
+                                    expand_h + border_in * 2.0,
+                                );
+                                if crop_inverted {
+                                    (expanded_h, expanded_w) // Swap back
+                                } else {
+                                    (expanded_w, expanded_h)
+                                }
                             } else {
                                 (calc_w, calc_h)
                             };
 
-                            let auto_uv = if q.src_size_px.is_some() {
+let auto_uv = if sw != 0 && sh != 0 {
+                                // When inverted, flip the rotation decision to match processor logic.
+                                let will_rotate_for_uv = if crop_inverted { !will_rotate } else { will_rotate };
                                 let uv = crate::utils::calc_crop_uv(
-                                    calc_w,
-                                    calc_h,
+                                    final_w,
+                                    final_h,
                                     sw,
                                     sh,
-                                    will_rotate,
+                                    will_rotate_for_uv,
                                     true,
                                     None,
                                 );
@@ -867,7 +905,7 @@ impl App {
                 let has_queue_selection = self.selected_queue().is_some();
                 let show_width = border_type != vibeprint::layout_engine::BorderType::None;
 
-                // Calculate max border: 20% of longest cell side in points
+                // Calculate max border: 20% of longest cell side, but also ensure outer border fits within imageable area
                 let max_border_pt = if let Some(item) = self.selected_queue() {
                     let (cell_w_in, cell_h_in) = if item.fit_to_page {
                         let (ia_w_in, ia_h_in) = self.imageable_size_in();
@@ -877,7 +915,18 @@ impl App {
                     };
                     let longest_side_in = cell_w_in.max(cell_h_in);
                     // 20% of longest side in inches, convert to points (1 inch = 72 pt)
-                    longest_side_in * 0.2 * 72.0
+                    let percentage_max = longest_side_in * 0.2 * 72.0;
+
+                    // For outer borders, also constrain by imageable area
+                    if border_type == vibeprint::layout_engine::BorderType::Outer && !item.fit_to_page {
+                        let (ia_w_in, ia_h_in) = self.imageable_size_in();
+                        let max_from_width = ((ia_w_in - cell_w_in) / 2.0).max(0.0) * 72.0;
+                        let max_from_height = ((ia_h_in - cell_h_in) / 2.0).max(0.0) * 72.0;
+                        let space_constrained_max = max_from_width.min(max_from_height);
+                        percentage_max.min(space_constrained_max)
+                    } else {
+                        percentage_max
+                    }
                 } else {
                     20.16 // Default max if no selection (20% of 1.4" at 72pt/inch)
                 };
@@ -918,102 +967,14 @@ impl App {
                         && border_type != vibeprint::layout_engine::BorderType::None;
 
                     if type_changed || width_changed {
-                        // Get imageable size before mutable borrow
-                        let (ia_w_in, ia_h_in) = self.imageable_size_in();
                         if let Some(item) = self.selected_queue_mut() {
                             // Apply aesthetic default if border is being enabled for the first time
                             if border_enabled {
                                 border_width_pt = default_border_pt;
                             }
-                            // If we have a custom crop, recalculate it for the new visible area
-                            // while preserving the center point of focus
-                            if let (Some(u0), Some(v0), Some(u1), Some(v1)) =
-                                (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1)
-                            {
-                                // Get the print size for calculating cell aspect ratio
-                                let (w_in, h_in) = if item.fit_to_page {
-                                    (ia_w_in, ia_h_in)
-                                } else {
-                                    item.size.as_inches()
-                                };
-
-                                // Calculate oriented box and rotation like crop editor
-                                let (sw, sh) = item.src_size_px.unwrap_or((1, 1));
-                                let src_landscape = (sw as f32) > (sh as f32);
-                                let (oriented_w, oriented_h) = if src_landscape {
-                                    (h_in, w_in)
-                                } else {
-                                    (w_in, h_in)
-                                };
-
-                                // Calculate if rotation is needed (compare fitted areas)
-                                let fitted_area_no_rotate = {
-                                    let s = (oriented_w / sw as f32).min(oriented_h / sh as f32);
-                                    (sw as f32 * s) * (sh as f32 * s)
-                                };
-                                let fitted_area_rotate = {
-                                    let s = (oriented_w / sh as f32).min(oriented_h / sw as f32);
-                                    (sh as f32 * s) * (sw as f32 * s)
-                                };
-                                let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
-
-                                let (full_w, full_h) = if will_rotate {
-                                    (oriented_h, oriented_w)
-                                } else {
-                                    (oriented_w, oriented_h)
-                                };
-
-                                // Calculate new visible area size
-                                let new_border_in = border_width_pt / 72.0; // Convert pt to inches
-                                let new_is_inner =
-                                    border_type == vibeprint::layout_engine::BorderType::Inner;
-                                let (new_visible_w, new_visible_h) =
-                                    if new_is_inner && new_border_in > 0.0 {
-                                        (
-                                            (full_w - new_border_in * 2.0).max(0.1),
-                                            (full_h - new_border_in * 2.0).max(0.1),
-                                        )
-                                    } else {
-                                        (full_w, full_h)
-                                    };
-
-                                // Preserve the center point AND zoom level from the current crop
-                                let old_center_u = (u0 + u1) / 2.0;
-                                let old_center_v = (v0 + v1) / 2.0;
-                                let old_crop_w = u1 - u0;
-                                let old_crop_h = v1 - v0;
-                                let old_crop_area = old_crop_w * old_crop_h;
-
-                                // Calculate target aspect ratio based on new cell shape vs source
-                                let sw_f = sw as f32;
-                                let sh_f = sh as f32;
-                                let src_aspect = if will_rotate {
-                                    sh_f / sw_f
-                                } else {
-                                    sw_f / sh_f
-                                };
-                                let box_aspect = new_visible_w / new_visible_h;
-                                // Target aspect for the crop to fill the new cell properly
-                                let target_aspect = box_aspect / src_aspect;
-
-                                // Adjust crop dimensions to match target aspect while preserving area (zoom level)
-                                // aspect = w/h, area = w*h, so: w = sqrt(area * aspect), h = sqrt(area / aspect)
-                                let new_crop_w = (old_crop_area * target_aspect).sqrt();
-                                let new_crop_h = (old_crop_area / target_aspect).sqrt();
-
-                                // Build new crop around the preserved center point
-                                let half_w = new_crop_w / 2.0;
-                                let half_h = new_crop_h / 2.0;
-                                let new_u0 = (old_center_u - half_w).max(0.0);
-                                let new_v0 = (old_center_v - half_h).max(0.0);
-                                let new_u1 = (old_center_u + half_w).min(1.0);
-                                let new_v1 = (old_center_v + half_h).min(1.0);
-
-                                item.crop_u0 = Some(new_u0);
-                                item.crop_u1 = Some(new_u1);
-                                item.crop_v0 = Some(new_v0);
-                                item.crop_v1 = Some(new_v1);
-                            }
+                            // NOTE: Do NOT recalculate UVs for border changes.
+                            // Borders only affect display (cell expansion or display rect shrinking),
+                            // not which portion of the image is shown. The UVs (crop selection) stay the same.
 
                             item.border_type = border_type;
                             item.border_width_pt = border_width_pt.min(max_border_pt); // Clamp to max for this cell size

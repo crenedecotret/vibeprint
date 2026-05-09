@@ -770,6 +770,7 @@ impl App {
                 };
 
                 // Calculate if layout engine will rotate - same logic as layout_engine.rs
+                // IMPORTANT: Use ORIGINAL dimensions, not swapped (inversion affects UVs, not will_rotate)
                 let src_w = if let Some((sw, _sh)) = q_src_size_px {
                     sw as f32
                 } else {
@@ -811,21 +812,35 @@ impl App {
                     (oriented_w, oriented_h)
                 };
 
-                // Adjust for inner border: crop should fit in the inner area
-                let (target_w, target_h) = if q_border_type
-                    == vibeprint::layout_engine::BorderType::Inner
+                // For outer borders, expand the cell size to match layout engine behavior.
+                // IMPORTANT: When crop_inverted, swap dimensions BEFORE expansion
+                // so the border is applied to the correct (swapped) dimensions.
+                let (final_w, final_h) = if q_border_type
+                    == vibeprint::layout_engine::BorderType::Outer
                     && q_border_width_pt > 0.0
                 {
-                    let border_in = q_border_width_pt / 72.0; // Convert pt to inches
-                    (
-                        (target_w - border_in * 2.0).max(0.1),
-                        (target_h - border_in * 2.0).max(0.1),
-                    )
+                    let border_in = q_border_width_pt / 72.0;
+                    let (expand_w, expand_h) = if self.state.crop_editor_inverted {
+                        (target_h, target_w) // Swap before expansion
+                    } else {
+                        (target_w, target_h)
+                    };
+                    let (expanded_w, expanded_h) = (
+                        expand_w + border_in * 2.0,
+                        expand_h + border_in * 2.0,
+                    );
+                    if self.state.crop_editor_inverted {
+                        (expanded_h, expanded_w) // Swap back
+                    } else {
+                        (expanded_w, expanded_h)
+                    }
                 } else {
                     (target_w, target_h)
                 };
 
-                let target_aspect = target_w / target_h;
+                // Aspect for the crop selection box
+                // When inverted, the rotation flip will cause the opposite aspect
+                let crop_aspect = final_w / final_h;
 
                 // Downsample image for preview if too large
                 let max_preview_dim = 1024;
@@ -922,6 +937,36 @@ impl App {
                         .insert(tex_name_path, tex.clone());
                     tex
                 };
+
+                // Inverted crop toggle
+                ui.horizontal(|ui| {
+                    let cb = ui.checkbox(&mut self.state.crop_editor_inverted, "Inverted Crop");
+
+                    // Display the actual cell dimensions (don't swap for inverted)
+                    ui.label(format!("({:.1}\u{00d7}{:.1} cell)", target_w, target_h));
+
+                    if cb.changed() {
+                        // Reset crop to auto-calculated for the new orientation.
+                        // When inverted, flip the rotation decision to match processor logic.
+                        let will_rotate_for_uv = if self.state.crop_editor_inverted {
+                            !will_rotate
+                        } else {
+                            will_rotate
+                        };
+                        let auto_uv = if let Some((sw, sh)) = q_src_size_px {
+                            crate::utils::calc_crop_uv(final_w, final_h, sw, sh, will_rotate_for_uv, true, None)
+                        } else {
+                            (0.0, 0.0, 1.0, 1.0)
+                        };
+                        let (u0, v0, u1, v1) = auto_uv;
+                        self.state.crop_editor_uv = auto_uv;
+                        self.state.crop_editor_default_w = u1 - u0;
+                        self.state.crop_editor_default_h = v1 - v0;
+                        self.state.crop_editor_zoom = 1.0;
+                        self.state.crop_editor_center = ((u0 + u1) / 2.0, (v0 + v1) / 2.0);
+                    }
+                });
+                ui.add_space(8.0);
 
                 let preview_aspect = img_w / img_h;
 
@@ -1036,7 +1081,9 @@ impl App {
                 let handle_sense = Sense::click_and_drag();
                 let handle_response = ui.allocate_rect(handle_interact_rect, handle_sense);
 
-                if handle_response.dragged() {
+                // Only respond to primary (left) button drags
+                let handle_primary_dragged = ui.input(|i| i.pointer.primary_down()) && handle_response.dragged();
+                if handle_primary_dragged {
                     if !self.state.crop_editor_resizing {
                         self.state.crop_editor_resizing = true;
                         self.state.crop_editor_resize_start_pos = pointer_pos;
@@ -1050,7 +1097,7 @@ impl App {
 
                             // Calculate resize - using diagonal drag with aspect ratio maintained
                             // Positive delta (drag down-right) = grow, negative = shrink
-                            let delta_pixels = (delta.x + delta.y * target_aspect) / 2.0;
+                            let delta_pixels = (delta.x + delta.y * crop_aspect) / 2.0;
 
                             // Convert pixel delta to UV delta based on current crop display size
                             let (su0, sv0, su1, sv1) = start_uv;
@@ -1063,7 +1110,7 @@ impl App {
 
                             // Grow/shrink from center while maintaining aspect
                             let new_crop_w = (current_crop_w + delta_u).max(0.05).min(1.0);
-                            let new_crop_h = new_crop_w / target_aspect;
+                            let new_crop_h = new_crop_w / crop_aspect;
 
                             let center_u = (su0 + su1) / 2.0;
                             let center_v = (sv0 + sv1) / 2.0;
@@ -1113,7 +1160,9 @@ impl App {
                     let crop_sense = Sense::click_and_drag();
                     let crop_response = ui.allocate_rect(crop_rect, crop_sense);
 
-                    if crop_response.dragged() {
+                    // Only respond to primary (left) button drags to allow right-click for inversion toggle
+                    let primary_dragged = ui.input(|i| i.pointer.primary_down()) && crop_response.dragged();
+                    if primary_dragged {
                         if !self.state.crop_editor_dragging {
                             self.state.crop_editor_dragging = true;
                             self.state.crop_editor_drag_start = pointer_pos;
@@ -1147,6 +1196,42 @@ impl App {
                         self.state.crop_editor_drag_start = None;
                         self.state.crop_editor_drag_start_uv = None;
                     }
+                }
+
+                // 2.5 INVERTED CROP TOGGLE (right-click on image, secondary shortcut)
+                let invert_sense = Sense::click();
+                let invert_response = ui.allocate_rect(image_rect, invert_sense);
+                if !self.state.crop_editor_dragging
+                    && !self.state.crop_editor_resizing
+                    && invert_response.clicked_by(egui::PointerButton::Secondary)
+                {
+                    self.state.crop_editor_inverted = !self.state.crop_editor_inverted;
+                    // Reset crop to auto-calculated for the new orientation.
+                    // When inverted, flip the rotation decision to compute opposite aspect.
+                    let will_rotate_for_uv = if self.state.crop_editor_inverted {
+                        !will_rotate
+                    } else {
+                        will_rotate
+                    };
+                    let auto_uv = if let Some((sw, sh)) = q_src_size_px {
+                        crate::utils::calc_crop_uv(
+                            final_w,
+                            final_h,
+                            sw,
+                            sh,
+                            will_rotate_for_uv,
+                            true,
+                            None,
+                        )
+                    } else {
+                        (0.0, 0.0, 1.0, 1.0)
+                    };
+                    let (u0, v0, u1, v1) = auto_uv;
+                    self.state.crop_editor_uv = auto_uv;
+                    self.state.crop_editor_default_w = u1 - u0;
+                    self.state.crop_editor_default_h = v1 - v0;
+                    self.state.crop_editor_zoom = 1.0;
+                    self.state.crop_editor_center = ((u0 + u1) / 2.0, (v0 + v1) / 2.0);
                 }
 
                 // 3. MOUSE WHEEL ZOOM (when hovering over image)
@@ -1220,19 +1305,20 @@ impl App {
                             )
                             .fill(Color32::from_rgb(60, 120, 200)),
                         );
-                        if apply_btn.clicked() {
-                            // Save UVs to queue item
-                            if let Some(item) =
-                                self.state.queue.iter_mut().find(|qi| qi.id == queue_id)
-                            {
-                                let (u0, v0, u1, v1) = self.state.crop_editor_uv;
-                                item.crop_u0 = Some(u0);
-                                item.crop_v0 = Some(v0);
-                                item.crop_u1 = Some(u1);
-                                item.crop_v1 = Some(v1);
-                                self.relayout_queue();
-                            }
-                            self.state.show_crop_editor = false;
+if apply_btn.clicked() {
+                             // Save UVs to queue item
+                             if let Some(item) =
+                                 self.state.queue.iter_mut().find(|qi| qi.id == queue_id)
+                             {
+                                 let (u0, v0, u1, v1) = self.state.crop_editor_uv;
+                                 item.crop_u0 = Some(u0);
+                                 item.crop_v0 = Some(v0);
+                                 item.crop_u1 = Some(u1);
+                                 item.crop_v1 = Some(v1);
+                                 item.crop_inverted = self.state.crop_editor_inverted;
+                                 self.relayout_queue();
+                             }
+                             self.state.show_crop_editor = false;
                             // Clean up the temporary texture
                             let tex_name: std::path::PathBuf =
                                 format!("crop_preview_{}", q_filepath_str).into();
@@ -1242,16 +1328,16 @@ impl App {
                         // Reset button (middle)
                         if ui.add_sized(btn_size, egui::Button::new("Reset")).clicked() {
                             // Reset to auto-calculated centered crop
-                            // For rotated images, swap dimensions so crop is calculated correctly
-                            // on the original image (will be rotated to match target aspect)
-                            let (calc_w, calc_h) = if will_rotate {
-                                (target_h, target_w)
+                            // Use final_w/final_h which accounts for crop_editor_inverted.
+                            // When inverted, flip the rotation decision to match processor logic.
+                            let will_rotate_for_uv = if self.state.crop_editor_inverted {
+                                !will_rotate
                             } else {
-                                (target_w, target_h)
+                                will_rotate
                             };
                             let auto_uv = if let Some((sw, sh)) = q_src_size_px {
                                 crate::utils::calc_crop_uv(
-                                    calc_w, calc_h, sw, sh, false, true, None,
+                                    final_w, final_h, sw, sh, will_rotate_for_uv, true, None,
                                 )
                             } else {
                                 (0.0, 0.0, 1.0, 1.0)
@@ -1280,12 +1366,11 @@ impl App {
                         ui.add_space(20.0);
 
                         // Instruction text on the left
+                        let instruction = "Drag to move selection, resize with scroll wheel, right-click to inverse crop";
                         ui.label(
-                            egui::RichText::new(
-                                "Please use the scroll wheel and mouse to select your crop.",
-                            )
-                            .color(Color32::from_gray(200))
-                            .size(14.0),
+                            egui::RichText::new(instruction)
+                                .color(Color32::from_gray(200))
+                                .size(14.0),
                         );
                     });
                 });

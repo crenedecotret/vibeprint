@@ -497,9 +497,23 @@ impl App {
         let dpi = self.state.target_dpi as f32;
 
         // For outer borders, expand the cell size
+        // IMPORTANT: When crop_inverted, swap dimensions BEFORE expansion
         let (w_in, h_in) = if qi.border_type == vibeprint::layout_engine::BorderType::Outer {
             let border_in = qi.border_width_pt / 72.0; // Convert pt to inches
-            (w_in + border_in * 2.0, h_in + border_in * 2.0)
+            let (expand_w, expand_h) = if qi.crop_inverted {
+                (h_in, w_in) // Swap before expansion
+            } else {
+                (w_in, h_in)
+            };
+            let (expanded_w, expanded_h) = (
+                expand_w + border_in * 2.0,
+                expand_h + border_in * 2.0,
+            );
+            if qi.crop_inverted {
+                (expanded_h, expanded_w) // Swap back
+            } else {
+                (expanded_w, expanded_h)
+            }
         } else {
             (w_in, h_in)
         };
@@ -620,12 +634,13 @@ impl App {
                 placed_w_px: 0,
                 placed_h_px: 0,
                 src_size_px: Some(src_size),
-                crop_enabled: false,
-                crop_u0: None,
-                crop_v0: None,
-                crop_u1: None,
-                crop_v1: None,
-                border_type: vibeprint::layout_engine::BorderType::None,
+crop_enabled: false,
+                 crop_u0: None,
+                 crop_v0: None,
+                 crop_u1: None,
+                 crop_v1: None,
+                 crop_inverted: false,
+                 border_type: vibeprint::layout_engine::BorderType::None,
                 border_width_pt: 4.0,
             });
         self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
@@ -680,12 +695,13 @@ impl App {
             placed_w_px: 0,
             placed_h_px: 0,
             src_size_px: Some(src_size),
-            crop_enabled: false,
-            crop_u0: None,
-            crop_v0: None,
-            crop_u1: None,
-            crop_v1: None,
-            border_type: vibeprint::layout_engine::BorderType::None,
+crop_enabled: false,
+             crop_u0: None,
+             crop_v0: None,
+             crop_u1: None,
+             crop_v1: None,
+             crop_inverted: false,
+             border_type: vibeprint::layout_engine::BorderType::None,
             border_width_pt: 4.0,
         });
         self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
@@ -866,8 +882,17 @@ impl App {
             } else {
                 (new_size.0, new_size.1)
             };
-            let old_visible_aspect = old_visible_w / old_visible_h;
-            let new_visible_aspect = new_visible_w / new_visible_h;
+            // For inverted crops, swap the aspect ratios for comparison
+            let old_visible_aspect = if item.crop_inverted {
+                old_visible_h / old_visible_w
+            } else {
+                old_visible_w / old_visible_h
+            };
+            let new_visible_aspect = if item.crop_inverted {
+                new_visible_h / new_visible_w
+            } else {
+                new_visible_w / new_visible_h
+            };
 
             // Recalculate crop for new aspect ratio while preserving center/zoom
             if let (Some(u0), Some(v0), Some(u1), Some(v1)) =
@@ -934,7 +959,12 @@ impl App {
                     } else {
                         sw_f / sh_f
                     };
-                    let box_aspect = new_visible_w / new_visible_h;
+                    // For inverted crops, swap the box aspect to match
+                    let box_aspect = if item.crop_inverted {
+                        new_visible_h / new_visible_w
+                    } else {
+                        new_visible_w / new_visible_h
+                    };
                     let target_aspect = box_aspect / src_aspect;
 
                     let new_crop_w = (old_crop_area * target_aspect).sqrt();
@@ -1239,9 +1269,11 @@ impl App {
             let (w, h) = self.queued_box_px(q);
             // Calculate crop UVs if cropping is enabled - use processor-specific function
             let (crop_u0, crop_v0, crop_u1, crop_v1) = if let Some((src_w, src_h)) = q.src_size_px {
-                // Use the same rotation logic as the layout engine
+                // Calculate will_rotate for UV calculation - flip if crop was inverted
+                // because UVs were calculated for swapped dimensions
                 let will_rotate =
                     vibeprint::layout_engine::should_rotate_for_full_page(q.src_size_px, w, h);
+                let will_rotate = if q.crop_inverted { !will_rotate } else { will_rotate };
                 let stored_uv = match (q.crop_u0, q.crop_v0, q.crop_u1, q.crop_v1) {
                     (Some(u0), Some(v0), Some(u1), Some(v1)) => Some((u0, v0, u1, v1)),
                     _ => None,
@@ -1261,8 +1293,11 @@ impl App {
             };
 
             // Use the same rotation logic as the layout engine for consistency
+            // When crop is inverted, the UVs were calculated for swapped dimensions,
+            // so flip the rotation decision to compensate
             let will_rotate =
                 vibeprint::layout_engine::should_rotate_for_full_page(q.src_size_px, w, h);
+            let will_rotate = if q.crop_inverted { !will_rotate } else { will_rotate };
             // Calculate border width in pixels for the processor
             let border_width_px = if q.border_type != vibeprint::layout_engine::BorderType::None {
                 ((q.border_width_pt / 72.0) * self.state.target_dpi as f32).round() as u32

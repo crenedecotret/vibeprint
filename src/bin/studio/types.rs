@@ -380,6 +380,7 @@ pub(crate) struct AppState {
     pub crop_editor_resizing: bool,
     pub crop_editor_resize_start_pos: Option<egui::Pos2>,
     pub crop_editor_resize_start_uv: Option<(f32, f32, f32, f32)>,
+    pub crop_editor_inverted: bool,
 
     // ── Preferences modal ──
     pub show_preferences: bool,
@@ -510,6 +511,7 @@ impl AppState {
             crop_editor_resizing: false,
             crop_editor_resize_start_pos: None,
             crop_editor_resize_start_uv: None,
+            crop_editor_inverted: false,
             show_custom_size_modal: false,
             custom_size_mode: CustomSizeMode::Specific,
             custom_size_w_str: String::new(),

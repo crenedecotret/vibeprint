@@ -157,6 +157,19 @@ impl App {
                         _ => (0.0, 0.0, 1.0, 1.0), // Fallback (shouldn't happen when crop_enabled)
                     };
 
+                // Calculate rotation for display - when crop is inverted, the UVs were
+                // calculated for swapped dimensions, so flip the rotation decision
+                let will_rotate_for_display = if let Some((src_w, src_h)) = src_size {
+                    let should = vibeprint::layout_engine::should_rotate_for_full_page(
+                        Some((src_w, src_h)),
+                        w_px,
+                        h_px,
+                    );
+                    if item.crop_inverted { !should } else { should }
+                } else {
+                    false
+                };
+
                 // Adjust UVs for rotation
                 // After 90° CW rotation:
                 // - Original top-left (u0,v0) appears at screen bottom-left
@@ -169,7 +182,7 @@ impl App {
                 // - Screen top-right gets original bottom-right (u1, v1)
                 // - Screen bottom-right gets original bottom-left (u0, v1)
                 // - Screen bottom-left gets original top-left (u0, v0)
-                let (uv_lt, uv_rt, uv_rb, uv_lb) = if item.rotation > 0.0 {
+                let (uv_lt, uv_rt, uv_rb, uv_lb) = if will_rotate_for_display {
                     (
                         Pos2::new(u1, v0), // screen top-left <- original top-right
                         Pos2::new(u1, v1), // screen top-right <- original bottom-right
@@ -185,7 +198,7 @@ impl App {
                     )
                 };
 
-                if item.rotation > 0.0 {
+                if will_rotate_for_display {
                     let mut mesh = egui::epaint::Mesh::with_texture(tex.id());
                     mesh.vertices.push(egui::epaint::Vertex {
                         pos: img_rect.left_top(),
