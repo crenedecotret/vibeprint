@@ -30,7 +30,7 @@ enum CliEngine {
     #[value(name = "mitchell-ewa")]
     MitchellEwa,
     /// Mitchell-EWA variant tuned for higher sharpness
-    #[value(name = "mitchell-sharp")]
+    #[value(name = "mitchell-ewa-sharp", alias = "mitchell-sharp")]
     MitchellEwaSharp,
 }
 

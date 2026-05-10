@@ -248,9 +248,9 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         };
 
         let resized = resize_rgb16(&cropped_img, new_w, new_h, &opts.engine);
-        let radius_px = ((opts.target_dpi as u64 * 100) / 720) as f64 / 100.0;
+        let radius_px = opts.target_dpi / 720.0;
         let sharpened = if opts.sharpen > 0 {
-            let sigma = ((radius_px as u64 * 100) / 2) as f64 / 100.0;
+            let sigma = radius_px / 2.0;
             let normalized = map_sharpening_slider(opts.sharpen as f64);
             let amount = normalized * SHARPEN_MAX_AMOUNT;
             unsharp_mask_rgb16(&resized, sigma, amount, 0.03)
@@ -490,9 +490,9 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
     );
     let resized = resize_rgb16(&img16, new_w, new_h, &opts.engine);
 
-    let radius_px = ((opts.target_dpi as u64 * 100) / 720) as f64 / 100.0;
+    let radius_px = opts.target_dpi / 720.0;
     let sharpened = if opts.sharpen > 0 {
-        let sigma = ((radius_px as u64 * 100) / 2) as f64 / 100.0;
+        let sigma = radius_px / 2.0;
         let normalized = map_sharpening_slider(opts.sharpen as f64);
         let amount = normalized * SHARPEN_MAX_AMOUNT;
         println!(
@@ -1432,9 +1432,9 @@ fn unsharp_mask_rgb16(
 }
 
 fn dpi_to_rational(dpi: f64) -> (u32, u32) {
-    // Use integer-based calculation to avoid floating-point precision loss
+    // Preserve up to 4 decimal places of fractional DPI in the TIFF rational.
     let d = 10000u32;
-    let n = ((dpi as u64 * 10000) * d as u64 / 10000) as u32;
+    let n = (dpi * d as f64).round().max(0.0) as u32;
     (n, d)
 }
 

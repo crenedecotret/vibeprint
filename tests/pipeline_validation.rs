@@ -1185,3 +1185,120 @@ fn print_pipeline_pdf_output_is_unmodified() -> Result<()> {
 
     Ok(())
 }
+
+/// Regression for fixes #1 (sigma collapse) and #2 (fractional DPI in TIFF rational).
+///
+/// Validates that a 4×6 inch print stays a 4×6 inch print across the previously
+/// broken sub-720 DPIs, that sharpening can still run successfully at those
+/// DPIs (formerly it silently produced a zero-sigma kernel), and that the CLI
+/// fractional-DPI path that #2 fixed is preserved end-to-end.
+#[test]
+fn four_by_six_print_geometry_is_preserved() -> Result<()> {
+    let tmp = tempdir().context("failed to create tempdir")?;
+
+    // A small source image; the composite path will scale it into the 4×6 box.
+    let input_path = tmp.path().join("src_4x6.tif");
+    write_checkerboard_rgb16_tiff(&input_path, 64, 96, 360.0, 4)?;
+
+    // ── composite path: 4×6" page at 360 / 600 / 720 dpi ──────────────────
+    for &target_dpi in &[360.0_f64, 600.0_f64, 720.0_f64] {
+        let page_w_px = (4.0 * target_dpi).round() as u32;
+        let page_h_px = (6.0 * target_dpi).round() as u32;
+
+        let out_path = tmp.path().join(format!("page_4x6_{}.tif", target_dpi as u32));
+        vibeprint::processor::process_composite_page(vibeprint::processor::CompositePageOptions {
+            output: out_path.clone(),
+            placements: vec![vibeprint::processor::PagePlacement {
+                input: input_path.clone(),
+                input_icc: None,
+                dest_x_px: 0,
+                dest_y_px: 0,
+                dest_w_px: page_w_px,
+                dest_h_px: page_h_px,
+                rotate_cw: false,
+                crop_u0: 0.0,
+                crop_v0: 0.0,
+                crop_u1: 1.0,
+                crop_v1: 1.0,
+                border_type: vibeprint::layout_engine::BorderType::None,
+                border_width_px: 0,
+            }],
+            page_w_px,
+            page_h_px,
+            output_icc: None,
+            default_wide_output_when_unset: false,
+            target_dpi,
+            intent: lcms2::Intent::RelativeColorimetric,
+            bpc: true,
+            engine: vibeprint::processor::ResampleEngine::Mks,
+            depth: 16,
+            sharpen: 5,
+        })
+        .with_context(|| format!("composite 4×6 page failed at {} dpi", target_dpi))?;
+
+        // Pixel dimensions = imageable area × DPI.
+        let file = File::open(&out_path)?;
+        let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))?;
+        let (w, h) = decoder.dimensions()?;
+        assert_eq!(
+            (w, h),
+            (page_w_px, page_h_px),
+            "4×6 composite at {} dpi: pixel size mismatch",
+            target_dpi
+        );
+
+        // Embedded DPI tag must round-trip to the requested integer DPI.
+        let (_, dpi) = read_tiff_bit_depth_and_dpi(&out_path)?;
+        assert!(
+            (dpi - target_dpi).abs() < 1e-6,
+            "4×6 composite at {} dpi: TIFF DPI tag mismatch (read {})",
+            target_dpi,
+            dpi
+        );
+
+        // Geometry check: pixel_w / dpi == 4 inches and pixel_h / dpi == 6 inches.
+        assert!(
+            (w as f64 / target_dpi - 4.0).abs() < 1e-6,
+            "4×6 composite at {} dpi: width is not 4 inches ({} px / {} = {:.6} in)",
+            target_dpi,
+            w,
+            target_dpi,
+            w as f64 / target_dpi
+        );
+        assert!(
+            (h as f64 / target_dpi - 6.0).abs() < 1e-6,
+            "4×6 composite at {} dpi: height is not 6 inches ({} px / {} = {:.6} in)",
+            target_dpi,
+            h,
+            target_dpi,
+            h as f64 / target_dpi
+        );
+    }
+
+    // ── Regression for #2: CLI single-image path preserves fractional DPI ─
+    let cli_input = tmp.path().join("cli_in.tif");
+    write_gradient_rgb16_tiff(&cli_input, 32, 48, 360.5)?;
+    let cli_out = tmp.path().join("cli_out_360p5.tif");
+    vibeprint::processor::process(vibeprint::processor::ProcessOptions {
+        input: cli_input,
+        output: cli_out.clone(),
+        input_icc: None,
+        output_icc: None,
+        default_wide_output_when_unset: false,
+        target_dpi: 360.5,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: true,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 16,
+        sharpen: 0,
+        page_layout: None,
+    })?;
+    let (_, cli_dpi) = read_tiff_bit_depth_and_dpi(&cli_out)?;
+    assert!(
+        (cli_dpi - 360.5).abs() < 1e-3,
+        "CLI fractional --dpi was truncated in TIFF rational: read {} (expected 360.5)",
+        cli_dpi
+    );
+
+    Ok(())
+}
