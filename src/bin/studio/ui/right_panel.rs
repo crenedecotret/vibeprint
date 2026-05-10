@@ -917,12 +917,18 @@ let auto_uv = if sw != 0 && sh != 0 {
                     // 20% of longest side in inches, convert to points (1 inch = 72 pt)
                     let percentage_max = longest_side_in * 0.2 * 72.0;
 
-                    // For outer borders, also constrain by imageable area
+                    // For outer borders, also constrain by imageable area.
+                    // Use orientation-safe axis pairing: smallest cell dim vs smallest page dim,
+                    // largest cell dim vs largest page dim — safe regardless of rotation.
                     if border_type == vibeprint::layout_engine::BorderType::Outer && !item.fit_to_page {
                         let (ia_w_in, ia_h_in) = self.imageable_size_in();
-                        let max_from_width = ((ia_w_in - cell_w_in) / 2.0).max(0.0) * 72.0;
-                        let max_from_height = ((ia_h_in - cell_h_in) / 2.0).max(0.0) * 72.0;
-                        let space_constrained_max = max_from_width.min(max_from_height);
+                        let min_cell = cell_w_in.min(cell_h_in);
+                        let max_cell = cell_w_in.max(cell_h_in);
+                        let min_page = ia_w_in.min(ia_h_in);
+                        let max_page = ia_w_in.max(ia_h_in);
+                        let max_from_short = ((min_page - min_cell) / 2.0).max(0.0) * 72.0;
+                        let max_from_long = ((max_page - max_cell) / 2.0).max(0.0) * 72.0;
+                        let space_constrained_max = max_from_short.min(max_from_long);
                         percentage_max.min(space_constrained_max)
                     } else {
                         percentage_max

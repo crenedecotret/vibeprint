@@ -129,7 +129,8 @@ pub fn layout_queue(
             w_in = w_in.max(0.01);
             h_in = h_in.max(0.01);
 
-            // Store border expansion amount to apply AFTER orientation selection
+            // Expand dimensions by outer border BEFORE orientation selection so
+            // simulate_insertion sees the true final box size and can rotate to fit.
             let border_expansion_in = if item.border_type == BorderType::Outer {
                 item.border_width_pt / 72.0
             } else {
@@ -139,8 +140,8 @@ pub fn layout_queue(
             // Use same orientation logic as normal flow (cursor at 0,0 on fresh page)
             let (box_w_px, box_h_px, rotate) = choose_orientation_for_flow_with_state(
                 item.src_size_px,
-                w_in,
-                h_in,
+                w_in + border_expansion_in * 2.0,
+                h_in + border_expansion_in * 2.0,
                 dpi,
                 0, // cursor_x - fresh page start
                 0, // cursor_y - fresh page start
@@ -149,11 +150,7 @@ pub fn layout_queue(
                 page_h_px,
                 spacing_px,
             );
-
-            // Apply border expansion AFTER orientation is decided
-            let border_px = (border_expansion_in * dpi as f32).round() as u32;
-            let box_w_px = box_w_px.saturating_add(border_px * 2);
-            let box_h_px = box_h_px.saturating_add(border_px * 2);
+            // box_w_px / box_h_px already include the border expansion
 
             // Calculate center position based on actual box size (including outer border expansion)
             let x_px = (page_w_px.saturating_sub(box_w_px)) / 2;
@@ -182,7 +179,8 @@ pub fn layout_queue(
         w_in = w_in.max(0.01);
         h_in = h_in.max(0.01);
 
-        // Store border expansion amount to apply AFTER orientation selection
+        // Expand dimensions by outer border BEFORE orientation selection so
+        // simulate_insertion sees the true final box size and can rotate to fit.
         let border_expansion_in = if item.border_type == BorderType::Outer {
             item.border_width_pt / 72.0
         } else {
@@ -191,8 +189,8 @@ pub fn layout_queue(
 
         let (box_w_px, box_h_px, rotate) = choose_orientation_for_flow_with_state(
             item.src_size_px,
-            w_in,
-            h_in,
+            w_in + border_expansion_in * 2.0,
+            h_in + border_expansion_in * 2.0,
             dpi,
             cursor_x,
             cursor_y,
@@ -201,11 +199,7 @@ pub fn layout_queue(
             page_h_px,
             spacing_px,
         );
-
-        // Apply border expansion AFTER orientation is decided
-        let border_px = (border_expansion_in * dpi as f32).round() as u32;
-        let box_w_px = box_w_px.saturating_add(border_px * 2);
-        let box_h_px = box_h_px.saturating_add(border_px * 2);
+        // box_w_px / box_h_px already include the border expansion
 
         if cursor_x > 0 && cursor_x.saturating_add(box_w_px) > page_w_px {
             cursor_x = 0;
@@ -613,11 +607,14 @@ crop_enabled: false,
 
     #[test]
     fn portrait_duplicates_can_repack_to_single_page() {
+        // Two 5×7" items (portrait src) on a 10×15" page @ 100dpi with 0.25" spacing.
+        // Both items are 500×700px. Row 1 fits one item; row 2 starts at y=725.
+        // 725+700=1425 <= 1500, so both fit on a single page.
         let a = queued(Uuid::new_v4(), 5.0, 7.0, (2000, 3000));
         let b = queued(Uuid::new_v4(), 5.0, 7.0, (2100, 3200));
         let items = vec![a.clone(), b.clone()];
 
-        let result = layout_queue(&items, 1000, 1100, 100, 0.25);
+        let result = layout_queue(&items, 1000, 1500, 100, 0.25);
         let pa = result.placements.get(&a.id).expect("placement missing");
         let pb = result.placements.get(&b.id).expect("placement missing");
 
@@ -628,11 +625,11 @@ crop_enabled: false,
         assert_eq!(pa.page, 0, "first item should remain on page 1");
         assert_eq!(pb.page, 0, "second item should remain on page 1");
         assert!(
-            pa.y_px.saturating_add(pa.h_px) <= 1100,
+            pa.y_px.saturating_add(pa.h_px) <= 1500,
             "first item overflowed page height"
         );
         assert!(
-            pb.y_px.saturating_add(pb.h_px) <= 1100,
+            pb.y_px.saturating_add(pb.h_px) <= 1500,
             "second item overflowed page height"
         );
     }
@@ -671,6 +668,84 @@ crop_enabled: false,
         assert_eq!(
             pc.x_px, 300,
             "single item on second row should be horizontally centered"
+        );
+    }
+
+    #[test]
+    fn outer_border_does_not_overflow_page() {
+        // 5×7" item + 1" outer border = 7×9" expanded box.
+        // Page is 874×1076px @ 100dpi = 8.74×10.76".
+        // Portrait 7×9 fits (9 < 10.76). Landscape 9×7 also fits.
+        // Either way the placed box must stay within page bounds.
+        let mut item = queued(Uuid::new_v4(), 5.0, 7.0, (3000, 2000));
+        item.border_type = BorderType::Outer;
+        item.border_width_pt = 72.0; // 1 inch = 72 pt
+
+        let page_w_px = 874u32;
+        let page_h_px = 1076u32;
+        let result = layout_queue(&[item.clone()], page_w_px, page_h_px, 100, 0.0);
+        let p = result.placements.get(&item.id).expect("placement missing");
+
+        assert!(
+            p.w_px <= page_w_px,
+            "placed width {} exceeds page {}",
+            p.w_px,
+            page_w_px
+        );
+        assert!(
+            p.h_px <= page_h_px,
+            "placed height {} exceeds page {}",
+            p.h_px,
+            page_h_px
+        );
+        assert!(
+            p.x_px.saturating_add(p.w_px) <= page_w_px,
+            "placement overflows x: x={} w={} page_w={}",
+            p.x_px,
+            p.w_px,
+            page_w_px
+        );
+        assert!(
+            p.y_px.saturating_add(p.h_px) <= page_h_px,
+            "placement overflows y: y={} h={} page_h={}",
+            p.y_px,
+            p.h_px,
+            page_h_px
+        );
+    }
+
+    #[test]
+    fn outer_border_center_to_page_does_not_overflow() {
+        // Same scenario with center_to_page flag set.
+        let mut item = queued(Uuid::new_v4(), 5.0, 7.0, (3000, 2000));
+        item.center_to_page = true;
+        item.border_type = BorderType::Outer;
+        item.border_width_pt = 72.0; // 1 inch
+
+        let page_w_px = 874u32;
+        let page_h_px = 1076u32;
+        let result = layout_queue(&[item.clone()], page_w_px, page_h_px, 100, 0.0);
+        let p = result.placements.get(&item.id).expect("placement missing");
+
+        assert!(
+            p.w_px <= page_w_px,
+            "placed width {} exceeds page {}",
+            p.w_px,
+            page_w_px
+        );
+        assert!(
+            p.h_px <= page_h_px,
+            "placed height {} exceeds page {}",
+            p.h_px,
+            page_h_px
+        );
+        assert!(
+            p.x_px.saturating_add(p.w_px) <= page_w_px,
+            "placement overflows x"
+        );
+        assert!(
+            p.y_px.saturating_add(p.h_px) <= page_h_px,
+            "placement overflows y"
         );
     }
 }

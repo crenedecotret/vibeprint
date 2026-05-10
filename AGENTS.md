@@ -2,24 +2,51 @@
 
 Vibeprint is an ICC-aware print layout engine (Rust). Two binaries: `vibeprint` (CLI) and `studio` (GUI).
 
-## Build Commands
-- `cargo build --release` - Build both binaries
-- `cargo build --release --no-default-features` - Build without X11 deps (headless/Wayland)
-- `cargo test` - Run tests (note: `print_pipeline_pdf_output_is_unmodified` requires ghostscript)
+## Essential Commands
+- `cargo build --release` - Build both binaries (vibeprint CLI + studio GUI)
+- `cargo build --release --no-default-features` - Build CLI-only (no X11/Wayland deps)
+- `cargo test` - Run all tests (one test requires ghostscript: `print_pipeline_pdf_output_is_unmodified`)
+- `cargo run --release --bin vibeprint -- <subcommand>` - Run CLI directly
+- `cargo run --release --bin studio` - Run GUI (requires X11 for monitor ICC)
 
-## System Dependencies
-`libcups2`, `lcms2`, `libx11`, `libxrandr`, `ghostscript`, `libtiff-tools`
+## CLI Subcommands (vibeprint)
+- `meta <image>` - Print image metadata
+- `printers [--name <printer>]` - List CUPS printers or get capabilities
+- `process` - Process image with ICC transform:
+  - Required: `--input <file> --output <file> --dpi <value>`
+  - Common options:
+    - `--input-icc <file>` - Input ICC profile
+    - `--output-icc <file>` - Output ICC profile  
+    - `--intent <relative|perceptual|saturation>` (default: relative)
+    - `--engine <catmullrom|lanczos3|iterative-step|mitchell-ewa|mitchell-ewa-sharp>` (default: catmullrom)
+    - `--depth <8|16>` (default: 16)
+    - `--sharpen <0-20>` (default: 5)
+    - `--bpc/--no-bpc` - Black point compensation
 
-## Architecture
-- `src/lib.rs` - Library root; `processor` and `layout_engine` modules
-- `src/processor.rs` - Image pipeline: ICC transform, resample (Mks/Lanczos3/Mitchell-EWA), USM sharpen, TIFF output
-- `src/layout_engine.rs` - Page layout, borders, rotations
-- `src/bin/studio/` - GUI app (eframe/egui); requires X11 for monitor ICC
-- `src/monitor_icc.rs` - X11-only; skipped on `--no-default-features`
-- `src/printer_discovery/` - CUPS printer queries via FFI
+## GUI (studio)
+- Builds with CLI by default; requires X11 for monitor ICC profiling
+- To build without GUI/X11 deps: `cargo build --release --no-default-features`
+- Monitor ICC support only works on X11 (not Wayland)
 
-## Notes
-- Tests in `tests/pipeline_validation.rs` - one requires ghostscript
-- Generated `*_out.tif`, `*.tif` files are gitignored
-- No lint/typecheck/format commands (standard cargo only)
-- Do not build with `--no-default-features` for production use; monitor ICC support is essential
+## Testing
+- One test requires ghostscript: `tests/pipeline_validation.rs::print_pipeline_pdf_output_is_unmodified`
+- If ghostscript missing, that test will fail; others should pass
+- Generated `*_out.tif` and `*.tif` files are automatically gitignored
+
+## Key Dependencies
+- Runtime: libcups2, lcms2, libx11, libxrandr, ghostscript, libtiff-tools
+- Optional X11 deps (for monitor ICC): libx11-dev, libxrandr-dev (enabled by default)
+- Build with `--no-default-features` to exclude X11 requirements (headless/Wayland)
+
+## Architecture Notes
+- Library (`src/lib.rs`): processor, layout_engine, monitor_icc, printer_discovery modules
+- CLI (`src/main.rs`): Command parsing delegates to processor::process()
+- Image pipeline (`src/processor.rs`): ICC transform → resample → USM sharpen → TIFF
+- Layout (`src/layout_engine.rs`): Page layout, borders, rotations
+- GUI (`src/bin/studio/`): eframe/egui app; monitor ICC requires X11
+- Printer discovery (`src/printer_discovery/`): CUPS queries via FFI
+
+## Important Constraints
+- Do not use `--no-default-features` for production builds; monitor ICC is essential for color accuracy
+- The `print_pipeline_pdf_output_is_unmodified` test validates tiff2ps → gs → PDF pipeline preserves pixels
+- All TIFF output paths are configurable; default behavior preserves 16-bit depth unless `--depth 8` specified

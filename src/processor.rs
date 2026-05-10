@@ -167,6 +167,17 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         .context("failed to allocate page buffer")?;
 
     for p in &opts.placements {
+        debug_assert!(
+            p.dest_x_px.saturating_add(p.dest_w_px) <= opts.page_w_px
+                && p.dest_y_px.saturating_add(p.dest_h_px) <= opts.page_h_px,
+            "placement overflows page: dest ({},{}) size ({}×{}) page {}×{}",
+            p.dest_x_px,
+            p.dest_y_px,
+            p.dest_w_px,
+            p.dest_h_px,
+            opts.page_w_px,
+            opts.page_h_px
+        );
         let (img, source_dpi, embedded_icc) = load_image_with_dpi_and_embedded_icc(&p.input)?;
         let img16: Rgb16Image = match img {
             LoadedImage::Rgb8(im) => rgb8_to_rgb16(&im),
