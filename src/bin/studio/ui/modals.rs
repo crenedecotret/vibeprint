@@ -1662,7 +1662,14 @@ if apply_btn.clicked() {
 
                 ui.add_space(4.0);
 
-                ui.checkbox(&mut self.state.use_metric, "Use the metric measuring system");
+                if ui.checkbox(&mut self.state.use_metric, "Use the metric measuring system").changed() {
+                    if self.state.use_metric {
+                        let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
+                        self.state.border_edit_string = format!("{:.2}", mm);
+                    } else {
+                        self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                    }
+                }
 
                 ui.add_space(8.0);
                 ui.separator();

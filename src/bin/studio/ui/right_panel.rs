@@ -123,7 +123,7 @@ impl App {
                     });
                 }
 
-                // ── Border ──
+                // ── Border ─
                 ui.horizontal(|ui| {
                     ui.label("Border:");
                     let resp = ui.add(
@@ -134,7 +134,12 @@ impl App {
 
                     // Update edit string when gaining focus to show current value
                     if resp.gained_focus() {
-                        self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                        if self.state.use_metric {
+                            let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
+                            self.state.border_edit_string = format!("{:.2}", mm);
+                        } else {
+                            self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                        }
                     }
 
                     // Apply changes when losing focus
@@ -150,19 +155,36 @@ impl App {
                             let max_border = (paper_w_in.min(paper_h_in) * 0.25)
                                 .max(self.state.reported_border_in);
 
-                            let new_border = v.clamp(self.state.reported_border_in, max_border);
+                            let input_in = if self.state.use_metric {
+                                vibeprint::layout_engine::mm_to_inches(v)
+                            } else {
+                                v
+                            };
+                            let new_border = input_in.clamp(self.state.reported_border_in, max_border);
                             if (new_border - self.state.user_border_in).abs() > 0.0001 {
                                 self.state.user_border_in = new_border;
-                                self.state.border_edit_string =
-                                    format!("{:.3}", self.state.user_border_in);
+                                if self.state.use_metric {
+                                    let mm = vibeprint::layout_engine::inches_to_mm(new_border);
+                                    self.state.border_edit_string = format!("{:.2}", mm);
+                                } else {
+                                    self.state.border_edit_string = format!("{:.3}", new_border);
+                                }
                                 self.relayout_queue();
-                            } else if (v - self.state.user_border_in).abs() > 0.0001 {
-                                self.state.border_edit_string =
-                                    format!("{:.3}", self.state.user_border_in);
+                            } else if (input_in - self.state.user_border_in).abs() > 0.0001 {
+                                if self.state.use_metric {
+                                    let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
+                                    self.state.border_edit_string = format!("{:.2}", mm);
+                                } else {
+                                    self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                                }
                             }
                         } else {
-                            self.state.border_edit_string =
-                                format!("{:.3}", self.state.user_border_in);
+                            if self.state.use_metric {
+                                let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
+                                self.state.border_edit_string = format!("{:.2}", mm);
+                            } else {
+                                self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                            }
                         }
                     }
 
@@ -172,10 +194,19 @@ impl App {
                         .clicked()
                     {
                         self.state.user_border_in = self.state.reported_border_in;
-                        self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                        if self.state.use_metric {
+                            let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
+                            self.state.border_edit_string = format!("{:.2}", mm);
+                        } else {
+                            self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                        }
                         self.relayout_queue();
                     }
-                    ui.label("in");
+                    if self.state.use_metric {
+                        ui.label("mm");
+                    } else {
+                        ui.label("in");
+                    }
                 });
 
                 // ── Print to file ──
@@ -205,7 +236,12 @@ impl App {
                     if self.state.user_border_in < new_reported {
                         self.state.user_border_in = new_reported;
                     }
-                    self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                    if self.state.use_metric {
+                        let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
+                        self.state.border_edit_string = format!("{:.2}", mm);
+                    } else {
+                        self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                    }
                     self.relayout_queue();
                 }
 

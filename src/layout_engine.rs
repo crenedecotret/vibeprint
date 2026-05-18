@@ -30,6 +30,12 @@ pub fn mm_to_inches(mm: f32) -> f32 {
     (mm as f64 / 25.4) as f32
 }
 
+/// Convert inches to millimeters using f64 intermediate arithmetic for precision.
+/// Returns the closest f32 to the exact rational result (inches * 25.4).
+pub fn inches_to_mm(inches: f32) -> f32 {
+    (inches as f64 * 25.4) as f32
+}
+
 impl PrintSize {
     pub fn as_inches(self) -> (f32, f32) {
         match self.unit {
@@ -828,6 +834,33 @@ crop_enabled: false,
         let (w2, h2) = ps.as_inches();
         assert_eq!(w2, w, "as_inches should match mm_to_inches for width");
         assert_eq!(h2, h, "as_inches should match mm_to_inches for height");
+    }
+
+    #[test]
+    fn inches_to_mm_precision() {
+        let w = inches_to_mm(8.268);
+        let h = inches_to_mm(11.693);
+        let expected_w = 8.268_f64 * 25.4_f64;
+        let expected_h = 11.693_f64 * 25.4_f64;
+        assert!(
+            (w as f64 - expected_w).abs() < 1e-3,
+            "A4 width: got {}, expected ~{}",
+            w,
+            expected_w
+        );
+        assert!(
+            (h as f64 - expected_h).abs() < 1e-3,
+            "A4 height: got {}, expected ~{}",
+            h,
+            expected_h
+        );
+
+        let roundtrip = inches_to_mm(mm_to_inches(210.0));
+        assert!(
+            (roundtrip - 210.0).abs() < 0.1,
+            "roundtrip 210mm->in->mm: got {}, expected ~210",
+            roundtrip
+        );
     }
 
     #[test]

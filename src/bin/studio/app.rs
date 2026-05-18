@@ -1053,7 +1053,12 @@ crop_enabled: false,
                 self.state.reported_border_in
             };
             self.state.pending_user_border_in = None;
-            self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+            if self.state.use_metric {
+                let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
+                self.state.border_edit_string = format!("{:.2}", mm);
+            } else {
+                self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+            }
 
             self.relayout_queue();
         } else {
@@ -1061,7 +1066,12 @@ crop_enabled: false,
             self.state.extra_option_indices.clear();
             self.state.reported_border_in = 0.25;
             self.state.user_border_in = 0.25;
-            self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+            if self.state.use_metric {
+                let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
+                self.state.border_edit_string = format!("{:.2}", mm);
+            } else {
+                self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+            }
             self.relayout_queue();
         }
     }
