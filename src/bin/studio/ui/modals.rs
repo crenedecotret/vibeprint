@@ -813,16 +813,17 @@ impl App {
                     (oriented_w, oriented_h)
                 };
 
-                // For outer borders, expand the cell size to match layout engine behavior.
-                // IMPORTANT: When crop_inverted, swap dimensions BEFORE expansion
-                // so the border is applied to the correct (swapped) dimensions.
+                // Adjust cell dimensions for border type:
+                // - Outer: expand by 2×border (border adds outside the cell)
+                // - Inner: shrink by 2×border (border eats inside the cell)
+                // This ensures crop aspect matches the visible area.
                 let (final_w, final_h) = if q_border_type
                     == vibeprint::layout_engine::BorderType::Outer
                     && q_border_width_pt > 0.0
                 {
                     let border_in = q_border_width_pt / 72.0;
                     let (expand_w, expand_h) = if self.state.crop_editor_inverted {
-                        (target_h, target_w) // Swap before expansion
+                        (target_h, target_w)
                     } else {
                         (target_w, target_h)
                     };
@@ -831,9 +832,28 @@ impl App {
                         expand_h + border_in * 2.0,
                     );
                     if self.state.crop_editor_inverted {
-                        (expanded_h, expanded_w) // Swap back
+                        (expanded_h, expanded_w)
                     } else {
                         (expanded_w, expanded_h)
+                    }
+                } else if q_border_type
+                    == vibeprint::layout_engine::BorderType::Inner
+                    && q_border_width_pt > 0.0
+                {
+                    let border_in = q_border_width_pt / 72.0;
+                    let (shrink_w, shrink_h) = if self.state.crop_editor_inverted {
+                        (target_h, target_w)
+                    } else {
+                        (target_w, target_h)
+                    };
+                    let (shrunk_w, shrunk_h) = (
+                        (shrink_w - border_in * 2.0).max(0.1),
+                        (shrink_h - border_in * 2.0).max(0.1),
+                    );
+                    if self.state.crop_editor_inverted {
+                        (shrunk_h, shrunk_w)
+                    } else {
+                        (shrunk_w, shrunk_h)
                     }
                 } else {
                     (target_w, target_h)
@@ -1734,6 +1754,7 @@ if apply_btn.clicked() {
                     } else {
                         self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
                     }
+                    self.state.border_width_edit_string.clear();
                 }
 
                 ui.add_space(8.0);

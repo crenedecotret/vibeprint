@@ -686,16 +686,17 @@ if let Some(item) = self.selected_queue_mut() {
                                             (oriented_w, oriented_h)
                                         };
 
-                                        // For outer borders, expand the cell size to match layout engine.
-                                        // IMPORTANT: When crop_inverted, swap dimensions BEFORE expansion
-                                        // so the border is applied to the correct (swapped) dimensions.
+                                        // Adjust cell dimensions for border type:
+                                        // - Outer: expand by 2×border (border adds outside the cell)
+                                        // - Inner: shrink by 2×border (border eats inside the cell)
+                                        // This ensures crop UVs match the visible area aspect ratio.
                                         let (calc_w, calc_h) = if item.border_type
                                             == vibeprint::layout_engine::BorderType::Outer
                                             && item.border_width_pt > 0.0
                                         {
                                             let border_in = item.border_width_pt / 72.0;
                                             let (expand_w, expand_h) = if item.crop_inverted {
-                                                (calc_h, calc_w) // Swap before expansion
+                                                (calc_h, calc_w)
                                             } else {
                                                 (calc_w, calc_h)
                                             };
@@ -704,9 +705,28 @@ if let Some(item) = self.selected_queue_mut() {
                                                 expand_h + border_in * 2.0,
                                             );
                                             if item.crop_inverted {
-                                                (expanded_h, expanded_w) // Swap back
+                                                (expanded_h, expanded_w)
                                             } else {
                                                 (expanded_w, expanded_h)
+                                            }
+                                        } else if item.border_type
+                                            == vibeprint::layout_engine::BorderType::Inner
+                                            && item.border_width_pt > 0.0
+                                        {
+                                            let border_in = item.border_width_pt / 72.0;
+                                            let (shrink_w, shrink_h) = if item.crop_inverted {
+                                                (calc_h, calc_w)
+                                            } else {
+                                                (calc_w, calc_h)
+                                            };
+                                            let (shrunk_w, shrunk_h) = (
+                                                (shrink_w - border_in * 2.0).max(0.1),
+                                                (shrink_h - border_in * 2.0).max(0.1),
+                                            );
+                                            if item.crop_inverted {
+                                                (shrunk_h, shrunk_w)
+                                            } else {
+                                                (shrunk_w, shrunk_h)
                                             }
                                         } else {
                                             (calc_w, calc_h)
@@ -810,16 +830,17 @@ if let Some(item) = self.selected_queue_mut() {
                                 (oriented_w, oriented_h)
                             };
 
-                            // For outer borders, expand the cell size to match layout engine.
-                            // IMPORTANT: When crop_inverted, swap dimensions BEFORE expansion
-                            // so the border is applied to the correct (swapped) dimensions.
+                            // Adjust cell dimensions for border type:
+                            // - Outer: expand by 2×border (border adds outside the cell)
+                            // - Inner: shrink by 2×border (border eats inside the cell)
+                            // This ensures crop UVs match the visible area aspect ratio.
                             let (final_w, final_h) = if border_type
                                 == vibeprint::layout_engine::BorderType::Outer
                                 && border_width_pt > 0.0
                             {
                                 let border_in = border_width_pt / 72.0;
                                 let (expand_w, expand_h) = if crop_inverted {
-                                    (calc_h, calc_w) // Swap before expansion
+                                    (calc_h, calc_w)
                                 } else {
                                     (calc_w, calc_h)
                                 };
@@ -828,9 +849,28 @@ if let Some(item) = self.selected_queue_mut() {
                                     expand_h + border_in * 2.0,
                                 );
                                 if crop_inverted {
-                                    (expanded_h, expanded_w) // Swap back
+                                    (expanded_h, expanded_w)
                                 } else {
                                     (expanded_w, expanded_h)
+                                }
+                            } else if border_type
+                                == vibeprint::layout_engine::BorderType::Inner
+                                && border_width_pt > 0.0
+                            {
+                                let border_in = border_width_pt / 72.0;
+                                let (shrink_w, shrink_h) = if crop_inverted {
+                                    (calc_h, calc_w)
+                                } else {
+                                    (calc_w, calc_h)
+                                };
+                                let (shrunk_w, shrunk_h) = (
+                                    (shrink_w - border_in * 2.0).max(0.1),
+                                    (shrink_h - border_in * 2.0).max(0.1),
+                                );
+                                if crop_inverted {
+                                    (shrunk_h, shrunk_w)
+                                } else {
+                                    (shrunk_w, shrunk_h)
                                 }
                             } else {
                                 (calc_w, calc_h)
@@ -1004,20 +1044,72 @@ let auto_uv = if sw != 0 && sh != 0 {
                 if show_width {
                     ui.horizontal(|ui| {
                         ui.label("Width:");
-                        let mut width_str = format!("{:.3}", border_width_pt.min(max_border_pt));
+let current_pt = border_width_pt.min(max_border_pt);
+                        if self.state.border_width_edit_focus {
+                            if self.state.use_metric {
+                                if self.state.border_width_edit_string.is_empty() {
+                                    self.state.border_width_edit_string = format!("{}", (vibeprint::layout_engine::inches_to_mm(current_pt / 72.0)).round() as u32);
+                                }
+                            } else {
+                                if self.state.border_width_edit_string.is_empty() {
+                                    self.state.border_width_edit_string = format!("{:.3}", current_pt);
+                                }
+                            }
+                        } else {
+                            if self.state.use_metric {
+                                self.state.border_width_edit_string = format!("{}", (vibeprint::layout_engine::inches_to_mm(current_pt / 72.0)).round() as u32);
+                            } else {
+                                self.state.border_width_edit_string = format!("{:.3}", current_pt);
+                            }
+                        }
                         let resp = ui.add(
-                            egui::TextEdit::singleline(&mut width_str)
+                            egui::TextEdit::singleline(&mut self.state.border_width_edit_string)
                                 .desired_width(50.0)
                                 .font(egui::FontId::proportional(12.0)),
                         );
-                        if resp.changed() {
-                            if let Ok(v) = width_str.parse::<f32>() {
-                                border_width_pt = v.max(0.0).min(max_border_pt);
+                        self.state.border_width_edit_focus = resp.has_focus();
+                        if resp.gained_focus() {
+                            if self.state.use_metric {
+                                self.state.border_width_edit_string = format!("{}", (vibeprint::layout_engine::inches_to_mm(current_pt / 72.0)).round() as u32);
+                            } else {
+                                self.state.border_width_edit_string = format!("{:.3}", current_pt);
                             }
                         }
-                        ui.label("pt");
+                        if resp.lost_focus() {
+                            if self.state.use_metric {
+                                if let Ok(mm_val) = self.state.border_width_edit_string.parse::<u32>() {
+                                    let pt = vibeprint::layout_engine::mm_to_inches(mm_val as f32) * 72.0;
+                                    border_width_pt = pt.max(0.0).min(max_border_pt);
+                                }
+                                self.state.border_width_edit_string = format!("{}", (vibeprint::layout_engine::inches_to_mm(border_width_pt / 72.0)).round() as u32);
+                            } else {
+                                if let Ok(v) = self.state.border_width_edit_string.parse::<f32>() {
+                                    border_width_pt = v.max(0.0).min(max_border_pt);
+                                }
+                                self.state.border_width_edit_string = format!("{:.3}", border_width_pt.min(max_border_pt));
+                            }
+                        }
+                        // Also apply on-the-fly for immediate visual feedback while typing
+                        if resp.changed() && resp.has_focus() {
+                            if self.state.use_metric {
+                                if let Ok(mm_val) = self.state.border_width_edit_string.parse::<u32>() {
+                                    let pt = vibeprint::layout_engine::mm_to_inches(mm_val as f32) * 72.0;
+                                    border_width_pt = pt.max(0.0).min(max_border_pt);
+                                }
+                            } else {
+                                if let Ok(v) = self.state.border_width_edit_string.parse::<f32>() {
+                                    border_width_pt = v.max(0.0).min(max_border_pt);
+                                }
+                            }
+                        }
+                        ui.label(if self.state.use_metric { "mm" } else { "pt" });
+                        let max_label = if self.state.use_metric {
+                            format!("max {}", (vibeprint::layout_engine::inches_to_mm(max_border_pt / 72.0)).round() as u32)
+                        } else {
+                            format!("max {:.3}", max_border_pt)
+                        };
                         ui.label(
-                            RichText::new(format!("max {:.3}", max_border_pt))
+                            RichText::new(max_label)
                                 .weak()
                                 .size(10.0),
                         );
@@ -1031,20 +1123,111 @@ let auto_uv = if sw != 0 && sh != 0 {
                     let width_changed =
                         self.selected_queue().map(|q| q.border_width_pt) != Some(border_width_pt);
 
-                    // If enabling border for first time (None -> Inner/Outer), use calculated default
+                    // If enabling border for first time (None -> Inner/Outer), use small default
                     let border_enabled = old_border_type
                         == Some(vibeprint::layout_engine::BorderType::None)
                         && border_type != vibeprint::layout_engine::BorderType::None;
 
+                    // Pre-compute values needed for crop UV recalculation before mutable borrow
+                    let use_metric = self.state.use_metric;
+
+                    // IMPORTANT: Set default border width BEFORE crop calculation
+                    // so UV recalculation uses the correct border size
+                    if border_enabled {
+                        border_width_pt = if use_metric { 2.835 } else { 1.0 };
+                    }
+
+                    let fit_to_page = self.selected_queue().map(|q| q.fit_to_page).unwrap_or(false);
+                    let (cell_w_in, cell_h_in) = if fit_to_page {
+                        self.imageable_size_in()
+                    } else {
+                        self.selected_queue().map(|q| q.size.as_inches()).unwrap_or((5.0, 7.0))
+                    };
+                    let src_size_px = self.selected_queue().and_then(|q| q.src_size_px).unwrap_or((1, 1));
+                    let crop_inverted = self.selected_queue().map(|q| q.crop_inverted).unwrap_or(false);
+
                     if type_changed || width_changed {
-                        if let Some(item) = self.selected_queue_mut() {
-                            // Apply aesthetic default if border is being enabled for the first time
-                            if border_enabled {
-                                border_width_pt = default_border_pt;
+                        // Compute oriented dimensions and rotation to determine
+                        // visible area aspect in the same coordinate space as crop UVs
+                        let (sw, sh) = src_size_px;
+                        let sw_f = sw as f32;
+                        let sh_f = sh as f32;
+                        let src_landscape = sw_f > sh_f;
+                        let (oriented_w, oriented_h) = if src_landscape {
+                            (cell_h_in, cell_w_in)
+                        } else {
+                            (cell_w_in, cell_h_in)
+                        };
+                        let fitted_area_no_rotate = {
+                            let s = (oriented_w / sw_f).min(oriented_h / sh_f);
+                            (sw_f * s) * (sh_f * s)
+                        };
+                        let fitted_area_rotate = {
+                            let s = (oriented_w / sh_f).min(oriented_h / sw_f);
+                            (sh_f * s) * (sw_f * s)
+                        };
+                        let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+                        let effective_will_rotate = if crop_inverted { !will_rotate } else { will_rotate };
+                        let (full_w, full_h) = if effective_will_rotate {
+                            (oriented_h, oriented_w)
+                        } else {
+                            (oriented_w, oriented_h)
+                        };
+
+                        // Compute old and new visible areas in oriented coordinate space
+                        let new_border_in = border_width_pt.min(max_border_pt) / 72.0;
+
+                        let new_is_inner = border_type
+                            == vibeprint::layout_engine::BorderType::Inner;
+                        let new_is_outer = border_type
+                            == vibeprint::layout_engine::BorderType::Outer;
+                        let (new_vis_w, new_vis_h) = if new_is_inner && new_border_in > 0.0 {
+                            (
+                                (full_w - new_border_in * 2.0).max(0.1),
+                                (full_h - new_border_in * 2.0).max(0.1),
+                            )
+                        } else if new_is_outer && new_border_in > 0.0 {
+                            (
+                                full_w + new_border_in * 2.0,
+                                full_h + new_border_in * 2.0,
+                            )
+                        } else {
+                            (full_w, full_h)
+                        };
+
+                        // Always recalculate crop when border type or width changes,
+                        // since even small aspect changes affect cropped images.
+                        let crop_adjustment = {
+                            let has_crop = self.selected_queue().map(|q| q.crop_enabled && q.crop_u0.is_some()).unwrap_or(false);
+                            if has_crop {
+                                let src_aspect = sw_f / sh_f;
+                                let box_aspect = new_vis_w / new_vis_h;
+                                let target_aspect = box_aspect / src_aspect;
+                                Some(target_aspect)
+                            } else {
+                                None
                             }
-                            // NOTE: Do NOT recalculate UVs for border changes.
-                            // Borders only affect display (cell expansion or display rect shrinking),
-                            // not which portion of the image is shown. The UVs (crop selection) stay the same.
+                        };
+
+                        if let Some(item) = self.selected_queue_mut() {
+                            // Apply pre-computed crop UV adjustments
+                            if let Some(target_aspect) = crop_adjustment {
+                                if let (Some(u0), Some(v0), Some(u1), Some(v1)) =
+                                    (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1)
+                                {
+                                    let old_center_u = (u0 + u1) / 2.0;
+                                    let old_center_v = (v0 + v1) / 2.0;
+                                    let old_crop_area = (u1 - u0) * (v1 - v0);
+                                    let new_crop_w = (old_crop_area * target_aspect).sqrt();
+                                    let new_crop_h = (old_crop_area / target_aspect).sqrt();
+                                    let half_w = new_crop_w / 2.0;
+                                    let half_h = new_crop_h / 2.0;
+                                    item.crop_u0 = Some((old_center_u - half_w).max(0.0));
+                                    item.crop_v0 = Some((old_center_v - half_h).max(0.0));
+                                    item.crop_u1 = Some((old_center_u + half_w).min(1.0));
+                                    item.crop_v1 = Some((old_center_v + half_h).min(1.0));
+                                }
+                            }
 
                             item.border_type = border_type;
                             item.border_width_pt = border_width_pt.min(max_border_pt); // Clamp to max for this cell size

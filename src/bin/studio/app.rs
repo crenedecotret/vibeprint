@@ -497,8 +497,9 @@ impl App {
         };
         let dpi = self.state.target_dpi as f32;
 
-        // For outer borders, expand the cell size
-        // IMPORTANT: When crop_inverted, swap dimensions BEFORE expansion
+        // For outer borders: expand the cell size (border adds outside)
+        // For inner borders: shrink the cell size (border eats inside)
+        // IMPORTANT: When crop_inverted, swap dimensions BEFORE adjustment
         let (w_in, h_in) = if qi.border_type == vibeprint::layout_engine::BorderType::Outer {
             let border_in = qi.border_width_pt / 72.0; // Convert pt to inches
             let (expand_w, expand_h) = if qi.crop_inverted {
@@ -514,6 +515,22 @@ impl App {
                 (expanded_h, expanded_w) // Swap back
             } else {
                 (expanded_w, expanded_h)
+            }
+        } else if qi.border_type == vibeprint::layout_engine::BorderType::Inner && qi.border_width_pt > 0.0 {
+            let border_in = qi.border_width_pt / 72.0; // Convert pt to inches
+            let (shrink_w, shrink_h) = if qi.crop_inverted {
+                (h_in, w_in) // Swap before shrinking
+            } else {
+                (w_in, h_in)
+            };
+            let (shrunk_w, shrunk_h) = (
+                (shrink_w - border_in * 2.0).max(0.1),
+                (shrink_h - border_in * 2.0).max(0.1),
+            );
+            if qi.crop_inverted {
+                (shrunk_h, shrunk_w) // Swap back
+            } else {
+                (shrunk_w, shrunk_h)
             }
         } else {
             (w_in, h_in)

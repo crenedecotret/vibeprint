@@ -321,6 +321,8 @@ pub(crate) struct AppState {
     pub reported_border_in: f32,
     pub user_border_in: f32,
     pub border_edit_string: String,
+    pub border_width_edit_string: String,
+    pub border_width_edit_focus: bool,
 
     // ── Engine settings ──
     pub engine: Engine,
@@ -491,6 +493,8 @@ impl AppState {
             reported_border_in: 0.25,
             user_border_in: 0.25,
             border_edit_string: format!("{:.3}", 0.25),
+            border_width_edit_string: String::new(),
+            border_width_edit_focus: false,
             engine: saved_engine,
             sharpen: saved_sharpen,
             depth16: saved_depth16,

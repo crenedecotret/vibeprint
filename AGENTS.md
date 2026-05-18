@@ -51,3 +51,7 @@ Runtime: libcups2, lcms2, libx11, libxrandr, ghostscript, libtiff-tools
 - `src/main.rs`: CLI delegates to processor::process()
 - `src/processor.rs`: ICC transform → resample → USM sharpen → TIFF
 - `src/bin/studio/`: eframe/egui GUI
+
+## Documentation
+
+- `CROP_AND_BORDER.md`: Detailed documentation of crop editor, inner/outer borders, and inversion logic
