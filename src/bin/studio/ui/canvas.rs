@@ -149,6 +149,14 @@ impl App {
                     .unwrap_or(display_rect)
             };
 
+            // For outer border: draw full placement rect as black first, then image on top
+            // This avoids seam artifacts between border strips
+            if item.border_type == vibeprint::layout_engine::BorderType::Outer
+                && item.border_width_pt > 0.0
+            {
+                draw_solid_rect(&painter, r, Color32::BLACK);
+            }
+
             if let Some(tex) = self.state.preview_textures.get(&item.filepath) {
                 // Get crop UVs - when crop is enabled, we always have stored UVs
                 let (u0, v0, u1, v1) =
@@ -276,47 +284,6 @@ impl App {
                                 Rect::from_min_max(
                                     Pos2::new(display_rect.max.x, display_rect.min.y),
                                     Pos2::new(r.max.x, display_rect.max.y),
-                                ),
-                                Color32::BLACK,
-                            );
-                        }
-                    }
-                    vibeprint::layout_engine::BorderType::Outer => {
-                        // For outer border, fill the gap between the placement rect (r) and image rect (img_rect)
-                        // Top strip
-                        if img_rect.min.y > r.min.y {
-                            draw_solid_rect(
-                                &painter,
-                                Rect::from_min_max(r.min, Pos2::new(r.max.x, img_rect.min.y)),
-                                Color32::BLACK,
-                            );
-                        }
-                        // Bottom strip
-                        if img_rect.max.y < r.max.y {
-                            draw_solid_rect(
-                                &painter,
-                                Rect::from_min_max(Pos2::new(r.min.x, img_rect.max.y), r.max),
-                                Color32::BLACK,
-                            );
-                        }
-                        // Left strip (between top and bottom of image)
-                        if img_rect.min.x > r.min.x {
-                            draw_solid_rect(
-                                &painter,
-                                Rect::from_min_max(
-                                    Pos2::new(r.min.x, img_rect.min.y),
-                                    Pos2::new(img_rect.min.x, img_rect.max.y),
-                                ),
-                                Color32::BLACK,
-                            );
-                        }
-                        // Right strip (between top and bottom of image)
-                        if img_rect.max.x < r.max.x {
-                            draw_solid_rect(
-                                &painter,
-                                Rect::from_min_max(
-                                    Pos2::new(img_rect.max.x, img_rect.min.y),
-                                    Pos2::new(r.max.x, img_rect.max.y),
                                 ),
                                 Color32::BLACK,
                             );
