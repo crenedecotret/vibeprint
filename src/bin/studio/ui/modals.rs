@@ -1391,6 +1391,33 @@ if apply_btn.clicked() {
             None
         };
 
+        // Convert input values if unit preference changed while modal was open
+        if self.state.use_metric != self.state.custom_size_input_is_metric {
+            let convert = |s: &mut String, f: fn(f32) -> f32| {
+                if let Ok(v) = s.parse::<f32>() {
+                    *s = format!("{:.3}", f(v));
+                }
+            };
+            if self.state.use_metric {
+                convert(&mut self.state.custom_size_w_str, vibeprint::layout_engine::inches_to_mm);
+                convert(&mut self.state.custom_size_h_str, vibeprint::layout_engine::inches_to_mm);
+                convert(&mut self.state.custom_size_long_str, vibeprint::layout_engine::inches_to_mm);
+            } else {
+                convert(&mut self.state.custom_size_w_str, vibeprint::layout_engine::mm_to_inches);
+                convert(&mut self.state.custom_size_h_str, vibeprint::layout_engine::mm_to_inches);
+                convert(&mut self.state.custom_size_long_str, vibeprint::layout_engine::mm_to_inches);
+            }
+            self.state.custom_size_input_is_metric = self.state.use_metric;
+        }
+
+        let to_inches = |val: f32| -> f32 {
+            if self.state.use_metric {
+                vibeprint::layout_engine::mm_to_inches(val)
+            } else {
+                val
+            }
+        };
+
         let mut close = false;
         let mut confirmed: Option<(f32, f32)> = None;
         let mut parsed_w: Option<f32> = None;
@@ -1410,8 +1437,16 @@ if apply_btn.clicked() {
                 ui.vertical_centered(|ui| {
                     ui.label(
                         RichText::new(format!(
-                            "Printable area: {:.2}\" × {:.2}\"",
-                            ia_w_in, ia_h_in
+                            "Printable area: {}",
+                            if self.state.use_metric {
+                                let (w_mm, h_mm) = (
+                                    vibeprint::layout_engine::inches_to_mm(ia_w_in),
+                                    vibeprint::layout_engine::inches_to_mm(ia_h_in),
+                                );
+                                format!("{:.1} × {:.1} mm", w_mm, h_mm)
+                            } else {
+                                format!("{:.2}\" × {:.2}\"", ia_w_in, ia_h_in)
+                            }
                         ))
                         .color(Color32::WHITE)
                         .size(11.0),
@@ -1460,10 +1495,10 @@ if apply_btn.clicked() {
                                         egui::TextEdit::singleline(&mut self.state.custom_size_h_str)
                                             .desired_width(60.0),
                                     );
-                                    ui.label("in");
+                                    ui.label(if self.state.use_metric { "mm" } else { "in" });
                                 });
-                                parsed_w = self.state.custom_size_w_str.parse::<f32>().ok();
-                                parsed_h = self.state.custom_size_h_str.parse::<f32>().ok();
+                                parsed_w = self.state.custom_size_w_str.parse::<f32>().ok().map(to_inches);
+                                parsed_h = self.state.custom_size_h_str.parse::<f32>().ok().map(to_inches);
 
                                 // Reserve space for result line to maintain height
                                 ui.add_space(4.0);
@@ -1477,25 +1512,34 @@ if apply_btn.clicked() {
                                         egui::TextEdit::singleline(&mut self.state.custom_size_long_str)
                                             .desired_width(60.0),
                                     );
-                                    ui.label("in (long side)");
+                                    ui.label(if self.state.use_metric { "mm (long side)" } else { "in (long side)" });
                                 });
 
                                 if let Some(asp) = aspect {
                                     if let Ok(long) = self.state.custom_size_long_str.parse::<f32>() {
+                                        let long_in = to_inches(long);
                                         let (w, h) = if asp >= 1.0 {
-                                            let h = long / asp;
-                                            (long, h)
+                                            let h = long_in / asp;
+                                            (long_in, h)
                                         } else {
-                                            let w = long * asp;
-                                            (w, long)
+                                            let w = long_in * asp;
+                                            (w, long_in)
                                         };
                                         parsed_w = Some(w);
                                         parsed_h = Some(h);
                                         ui.add_space(4.0);
                                         ui.label(
-                                            RichText::new(format!("→  {:.3}\" × {:.3}\"", w, h))
-                                                .weak()
-                                                .size(11.0),
+                                            RichText::new(
+                                                if self.state.use_metric {
+                                                    format!("→  {:.3} mm × {:.3} mm",
+                                                        vibeprint::layout_engine::inches_to_mm(w),
+                                                        vibeprint::layout_engine::inches_to_mm(h))
+                                                } else {
+                                                    format!("→  {:.3}\" × {:.3}\"", w, h)
+                                                }
+                                            )
+                                            .weak()
+                                            .size(11.0),
                                         );
                                     } else {
                                         parsed_w = None;

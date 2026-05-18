@@ -490,8 +490,16 @@ impl App {
             ui.label(RichText::new("Print Size").strong().size(12.0));
             ui.label(
                 RichText::new(format!(
-                    "  Printable area: {:.2}\" × {:.2}\"",
-                    ia_w_in, ia_h_in
+                    "  Printable area: {}",
+                    if self.state.use_metric {
+                        let (w_mm, h_mm) = (
+                            vibeprint::layout_engine::inches_to_mm(ia_w_in),
+                            vibeprint::layout_engine::inches_to_mm(ia_h_in),
+                        );
+                        format!("{:.1} × {:.1} mm", w_mm, h_mm)
+                    } else {
+                        format!("{:.2}\" × {:.2}\"", ia_w_in, ia_h_in)
+                    }
                 ))
                 .size(10.0)
                 .color(egui::Color32::from_gray(180)),
@@ -600,12 +608,19 @@ impl App {
                         Color32::from_gray(210)
                     });
                 if ui.selectable_label(false, custom_text).clicked() {
-                    // Pre-fill fields from current item or blank
                     let (w_str, h_str, long_str) =
                         if let Some(qi) = self.selected_queue() {
                             let (w, h) = qi.size.as_inches();
                             let long = w.max(h);
-                            (format!("{:.3}", w), format!("{:.3}", h), format!("{:.3}", long))
+                            if self.state.use_metric {
+                                (
+                                    format!("{:.3}", vibeprint::layout_engine::inches_to_mm(w)),
+                                    format!("{:.3}", vibeprint::layout_engine::inches_to_mm(h)),
+                                    format!("{:.3}", vibeprint::layout_engine::inches_to_mm(long)),
+                                )
+                            } else {
+                                (format!("{:.3}", w), format!("{:.3}", h), format!("{:.3}", long))
+                            }
                         } else if self.state.staged.is_some() {
                             (String::new(), String::new(), String::new())
                         } else {
@@ -614,6 +629,7 @@ impl App {
                     self.state.custom_size_w_str = w_str;
                     self.state.custom_size_h_str = h_str;
                     self.state.custom_size_long_str = long_str;
+                    self.state.custom_size_input_is_metric = self.state.use_metric;
                     self.state.show_custom_size_modal = true;
                 }
 

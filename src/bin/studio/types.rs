@@ -391,6 +391,7 @@ pub(crate) struct AppState {
     pub custom_size_w_str: String,
     pub custom_size_h_str: String,
     pub custom_size_long_str: String,
+    pub custom_size_input_is_metric: bool,
 
     // ── Crop editor modal ──
     pub show_crop_editor: bool,
@@ -545,6 +546,7 @@ impl AppState {
             custom_size_w_str: String::new(),
             custom_size_h_str: String::new(),
             custom_size_long_str: String::new(),
+            custom_size_input_is_metric: false,
             show_preferences: false,
             use_metric: saved_use_metric,
             show_about: false,
