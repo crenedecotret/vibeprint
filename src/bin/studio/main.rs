@@ -88,6 +88,7 @@ impl eframe::App for App {
                 .and_then(|c| c.input_slots.get(self.state.props_slot_idx))
                 .map(|(k, _)| k.clone()),
             monitor_icc_override: self.state.monitor_icc_override.clone(),
+            use_metric: Some(self.state.use_metric),
         });
     }
 

@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 use crate::types::{
-    Engine, IccPickerContext, Intent, ProcState, RightTab, FIT_PAGE_IDX, PRINT_SIZES,
+    Engine, IccPickerContext, Intent, ProcState, RightTab, FIT_PAGE_IDX, print_sizes,
 };
 use crate::utils::check_size_fit;
 use crate::App;
@@ -476,6 +476,8 @@ impl App {
 
         ui.add_space(4.0);
 
+        let sizes = print_sizes(self.state.use_metric);
+
         // Determine the currently selected size index for queued images
         let selected_size_idx = if self.state.staged.is_some() {
             None // No highlighting for staged images
@@ -484,8 +486,13 @@ impl App {
                 Some(FIT_PAGE_IDX)
             } else {
                 let (qw, qh) = qi.size.as_inches();
-                PRINT_SIZES.iter().enumerate().find_map(|(i, &(w, h, _))| {
-                    if (qw - w).abs() < 0.001 && (qh - h).abs() < 0.001 {
+                sizes.iter().enumerate().find_map(|(i, &(w, h, _))| {
+                    let (sw, sh) = if self.state.use_metric {
+                        (vibeprint::layout_engine::mm_to_inches(w), vibeprint::layout_engine::mm_to_inches(h))
+                    } else {
+                        (w, h)
+                    };
+                    if (qw - sw).abs() < 0.001 && (qh - sh).abs() < 0.001 {
                         Some(i)
                     } else {
                         None
@@ -499,8 +506,13 @@ impl App {
         egui::ScrollArea::vertical()
             .id_salt("print_sizes")
             .show(ui, |ui| {
-                for (idx, &(w, h, label)) in PRINT_SIZES.iter().enumerate() {
-                    let (fits, _) = check_size_fit(w, h, ia_w_in, ia_h_in);
+                for (idx, &(w, h, label)) in sizes.iter().enumerate() {
+                    let (w_in, h_in) = if self.state.use_metric {
+                        (vibeprint::layout_engine::mm_to_inches(w), vibeprint::layout_engine::mm_to_inches(h))
+                    } else {
+                        (w, h)
+                    };
+                    let (fits, _) = check_size_fit(w_in, h_in, ia_w_in, ia_h_in);
                     let is_selected = selected_size_idx == Some(idx);
                     let row_text = RichText::new(label).size(13.0).color(if is_selected {
                         Color32::from_rgb(60, 120, 200)

@@ -468,6 +468,7 @@ impl App {
                                 .and_then(|c| c.input_slots.get(self.state.props_slot_idx))
                                 .map(|(k, _)| k.clone()),
                             monitor_icc_override: self.state.monitor_icc_override.clone(),
+                            use_metric: Some(self.state.use_metric),
                         });
                     }
                 });
@@ -1616,7 +1617,7 @@ if apply_btn.clicked() {
                     "Auto-detected".to_string()
                 };
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Current:").weak().size(12.0));
+                    ui.label(RichText::new("Current monitor profile:").weak().size(12.0));
                     ui.add(
                         egui::Label::new(RichText::new(current_label).monospace().size(12.0))
                             .truncate(),
@@ -1660,6 +1661,8 @@ if apply_btn.clicked() {
                 });
 
                 ui.add_space(4.0);
+
+                ui.checkbox(&mut self.state.use_metric, "Use the metric measuring system");
 
                 ui.add_space(8.0);
                 ui.separator();

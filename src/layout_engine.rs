@@ -24,11 +24,17 @@ pub struct PrintSize {
     pub unit: Unit,
 }
 
+/// Convert millimeters to inches using f64 intermediate arithmetic for precision.
+/// Returns the closest f32 to the exact rational result (mm / 25.4).
+pub fn mm_to_inches(mm: f32) -> f32 {
+    (mm as f64 / 25.4) as f32
+}
+
 impl PrintSize {
     pub fn as_inches(self) -> (f32, f32) {
         match self.unit {
             Unit::Inches => (self.width, self.height),
-            Unit::Millimeters => (self.width / 25.4, self.height / 25.4),
+            Unit::Millimeters => (mm_to_inches(self.width), mm_to_inches(self.height)),
         }
     }
 }
@@ -487,15 +493,44 @@ mod tests {
             placed_w_px: 0,
             placed_h_px: 0,
             src_size_px: Some(src),
-crop_enabled: false,
-             crop_u0: None,
-             crop_v0: None,
-             crop_u1: None,
-             crop_v1: None,
-             crop_inverted: false,
-             border_type: BorderType::None,
-             border_width_pt: 0.0,
-         }
+            crop_enabled: false,
+            crop_u0: None,
+            crop_v0: None,
+            crop_u1: None,
+            crop_v1: None,
+            crop_inverted: false,
+            border_type: BorderType::None,
+            border_width_pt: 0.0,
+        }
+    }
+
+    fn queued_metric(id: Uuid, w_mm: f32, h_mm: f32, src: (u32, u32)) -> QueuedImage {
+        QueuedImage {
+            id,
+            filepath: PathBuf::from(format!("{id}.jpg")),
+            size: PrintSize {
+                width: w_mm,
+                height: h_mm,
+                unit: Unit::Millimeters,
+            },
+            fit_to_page: false,
+            center_to_page: false,
+            source_icc: None,
+            position: Point::default(),
+            page: 0,
+            rotation: 0.0,
+            placed_w_px: 0,
+            placed_h_px: 0,
+            src_size_px: Some(src),
+            crop_enabled: false,
+            crop_u0: None,
+            crop_v0: None,
+            crop_u1: None,
+            crop_v1: None,
+            crop_inverted: false,
+            border_type: BorderType::None,
+            border_width_pt: 0.0,
+        }
     }
 
     fn queued_fit(id: Uuid, src: (u32, u32)) -> QueuedImage {
@@ -747,5 +782,75 @@ crop_enabled: false,
             p.y_px.saturating_add(p.h_px) <= page_h_px,
             "placement overflows y"
         );
+    }
+
+    #[test]
+    fn mm_to_inches_precision() {
+        let w = mm_to_inches(210.0);
+        let h = mm_to_inches(297.0);
+        let expected_w = 210.0_f64 / 25.4_f64;
+        let expected_h = 297.0_f64 / 25.4_f64;
+        assert!(
+            (w as f64 - expected_w).abs() < 1e-6,
+            "A4 width: got {}, expected ~{}",
+            w,
+            expected_w
+        );
+        assert!(
+            (h as f64 - expected_h).abs() < 1e-6,
+            "A4 height: got {}, expected ~{}",
+            h,
+            expected_h
+        );
+
+        let a0_w = mm_to_inches(841.0);
+        let a0_h = mm_to_inches(1189.0);
+        let expected_a0_w = 841.0_f64 / 25.4_f64;
+        let expected_a0_h = 1189.0_f64 / 25.4_f64;
+        assert!(
+            (a0_w as f64 - expected_a0_w).abs() < 1e-5,
+            "A0 width: got {}, expected ~{}",
+            a0_w,
+            expected_a0_w
+        );
+        assert!(
+            (a0_h as f64 - expected_a0_h).abs() < 1e-5,
+            "A0 height: got {}, expected ~{}",
+            a0_h,
+            expected_a0_h
+        );
+
+        let ps = PrintSize {
+            width: 210.0,
+            height: 297.0,
+            unit: Unit::Millimeters,
+        };
+        let (w2, h2) = ps.as_inches();
+        assert_eq!(w2, w, "as_inches should match mm_to_inches for width");
+        assert_eq!(h2, h, "as_inches should match mm_to_inches for height");
+    }
+
+    #[test]
+    fn metric_a4_layout_at_720dpi() {
+        let a4 = queued_metric(Uuid::new_v4(), 210.0, 297.0, (3000, 4000));
+        let page_w_px = 6000u32;
+        let page_h_px = 8500u32;
+        let result = layout_queue(&[a4.clone()], page_w_px, page_h_px, 720, 0.0);
+        let p = result.placements.get(&a4.id).expect("placement missing");
+
+        assert_eq!(p.w_px, 5953, "A4 width at 720dpi");
+        assert_eq!(p.h_px, 8419, "A4 height at 720dpi");
+    }
+
+    #[test]
+    fn metric_a4_layout_at_300dpi() {
+        let a4 = queued_metric(Uuid::new_v4(), 210.0, 297.0, (3000, 4000));
+        let page_w_px = 2600u32;
+        let page_h_px = 3600u32;
+        let result = layout_queue(&[a4.clone()], page_w_px, page_h_px, 300, 0.0);
+        let p = result.placements.get(&a4.id).expect("placement missing");
+
+        assert_eq!(p.w_px, 2480, "A4 width at 300dpi");
+        assert_eq!(p.h_px, 3508, "A4 height at 300dpi");
     }
 }

@@ -15,7 +15,7 @@ use vibeprint::{
 use crate::icc::{apply_preview_transform, extract_file_date, extract_file_size};
 use crate::types::{
     AppState, Engine, IccProfileEntry, IccProfileFilter, IccProfileSource, Intent, LoadKind,
-    ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX, PRINT_SIZES, QUEUE_SPACING_IN,
+    ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX, print_sizes, QUEUE_SPACING_IN,
     THUMB_PX,
 };
 use crate::utils::{extract_embedded_icc, is_image, load_thumb};
@@ -162,6 +162,7 @@ impl App {
             printer_discovery::spawn_discovery(),
             saved_show_log,
             s.bpc.unwrap_or(true),
+            s.use_metric.unwrap_or(false),
         );
         state.pending_extra_option_indices = s.extra_option_indices;
         state.pending_media_type_key = s.media_type_key;
@@ -531,12 +532,18 @@ impl App {
     ) -> Option<vibeprint::layout_engine::PrintSize> {
         use vibeprint::layout_engine::{PrintSize, Unit};
 
-        if idx < PRINT_SIZES.len() {
-            let (w, h, _) = PRINT_SIZES[idx];
+        let sizes = print_sizes(self.state.use_metric);
+        if idx < sizes.len() {
+            let (w, h, _) = sizes[idx];
+            let unit = if self.state.use_metric {
+                Unit::Millimeters
+            } else {
+                Unit::Inches
+            };
             return Some(PrintSize {
                 width: w,
                 height: h,
-                unit: Unit::Inches,
+                unit,
             });
         }
         if idx == FIT_PAGE_IDX {

@@ -47,6 +47,31 @@ pub(crate) const PRINT_SIZES: &[(f32, f32, &str)] = &[
     // FIT_PAGE_IDX (15) = "Fit to Page" — handled as sentinel, not a real entry
 ];
 
+/// ISO A-series print sizes (width × height in mm, label). Width is always the shorter side.
+pub(crate) const METRIC_PRINT_SIZES: &[(f32, f32, &str)] = &[
+    (841.0, 1189.0, "A0 (841 × 1189 mm)"),
+    (594.0, 841.0, "A1 (594 × 841 mm)"),
+    (420.0, 594.0, "A2 (420 × 594 mm)"),
+    (297.0, 420.0, "A3 (297 × 420 mm)"),
+    (210.0, 297.0, "A4 (210 × 297 mm)"),
+    (148.0, 210.0, "A5 (148 × 210 mm)"),
+    (105.0, 148.0, "A6 (105 × 148 mm)"),
+    (74.0, 105.0, "A7 (74 × 105 mm)"),
+    (52.0, 74.0, "A8 (52 × 74 mm)"),
+    (37.0, 52.0, "A9 (37 × 52 mm)"),
+    (26.0, 37.0, "A10 (26 × 37 mm)"),
+    (609.0, 914.0, "A1+ (609 × 914 mm)"),
+    (329.0, 483.0, "A3+ (329 × 483 mm)"),
+];
+
+pub(crate) fn print_sizes(use_metric: bool) -> &'static [(f32, f32, &'static str)] {
+    if use_metric {
+        METRIC_PRINT_SIZES
+    } else {
+        PRINT_SIZES
+    }
+}
+
 // ── ICC Profile Types ───────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -235,6 +260,7 @@ pub(crate) struct Settings {
     pub media_type_key: Option<String>,
     pub input_slot_key: Option<String>,
     pub monitor_icc_override: Option<String>,
+    pub use_metric: Option<bool>,
 }
 
 // ── App State ───────────────────────────────────────────────────────────────
@@ -384,6 +410,7 @@ pub(crate) struct AppState {
 
     // ── Preferences modal ──
     pub show_preferences: bool,
+    pub use_metric: bool,
 
     // ── About modal ──
     pub show_about: bool,
@@ -409,6 +436,7 @@ impl AppState {
         discovery_rx: Receiver<DiscoveryEvent>,
         saved_show_log: bool,
         saved_bpc: bool,
+        saved_use_metric: bool,
     ) -> Self {
         Self {
             current_dir: home.clone(),
@@ -518,6 +546,7 @@ impl AppState {
             custom_size_h_str: String::new(),
             custom_size_long_str: String::new(),
             show_preferences: false,
+            use_metric: saved_use_metric,
             show_about: false,
             icc_picker_context: IccPickerContext::Output,
         }
