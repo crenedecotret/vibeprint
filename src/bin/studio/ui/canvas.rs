@@ -367,6 +367,7 @@ impl App {
             RULER_PX,
             m_left,
             m_right,
+            self.state.use_metric,
         );
         draw_ruler_v(
             &painter,
@@ -377,6 +378,7 @@ impl App {
             RULER_PX,
             m_top,
             m_bottom,
+            self.state.use_metric,
         );
 
         if self.state.softproof_enabled {

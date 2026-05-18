@@ -255,6 +255,7 @@ pub(crate) fn draw_ruler_h(
     ruler_h: f32,
     margin_l_px: f32,
     margin_r_px: f32,
+    use_metric: bool,
 ) {
     let bg = Color32::from_gray(44);
     let fg = Color32::from_gray(215);
@@ -274,53 +275,95 @@ pub(crate) fn draw_ruler_h(
     );
 
     let ppi = 72.0_f32 * scale; // pixels per inch
-    let total = paper_px_w / ppi;
 
-    for i in 0..=(total as u32 + 1) {
-        let x = paper_x + i as f32 * ppi;
-        if x < area.min.x || x > area.max.x {
-            continue;
-        }
+    if use_metric {
+        let ppcm = ppi / 2.54; // pixels per centimeter
+        let total = paper_px_w / ppcm;
 
-        // Inch tick
-        painter.line_segment(
-            [
-                Pos2::new(x, area.min.y + ruler_h - 13.0),
-                Pos2::new(x, area.min.y + ruler_h),
-            ],
-            Stroke::new(1.0, fg),
-        );
-        if i > 0 {
-            painter.text(
-                Pos2::new(x + 2.5, area.min.y + 2.5),
-                egui::Align2::LEFT_TOP,
-                format!("{i}\""),
-                egui::FontId::proportional(10.0),
-                fg,
-            );
-        }
-        // Half-inch
-        let xh = x + ppi * 0.5;
-        if xh > area.min.x && xh < area.max.x {
+        for i in 0..=(total as u32 + 1) {
+            let x = paper_x + i as f32 * ppcm;
+            if x < area.min.x || x > area.max.x {
+                continue;
+            }
+
+            // Major tick (1 cm)
             painter.line_segment(
                 [
-                    Pos2::new(xh, area.min.y + ruler_h - 8.0),
-                    Pos2::new(xh, area.min.y + ruler_h),
+                    Pos2::new(x, area.min.y + ruler_h - 13.0),
+                    Pos2::new(x, area.min.y + ruler_h),
                 ],
-                Stroke::new(1.0, half_fg),
+                Stroke::new(1.0, fg),
             );
-        }
-        // Quarter-inch ticks
-        for &frac in &[0.25_f32, 0.75] {
-            let xq = x + ppi * frac;
-            if xq > area.min.x && xq < area.max.x {
+            if i > 0 && i % 2 == 0 {
+                painter.text(
+                    Pos2::new(x + 2.5, area.min.y + 2.5),
+                    egui::Align2::LEFT_TOP,
+                    format!("{i}"),
+                    egui::FontId::proportional(10.0),
+                    fg,
+                );
+            }
+            // Half-cm tick
+            let xh = x + ppcm * 0.5;
+            if xh > area.min.x && xh < area.max.x {
                 painter.line_segment(
                     [
-                        Pos2::new(xq, area.min.y + ruler_h - 5.0),
-                        Pos2::new(xq, area.min.y + ruler_h),
+                        Pos2::new(xh, area.min.y + ruler_h - 8.0),
+                        Pos2::new(xh, area.min.y + ruler_h),
                     ],
-                    Stroke::new(0.75, qtr_fg),
+                    Stroke::new(1.0, half_fg),
                 );
+            }
+        }
+    } else {
+        let total = paper_px_w / ppi;
+
+        for i in 0..=(total as u32 + 1) {
+            let x = paper_x + i as f32 * ppi;
+            if x < area.min.x || x > area.max.x {
+                continue;
+            }
+
+            // Inch tick
+            painter.line_segment(
+                [
+                    Pos2::new(x, area.min.y + ruler_h - 13.0),
+                    Pos2::new(x, area.min.y + ruler_h),
+                ],
+                Stroke::new(1.0, fg),
+            );
+            if i > 0 {
+                painter.text(
+                    Pos2::new(x + 2.5, area.min.y + 2.5),
+                    egui::Align2::LEFT_TOP,
+                    format!("{i}\""),
+                    egui::FontId::proportional(10.0),
+                    fg,
+                );
+            }
+            // Half-inch
+            let xh = x + ppi * 0.5;
+            if xh > area.min.x && xh < area.max.x {
+                painter.line_segment(
+                    [
+                        Pos2::new(xh, area.min.y + ruler_h - 8.0),
+                        Pos2::new(xh, area.min.y + ruler_h),
+                    ],
+                    Stroke::new(1.0, half_fg),
+                );
+            }
+            // Quarter-inch ticks
+            for &frac in &[0.25_f32, 0.75] {
+                let xq = x + ppi * frac;
+                if xq > area.min.x && xq < area.max.x {
+                    painter.line_segment(
+                        [
+                            Pos2::new(xq, area.min.y + ruler_h - 5.0),
+                            Pos2::new(xq, area.min.y + ruler_h),
+                        ],
+                        Stroke::new(0.75, qtr_fg),
+                    );
+                }
             }
         }
     }
@@ -358,6 +401,7 @@ pub(crate) fn draw_ruler_v(
     ruler_w: f32,
     margin_t_px: f32,
     margin_b_px: f32,
+    use_metric: bool,
 ) {
     let bg = Color32::from_gray(44);
     let fg = Color32::from_gray(215);
@@ -380,53 +424,95 @@ pub(crate) fn draw_ruler_v(
     );
 
     let ppi = 72.0_f32 * scale;
-    let total = paper_px_h / ppi;
 
-    for i in 0..=(total as u32 + 1) {
-        let y = paper_y + i as f32 * ppi;
-        if y < area.min.y || y > area.max.y {
-            continue;
-        }
+    if use_metric {
+        let ppcm = ppi / 2.54;
+        let total = paper_px_h / ppcm;
 
-        // Inch tick
-        painter.line_segment(
-            [
-                Pos2::new(area.min.x + ruler_w - 13.0, y),
-                Pos2::new(area.min.x + ruler_w, y),
-            ],
-            Stroke::new(1.0, fg),
-        );
-        if i > 0 {
-            painter.text(
-                Pos2::new(area.min.x + 2.0, y + 2.5),
-                egui::Align2::LEFT_TOP,
-                format!("{i}\""),
-                egui::FontId::proportional(10.0),
-                fg,
-            );
-        }
-        // Half-inch
-        let yh = y + ppi * 0.5;
-        if yh > area.min.y && yh < area.max.y {
+        for i in 0..=(total as u32 + 1) {
+            let y = paper_y + i as f32 * ppcm;
+            if y < area.min.y || y > area.max.y {
+                continue;
+            }
+
+            // Major tick (1 cm)
             painter.line_segment(
                 [
-                    Pos2::new(area.min.x + ruler_w - 8.0, yh),
-                    Pos2::new(area.min.x + ruler_w, yh),
+                    Pos2::new(area.min.x + ruler_w - 13.0, y),
+                    Pos2::new(area.min.x + ruler_w, y),
                 ],
-                Stroke::new(1.0, half_fg),
+                Stroke::new(1.0, fg),
             );
-        }
-        // Quarter-inch ticks
-        for &frac in &[0.25_f32, 0.75] {
-            let yq = y + ppi * frac;
-            if yq > area.min.y && yq < area.max.y {
+            if i > 0 && i % 2 == 0 {
+                painter.text(
+                    Pos2::new(area.min.x + 2.0, y + 2.5),
+                    egui::Align2::LEFT_TOP,
+                    format!("{i}"),
+                    egui::FontId::proportional(10.0),
+                    fg,
+                );
+            }
+            // Half-cm tick
+            let yh = y + ppcm * 0.5;
+            if yh > area.min.y && yh < area.max.y {
                 painter.line_segment(
                     [
-                        Pos2::new(area.min.x + ruler_w - 5.0, yq),
-                        Pos2::new(area.min.x + ruler_w, yq),
+                        Pos2::new(area.min.x + ruler_w - 8.0, yh),
+                        Pos2::new(area.min.x + ruler_w, yh),
                     ],
-                    Stroke::new(0.75, qtr_fg),
+                    Stroke::new(1.0, half_fg),
                 );
+            }
+        }
+    } else {
+        let total = paper_px_h / ppi;
+
+        for i in 0..=(total as u32 + 1) {
+            let y = paper_y + i as f32 * ppi;
+            if y < area.min.y || y > area.max.y {
+                continue;
+            }
+
+            // Inch tick
+            painter.line_segment(
+                [
+                    Pos2::new(area.min.x + ruler_w - 13.0, y),
+                    Pos2::new(area.min.x + ruler_w, y),
+                ],
+                Stroke::new(1.0, fg),
+            );
+            if i > 0 {
+                painter.text(
+                    Pos2::new(area.min.x + 2.0, y + 2.5),
+                    egui::Align2::LEFT_TOP,
+                    format!("{i}\""),
+                    egui::FontId::proportional(10.0),
+                    fg,
+                );
+            }
+            // Half-inch
+            let yh = y + ppi * 0.5;
+            if yh > area.min.y && yh < area.max.y {
+                painter.line_segment(
+                    [
+                        Pos2::new(area.min.x + ruler_w - 8.0, yh),
+                        Pos2::new(area.min.x + ruler_w, yh),
+                    ],
+                    Stroke::new(1.0, half_fg),
+                );
+            }
+            // Quarter-inch ticks
+            for &frac in &[0.25_f32, 0.75] {
+                let yq = y + ppi * frac;
+                if yq > area.min.y && yq < area.max.y {
+                    painter.line_segment(
+                        [
+                            Pos2::new(area.min.x + ruler_w - 5.0, yq),
+                            Pos2::new(area.min.x + ruler_w, yq),
+                        ],
+                        Stroke::new(0.75, qtr_fg),
+                    );
+                }
             }
         }
     }
