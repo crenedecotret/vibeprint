@@ -1518,12 +1518,31 @@ if apply_btn.clicked() {
                                 if let Some(asp) = aspect {
                                     if let Ok(long) = self.state.custom_size_long_str.parse::<f32>() {
                                         let long_in = to_inches(long);
-                                        let (w, h) = if asp >= 1.0 {
-                                            let h = long_in / asp;
-                                            (long_in, h)
+
+                                        let max_long_in = if asp >= 1.0 {
+                                            let portrait_max = ia_w_in.min(ia_h_in * asp);
+                                            let landscape_max = (ia_w_in * asp).min(ia_h_in);
+                                            portrait_max.max(landscape_max)
                                         } else {
-                                            let w = long_in * asp;
-                                            (w, long_in)
+                                            let portrait_max = (ia_w_in / asp).min(ia_h_in);
+                                            let landscape_max = ia_w_in.min(ia_h_in / asp);
+                                            portrait_max.max(landscape_max)
+                                        } - 0.0001;
+
+                                        let clamped_long_in = long_in.min(max_long_in);
+                                        if (clamped_long_in - long_in).abs() > 0.0001 {
+                                            let display_val = if self.state.use_metric {
+                                                vibeprint::layout_engine::inches_to_mm(clamped_long_in)
+                                            } else {
+                                                clamped_long_in
+                                            };
+                                            self.state.custom_size_long_str = format!("{:.3}", display_val);
+                                        }
+
+                                        let (w, h) = if asp >= 1.0 {
+                                            (clamped_long_in, clamped_long_in / asp)
+                                        } else {
+                                            (clamped_long_in * asp, clamped_long_in)
                                         };
                                         parsed_w = Some(w);
                                         parsed_h = Some(h);
