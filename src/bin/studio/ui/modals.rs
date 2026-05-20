@@ -457,7 +457,11 @@ impl App {
                             intent: Some(intent_str.into()),
                             bpc: Some(self.state.bpc),
                             output_dir: Some(self.state.output_dir.to_string_lossy().into_owned()),
-                            user_border_in: Some(self.state.user_border_in),
+                            user_border_in: None,
+                            user_border_l: Some(self.state.user_border.left),
+                            user_border_r: Some(self.state.user_border.right),
+                            user_border_t: Some(self.state.user_border.top),
+                            user_border_b: Some(self.state.user_border.bottom),
                             icc_filter: Some(icc_filter_str.into()),
                             show_log: Some(self.state.show_log),
                             extra_option_indices: Some(self.state.extra_option_indices.clone()),
@@ -1748,12 +1752,18 @@ if apply_btn.clicked() {
                 if ui.checkbox(&mut self.state.use_metric, "Use the metric measuring system").changed() {
                     ctx.request_repaint();
                     self.mark_preview_dirty();
-                    if self.state.use_metric {
-                        let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
-                        self.state.border_edit_string = format!("{:.2}", mm);
-                    } else {
-                        self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
-                    }
+                    self.state.border_edit_l =
+                        crate::app::format_border_edit(
+                            self.state.user_border.left, self.state.use_metric);
+                    self.state.border_edit_r =
+                        crate::app::format_border_edit(
+                            self.state.user_border.right, self.state.use_metric);
+                    self.state.border_edit_t =
+                        crate::app::format_border_edit(
+                            self.state.user_border.top, self.state.use_metric);
+                    self.state.border_edit_b =
+                        crate::app::format_border_edit(
+                            self.state.user_border.bottom, self.state.use_metric);
                     self.state.border_width_edit_string.clear();
                 }
 

@@ -8,6 +8,14 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 
+/// Calculate the PostScript translate offset to place a TIFF (sized to the
+/// imageable area) at the correct position on the physical page.
+/// `imageable_area` is `(left_pt, bottom_pt, right_pt, top_pt)` from CUPS.
+/// Returns `(offset_x_pts, offset_y_pts)` — the translation in PostScript points.
+fn calc_print_offset(imageable_area: (f32, f32, f32, f32)) -> (f32, f32) {
+    (imageable_area.0, imageable_area.1)
+}
+
 /// Print job submission (sync version for background thread)
 pub(crate) fn submit_print_jobs_sync(
     temp_paths: &[PathBuf],
@@ -85,6 +93,7 @@ pub(crate) fn submit_print_jobs_sync(
             .unwrap_or((612.0, 792.0));
 
         // Derive TIFF image size in pts from its pixel dimensions and embedded DPI.
+        #[allow(unused_variables)]
         let (img_w_pts, img_h_pts) = {
             let mut w = paper_w_pts;
             let mut h = paper_h_pts;
@@ -105,10 +114,13 @@ pub(crate) fn submit_print_jobs_sync(
             (w, h)
         };
 
-        // Offset in pts: center the image in the remaining space (paper - image) / 2
-        // This matches how the imageable area is centered on the physical sheet.
-        let offset_x = ((paper_w_pts - img_w_pts) / 2.0).max(0.0);
-        let offset_y = ((paper_h_pts - img_h_pts) / 2.0).max(0.0);
+        // Offset in pts: place the TIFF at the reported border origin
+        // (left_pt, bottom_pt) from the CUPS imageable area.
+        let (offset_x, offset_y) = caps
+            .page_sizes
+            .get(selected_page_size_idx)
+            .map(|ps| calc_print_offset(ps.imageable_area))
+            .unwrap_or((0.0, 0.0));
 
         // Pipe: tiff2ps → prepend a translate → gs with full paper size
         let gs_cmd = format!(
@@ -156,4 +168,37 @@ pub(crate) fn submit_print_jobs_sync(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::calc_print_offset;
+
+    #[test]
+    fn asymmetric_imageable_area_offset() {
+        // Letter paper: 612 × 792 pts.
+        // Asymmetric reported borders: left=14.4, bottom=18.0, right=28.8, top=21.6 pts
+        let imageable_area = (14.4, 18.0, 583.2, 770.4);
+        let (offset_x, offset_y) = calc_print_offset(imageable_area);
+        assert_eq!(offset_x, 14.4);
+        assert_eq!(offset_y, 18.0);
+    }
+
+    #[test]
+    fn symmetric_imageable_area_offset() {
+        // Same imageable area on all sides: 12 pts.
+        let imageable_area = (12.0, 12.0, 600.0, 780.0);
+        let (offset_x, offset_y) = calc_print_offset(imageable_area);
+        assert_eq!(offset_x, 12.0);
+        assert_eq!(offset_y, 12.0);
+    }
+
+    #[test]
+    fn zero_imageable_area_offset() {
+        // Borderless: imageable area fills the full paper.
+        let imageable_area = (0.0, 0.0, 612.0, 792.0);
+        let (offset_x, offset_y) = calc_print_offset(imageable_area);
+        assert_eq!(offset_x, 0.0);
+        assert_eq!(offset_y, 0.0);
+    }
 }

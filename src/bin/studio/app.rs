@@ -14,9 +14,9 @@ use vibeprint::{
 
 use crate::icc::{apply_preview_transform, extract_file_date, extract_file_size};
 use crate::types::{
-    AppState, Engine, IccProfileEntry, IccProfileFilter, IccProfileSource, Intent, LoadKind,
-    ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX, print_sizes, QUEUE_SPACING_IN,
-    THUMB_PX,
+    AppState, Borders, Engine, IccProfileEntry, IccProfileFilter, IccProfileSource, Intent,
+    LoadKind, ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX, print_sizes,
+    QUEUE_SPACING_IN, THUMB_PX,
 };
 use crate::utils::{extract_embedded_icc, is_image, load_thumb};
 
@@ -143,6 +143,28 @@ impl App {
             None => monitor_icc::get_monitor_profile(),
         };
 
+        let pending_user_border = {
+            if let (Some(l), Some(r), Some(t), Some(b)) =
+                (s.user_border_l, s.user_border_r, s.user_border_t, s.user_border_b)
+            {
+                Some(Borders {
+                    left: l,
+                    right: r,
+                    top: t,
+                    bottom: b,
+                })
+            } else if let Some(v) = s.user_border_in {
+                Some(Borders {
+                    left: v,
+                    right: v,
+                    top: v,
+                    bottom: v,
+                })
+            } else {
+                None
+            }
+        };
+
         let mut state = AppState::new(
             thumb_tx,
             thumb_rx,
@@ -157,7 +179,7 @@ impl App {
             saved_icc_filter,
             s.printer_name,
             s.page_size_name,
-            s.user_border_in,
+            pending_user_border,
             monitor_icc_profile,
             printer_discovery::spawn_discovery(),
             saved_show_log,
@@ -421,7 +443,7 @@ impl App {
         self.state.full_images.get(path)
     }
 
-    pub(crate) fn calc_reported_border(&self) -> f32 {
+    pub(crate) fn calc_reported_border(&self) -> Borders {
         self.state
             .caps
             .as_ref()
@@ -429,13 +451,14 @@ impl App {
             .map(|ps| {
                 let (l, b, r, t) = ps.imageable_area;
                 let (pw, ph) = ps.paper_size;
-                let left = l / 72.0;
-                let right = (pw - r) / 72.0;
-                let bottom = b / 72.0;
-                let top = (ph - t) / 72.0;
-                left.max(right).max(bottom).max(top)
+                Borders {
+                    left: l / 72.0,
+                    right: (pw - r) / 72.0,
+                    top: (ph - t) / 72.0,
+                    bottom: b / 72.0,
+                }
             })
-            .unwrap_or(0.25)
+            .unwrap_or_default()
     }
 
     pub(crate) fn imageable_size_in(&self) -> (f32, f32) {
@@ -447,8 +470,9 @@ impl App {
             .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
             .unwrap_or((8.5, 11.0));
 
-        let w = (pw - 2.0 * self.state.user_border_in).max(0.1);
-        let h = (ph - 2.0 * self.state.user_border_in).max(0.1);
+        let b = &self.state.user_border;
+        let w = (pw - b.left - b.right).max(0.1);
+        let h = (ph - b.top - b.bottom).max(0.1);
         (w, h)
     }
 
@@ -469,8 +493,9 @@ impl App {
             .and_then(|c| c.page_sizes.get(self.state.selected_page_size_idx))
             .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
             .unwrap_or((8.5, 11.0));
-        let w = (pw - 2.0 * self.state.reported_border_in).max(0.1);
-        let h = (ph - 2.0 * self.state.reported_border_in).max(0.1);
+        let b = &self.state.reported_border;
+        let w = (pw - b.left - b.right).max(0.1);
+        let h = (ph - b.top - b.bottom).max(0.1);
         let dpi = self.state.target_dpi as f32;
         (
             (w * dpi).round().max(1.0) as u32,
@@ -480,9 +505,13 @@ impl App {
 
     pub(crate) fn border_offset_px(&self) -> (u32, u32) {
         let dpi = self.state.target_dpi as f32;
-        let diff_in = self.state.user_border_in - self.state.reported_border_in;
-        let offset = (diff_in * dpi).round().max(0.0) as u32;
-        (offset, offset)
+        let dx = ((self.state.user_border.left - self.state.reported_border.left) * dpi)
+            .round()
+            .max(0.0) as u32;
+        let dy = ((self.state.user_border.top - self.state.reported_border.top) * dpi)
+            .round()
+            .max(0.0) as u32;
+        (dx, dy)
     }
 
     pub(crate) fn queued_box_px(&self, qi: &vibeprint::layout_engine::QueuedImage) -> (u32, u32) {
@@ -1059,36 +1088,38 @@ crop_enabled: false,
             }
             self.state.caps = Some(caps.clone());
 
-            self.state.reported_border_in = self.calc_reported_border();
-            self.state.user_border_in = if let Some(saved) = self.state.pending_user_border_in {
-                if saved >= self.state.reported_border_in {
-                    saved
-                } else {
-                    self.state.reported_border_in
+            self.state.reported_border = self.calc_reported_border();
+            self.state.user_border = if let Some(saved) = self.state.pending_user_border {
+                let rb = &self.state.reported_border;
+                Borders {
+                    left: saved.left.max(rb.left),
+                    right: saved.right.max(rb.right),
+                    top: saved.top.max(rb.top),
+                    bottom: saved.bottom.max(rb.bottom),
                 }
             } else {
-                self.state.reported_border_in
+                self.state.reported_border
             };
-            self.state.pending_user_border_in = None;
-            if self.state.use_metric {
-                let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
-                self.state.border_edit_string = format!("{:.2}", mm);
-            } else {
-                self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
-            }
+            self.state.pending_user_border = None;
+            self.state.border_edit_l =
+                format_border_edit(self.state.user_border.left, self.state.use_metric);
+            self.state.border_edit_r =
+                format_border_edit(self.state.user_border.right, self.state.use_metric);
+            self.state.border_edit_t =
+                format_border_edit(self.state.user_border.top, self.state.use_metric);
+            self.state.border_edit_b =
+                format_border_edit(self.state.user_border.bottom, self.state.use_metric);
 
             self.relayout_queue();
         } else {
             self.state.caps = None;
             self.state.extra_option_indices.clear();
-            self.state.reported_border_in = 0.25;
-            self.state.user_border_in = 0.25;
-            if self.state.use_metric {
-                let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
-                self.state.border_edit_string = format!("{:.2}", mm);
-            } else {
-                self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
-            }
+            self.state.reported_border = Borders::default();
+            self.state.user_border = Borders::default();
+            self.state.border_edit_l = format_border_edit(0.25, self.state.use_metric);
+            self.state.border_edit_r = format_border_edit(0.25, self.state.use_metric);
+            self.state.border_edit_t = format_border_edit(0.25, self.state.use_metric);
+            self.state.border_edit_b = format_border_edit(0.25, self.state.use_metric);
             self.relayout_queue();
         }
     }
@@ -1437,6 +1468,14 @@ crop_enabled: false,
     }
 }
 
+pub(crate) fn format_border_edit(value_in: f32, use_metric: bool) -> String {
+    if use_metric {
+        format!("{:.0}", vibeprint::layout_engine::inches_to_mm(value_in))
+    } else {
+        format!("{:.3}", value_in)
+    }
+}
+
 /// Load settings from disk
 pub(crate) fn load_settings() -> Settings {
     let path = match config_path() {
@@ -1466,4 +1505,148 @@ fn config_path() -> Option<PathBuf> {
     p.push("vibeprint");
     p.push("settings.json");
     Some(p)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::types::Borders;
+
+    fn calc_imageable_size_in(paper_w_in: f32, paper_h_in: f32, border: &Borders) -> (f32, f32) {
+        let w = (paper_w_in - border.left - border.right).max(0.1);
+        let h = (paper_h_in - border.top - border.bottom).max(0.1);
+        (w, h)
+    }
+
+    fn calc_border_offset_px(user: &Borders, reported: &Borders, dpi: f32) -> (u32, u32) {
+        let dx = ((user.left - reported.left) * dpi).round().max(0.0) as u32;
+        let dy = ((user.top - reported.top) * dpi).round().max(0.0) as u32;
+        (dx, dy)
+    }
+
+    #[test]
+    fn asymmetric_reported_symmetric_user() {
+        let reported = Borders {
+            left: 0.2,
+            right: 0.4,
+            top: 0.3,
+            bottom: 0.25,
+        };
+        let user = Borders {
+            left: 0.5,
+            right: 0.5,
+            top: 0.5,
+            bottom: 0.5,
+        };
+        let dpi = 720.0;
+
+        let (w, h) = calc_imageable_size_in(8.5, 11.0, &user);
+        assert!((w - 7.5).abs() < 0.01, "w={}", w);   // 8.5 - 0.5 - 0.5
+        assert!((h - 10.0).abs() < 0.01, "h={}", h); // 11.0 - 0.5 - 0.5
+
+        let (dx, dy) = calc_border_offset_px(&user, &reported, dpi);
+        assert_eq!(dx, 216); // (0.5 - 0.2) * 720
+        assert_eq!(dy, 144); // (0.5 - 0.3) * 720
+    }
+
+    #[test]
+    fn fully_asymmetric_borders() {
+        let reported = Borders {
+            left: 0.2,
+            right: 0.4,
+            top: 0.3,
+            bottom: 0.25,
+        };
+        let user = Borders {
+            left: 0.3,
+            right: 0.6,
+            top: 0.4,
+            bottom: 0.35,
+        };
+        let dpi = 720.0;
+
+        let (w, h) = calc_imageable_size_in(8.5, 11.0, &user);
+        assert!((w - 7.6).abs() < 0.01, "w={}", w);   // 8.5 - 0.3 - 0.6
+        assert!((h - 10.25).abs() < 0.01, "h={}", h); // 11.0 - 0.4 - 0.35
+
+        let (dx, dy) = calc_border_offset_px(&user, &reported, dpi);
+        assert_eq!(dx, 72);  // (0.3 - 0.2) * 720
+        assert_eq!(dy, 72);  // (0.4 - 0.3) * 720
+    }
+
+    #[test]
+    fn border_dimensions_consistency() {
+        let reported = Borders {
+            left: 0.2,
+            right: 0.4,
+            top: 0.3,
+            bottom: 0.25,
+        };
+        let user = Borders {
+            left: 0.3,
+            right: 0.6,
+            top: 0.4,
+            bottom: 0.35,
+        };
+        let (pw, ph) = (8.5f32, 11.0f32);
+        let (ia_w, ia_h) = calc_imageable_size_in(pw, ph, &user);
+        let (max_w, max_h) = calc_imageable_size_in(pw, ph, &reported);
+        let expected_w = ia_w + (user.left - reported.left) + (user.right - reported.right);
+        let expected_h = ia_h + (user.top - reported.top) + (user.bottom - reported.bottom);
+        assert!((expected_w - max_w).abs() < 0.001, "expected_w={} max_w={}", expected_w, max_w);
+        assert!((expected_h - max_h).abs() < 0.001, "expected_h={} max_h={}", expected_h, max_h);
+    }
+
+    #[test]
+    fn user_at_reported_minimum_zero_offset() {
+        let reported = Borders {
+            left: 0.2,
+            right: 0.4,
+            top: 0.3,
+            bottom: 0.25,
+        };
+        let user = reported;
+        let _dpi = 720.0;
+
+        let (dx, dy) = calc_border_offset_px(&user, &reported, _dpi);
+        assert_eq!(dx, 0);
+        assert_eq!(dy, 0);
+    }
+
+    #[test]
+    fn sum_cap_left_right() {
+        let reported = Borders {
+            left: 0.1,
+            right: 0.1,
+            top: 0.1,
+            bottom: 0.1,
+        };
+        let paper_w = 8.5f32;
+        let half_w = paper_w * 0.5;
+
+        let left = 3.0f32.clamp(reported.left, (half_w - reported.right).max(reported.left));
+        let right =
+            3.0f32.clamp(reported.right, (half_w - left).max(reported.right));
+        assert_eq!(left, 3.0);
+        assert_eq!(right, 1.25);
+        assert!(left + right <= half_w);
+    }
+
+    #[test]
+    fn sum_cap_top_bottom() {
+        let reported = Borders {
+            left: 0.1,
+            right: 0.1,
+            top: 0.1,
+            bottom: 0.1,
+        };
+        let paper_h = 11.0f32;
+        let half_h = paper_h * 0.5;
+
+        let top = 4.0f32.clamp(reported.top, (half_h - reported.bottom).max(reported.top));
+        let bottom =
+            2.0f32.clamp(reported.bottom, (half_h - top).max(reported.bottom));
+        assert_eq!(top, 4.0);
+        assert_eq!(bottom, 1.5);
+        assert!(top + bottom <= half_h);
+    }
 }

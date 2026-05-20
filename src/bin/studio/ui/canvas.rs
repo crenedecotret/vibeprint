@@ -27,12 +27,12 @@ impl App {
             .map(|ps| ps.paper_size)
             .unwrap_or((612.0_f32, 792.0_f32));
         // Calculate user-adjusted imageable area in points
-        let user_border_pt = self.state.user_border_in * 72.0; // Convert inches to points
+        let ub = &self.state.user_border;
         let (ia_l, ia_b, ia_r, ia_t) = (
-            user_border_pt,              // left
-            user_border_pt,              // bottom
-            paper_w_pt - user_border_pt, // right
-            paper_h_pt - user_border_pt, // top
+            ub.left * 72.0,             // left
+            ub.bottom * 72.0,           // bottom
+            paper_w_pt - ub.right * 72.0, // right
+            paper_h_pt - ub.top * 72.0, // top
         );
 
         let (resp, _) = ui.allocate_painter(ui.available_size(), Sense::click());

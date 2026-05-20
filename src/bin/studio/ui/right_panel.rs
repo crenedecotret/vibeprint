@@ -124,89 +124,274 @@ impl App {
                 }
 
                 // ── Border ─
-                ui.horizontal(|ui| {
-                    ui.label("Border:");
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.state.border_edit_string)
-                            .desired_width(60.0)
-                            .font(egui::FontId::proportional(12.0)),
-                    );
+                let (paper_w_in, paper_h_in) = self
+                    .state
+                    .caps
+                    .as_ref()
+                    .and_then(|c| c.page_sizes.get(self.state.selected_page_size_idx))
+                    .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
+                    .unwrap_or((8.5, 11.0));
 
-                    // Update edit string when gaining focus to show current value
-                    if resp.gained_focus() {
-                        if self.state.use_metric {
-                            let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
-                            self.state.border_edit_string = format!("{:.2}", mm);
-                        } else {
-                            self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                ui.vertical(|ui| {
+                    let unit_label = if self.state.use_metric { "Border: (mm)" } else { "Border: (in)" };
+                    ui.label(unit_label);
+                    // Row 1: Left + Right
+                    ui.horizontal(|ui| {
+                        ui.label("L:");
+                        let resp_l = ui.add(
+                            egui::TextEdit::singleline(&mut self.state.border_edit_l)
+                                .desired_width(50.0)
+                                .font(egui::FontId::proportional(12.0)),
+                        );
+                        if resp_l.gained_focus() {
+                            self.state.border_edit_l = crate::app::format_border_edit(
+                                self.state.user_border.left,
+                                self.state.use_metric,
+                            );
                         }
-                    }
-
-                    // Apply changes when losing focus
-                    if resp.lost_focus() {
-                        if let Ok(v) = self.state.border_edit_string.parse::<f32>() {
-                            let (paper_w_in, paper_h_in) = self
-                                .state
-                                .caps
-                                .as_ref()
-                                .and_then(|c| c.page_sizes.get(self.state.selected_page_size_idx))
-                                .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
-                                .unwrap_or((8.5, 11.0));
-                            let max_border = (paper_w_in.min(paper_h_in) * 0.25)
-                                .max(self.state.reported_border_in);
-
-                            let input_in = if self.state.use_metric {
-                                vibeprint::layout_engine::mm_to_inches(v)
-                            } else {
-                                v
-                            };
-                            let new_border = input_in.clamp(self.state.reported_border_in, max_border);
-                            if (new_border - self.state.user_border_in).abs() > 0.0001 {
-                                self.state.user_border_in = new_border;
-                                if self.state.use_metric {
-                                    let mm = vibeprint::layout_engine::inches_to_mm(new_border);
-                                    self.state.border_edit_string = format!("{:.2}", mm);
+                        if resp_l.lost_focus() {
+                            if let Ok(v) = self.state.border_edit_l.parse::<f32>() {
+                                let input_in = if self.state.use_metric {
+                                    vibeprint::layout_engine::mm_to_inches(v)
                                 } else {
-                                    self.state.border_edit_string = format!("{:.3}", new_border);
+                                    v
+                                };
+                                let max_left = (0.5 * paper_w_in - self.state.user_border.right)
+                                    .max(self.state.reported_border.left);
+                                let new_left =
+                                    input_in.clamp(self.state.reported_border.left, max_left);
+                                if (new_left - self.state.user_border.left).abs() > 0.0001 {
+                                    if self.state.user_border.right + new_left > 0.5 * paper_w_in {
+                                        let new_right = (0.5 * paper_w_in - new_left)
+                                            .max(self.state.reported_border.right);
+                                        if (new_right - self.state.user_border.right).abs() > 0.0001 {
+                                            self.state.user_border.right = new_right;
+                                            self.state.border_edit_r = crate::app::format_border_edit(
+                                                new_right, self.state.use_metric,
+                                            );
+                                            self.state.log.push(format!(
+                                                "Right border reduced to {:.3}in (sum cap)",
+                                                new_right
+                                            ));
+                                        }
+                                    }
+                                    self.state.user_border.left = new_left;
+                                    self.state.border_edit_l = crate::app::format_border_edit(
+                                        new_left, self.state.use_metric,
+                                    );
+                                    self.relayout_queue();
+                                } else if (input_in - self.state.user_border.left).abs() > 0.0001 {
+                                    self.state.border_edit_l = crate::app::format_border_edit(
+                                        self.state.user_border.left, self.state.use_metric,
+                                    );
                                 }
-                                self.relayout_queue();
-                            } else if (input_in - self.state.user_border_in).abs() > 0.0001 {
-                                if self.state.use_metric {
-                                    let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
-                                    self.state.border_edit_string = format!("{:.2}", mm);
-                                } else {
-                                    self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
-                                }
-                            }
-                        } else {
-                            if self.state.use_metric {
-                                let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
-                                self.state.border_edit_string = format!("{:.2}", mm);
                             } else {
-                                self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                                self.state.border_edit_l = crate::app::format_border_edit(
+                                    self.state.user_border.left, self.state.use_metric,
+                                );
                             }
                         }
-                    }
 
-                    if ui
-                        .small_button("✖")
-                        .on_hover_text("Reset to printer default")
-                        .clicked()
-                    {
-                        self.state.user_border_in = self.state.reported_border_in;
-                        if self.state.use_metric {
-                            let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
-                            self.state.border_edit_string = format!("{:.2}", mm);
-                        } else {
-                            self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                        ui.add_space(8.0);
+
+                        ui.label("R:");
+                        let resp_r = ui.add(
+                            egui::TextEdit::singleline(&mut self.state.border_edit_r)
+                                .desired_width(50.0)
+                                .font(egui::FontId::proportional(12.0)),
+                        );
+                        if resp_r.gained_focus() {
+                            self.state.border_edit_r = crate::app::format_border_edit(
+                                self.state.user_border.right,
+                                self.state.use_metric,
+                            );
                         }
-                        self.relayout_queue();
-                    }
-                    if self.state.use_metric {
-                        ui.label("mm");
-                    } else {
-                        ui.label("in");
-                    }
+                        if resp_r.lost_focus() {
+                            if let Ok(v) = self.state.border_edit_r.parse::<f32>() {
+                                let input_in = if self.state.use_metric {
+                                    vibeprint::layout_engine::mm_to_inches(v)
+                                } else {
+                                    v
+                                };
+                                let max_right = (0.5 * paper_w_in - self.state.user_border.left)
+                                    .max(self.state.reported_border.right);
+                                let new_right =
+                                    input_in.clamp(self.state.reported_border.right, max_right);
+                                if (new_right - self.state.user_border.right).abs() > 0.0001 {
+                                    if self.state.user_border.left + new_right > 0.5 * paper_w_in {
+                                        let new_left = (0.5 * paper_w_in - new_right)
+                                            .max(self.state.reported_border.left);
+                                        if (new_left - self.state.user_border.left).abs() > 0.0001 {
+                                            self.state.user_border.left = new_left;
+                                            self.state.border_edit_l = crate::app::format_border_edit(
+                                                new_left, self.state.use_metric,
+                                            );
+                                            self.state.log.push(format!(
+                                                "Left border reduced to {:.3}in (sum cap)",
+                                                new_left
+                                            ));
+                                        }
+                                    }
+                                    self.state.user_border.right = new_right;
+                                    self.state.border_edit_r = crate::app::format_border_edit(
+                                        new_right, self.state.use_metric,
+                                    );
+                                    self.relayout_queue();
+                                } else if (input_in - self.state.user_border.right).abs() > 0.0001 {
+                                    self.state.border_edit_r = crate::app::format_border_edit(
+                                        self.state.user_border.right, self.state.use_metric,
+                                    );
+                                }
+                            } else {
+                                self.state.border_edit_r = crate::app::format_border_edit(
+                                    self.state.user_border.right, self.state.use_metric,
+                                );
+                            }
+                        }
+
+                        ui.add_space(8.0);
+
+                        if ui
+                            .small_button("✖")
+                            .on_hover_text("Reset to printer default")
+                            .clicked()
+                        {
+                            self.state.user_border = self.state.reported_border;
+                            self.state.border_edit_l = crate::app::format_border_edit(
+                                self.state.user_border.left, self.state.use_metric,
+                            );
+                            self.state.border_edit_r = crate::app::format_border_edit(
+                                self.state.user_border.right, self.state.use_metric,
+                            );
+                            self.state.border_edit_t = crate::app::format_border_edit(
+                                self.state.user_border.top, self.state.use_metric,
+                            );
+                            self.state.border_edit_b = crate::app::format_border_edit(
+                                self.state.user_border.bottom, self.state.use_metric,
+                            );
+                            self.relayout_queue();
+                        }
+                    });
+
+                    // Row 2: Top + Bottom
+                    ui.horizontal(|ui| {
+                        ui.label("T:");
+                        let resp_t = ui.add(
+                            egui::TextEdit::singleline(&mut self.state.border_edit_t)
+                                .desired_width(50.0)
+                                .font(egui::FontId::proportional(12.0)),
+                        );
+                        if resp_t.gained_focus() {
+                            self.state.border_edit_t = crate::app::format_border_edit(
+                                self.state.user_border.top,
+                                self.state.use_metric,
+                            );
+                        }
+                        if resp_t.lost_focus() {
+                            if let Ok(v) = self.state.border_edit_t.parse::<f32>() {
+                                let input_in = if self.state.use_metric {
+                                    vibeprint::layout_engine::mm_to_inches(v)
+                                } else {
+                                    v
+                                };
+                                let max_top = (0.5 * paper_h_in - self.state.user_border.bottom)
+                                    .max(self.state.reported_border.top);
+                                let new_top =
+                                    input_in.clamp(self.state.reported_border.top, max_top);
+                                if (new_top - self.state.user_border.top).abs() > 0.0001 {
+                                    if self.state.user_border.bottom + new_top > 0.5 * paper_h_in {
+                                        let new_bottom = (0.5 * paper_h_in - new_top)
+                                            .max(self.state.reported_border.bottom);
+                                        if (new_bottom - self.state.user_border.bottom).abs()
+                                            > 0.0001
+                                        {
+                                            self.state.user_border.bottom = new_bottom;
+                                            self.state.border_edit_b =
+                                                crate::app::format_border_edit(
+                                                    new_bottom, self.state.use_metric,
+                                                );
+                                            self.state.log.push(format!(
+                                                "Bottom border reduced to {:.3}in (sum cap)",
+                                                new_bottom
+                                            ));
+                                        }
+                                    }
+                                    self.state.user_border.top = new_top;
+                                    self.state.border_edit_t = crate::app::format_border_edit(
+                                        new_top, self.state.use_metric,
+                                    );
+                                    self.relayout_queue();
+                                } else if (input_in - self.state.user_border.top).abs() > 0.0001 {
+                                    self.state.border_edit_t = crate::app::format_border_edit(
+                                        self.state.user_border.top, self.state.use_metric,
+                                    );
+                                }
+                            } else {
+                                self.state.border_edit_t = crate::app::format_border_edit(
+                                    self.state.user_border.top, self.state.use_metric,
+                                );
+                            }
+                        }
+
+                        ui.add_space(8.0);
+
+                        ui.label("B:");
+                        let resp_b = ui.add(
+                            egui::TextEdit::singleline(&mut self.state.border_edit_b)
+                                .desired_width(50.0)
+                                .font(egui::FontId::proportional(12.0)),
+                        );
+                        if resp_b.gained_focus() {
+                            self.state.border_edit_b = crate::app::format_border_edit(
+                                self.state.user_border.bottom,
+                                self.state.use_metric,
+                            );
+                        }
+                        if resp_b.lost_focus() {
+                            if let Ok(v) = self.state.border_edit_b.parse::<f32>() {
+                                let input_in = if self.state.use_metric {
+                                    vibeprint::layout_engine::mm_to_inches(v)
+                                } else {
+                                    v
+                                };
+                                let max_bottom =
+                                    (0.5 * paper_h_in - self.state.user_border.top)
+                                        .max(self.state.reported_border.bottom);
+                                let new_bottom =
+                                    input_in.clamp(self.state.reported_border.bottom, max_bottom);
+                                if (new_bottom - self.state.user_border.bottom).abs() > 0.0001 {
+                                    if self.state.user_border.top + new_bottom > 0.5 * paper_h_in {
+                                        let new_top = (0.5 * paper_h_in - new_bottom)
+                                            .max(self.state.reported_border.top);
+                                        if (new_top - self.state.user_border.top).abs() > 0.0001 {
+                                            self.state.user_border.top = new_top;
+                                            self.state.border_edit_t =
+                                                crate::app::format_border_edit(
+                                                    new_top, self.state.use_metric,
+                                                );
+                                            self.state.log.push(format!(
+                                                "Top border reduced to {:.3}in (sum cap)",
+                                                new_top
+                                            ));
+                                        }
+                                    }
+                                    self.state.user_border.bottom = new_bottom;
+                                    self.state.border_edit_b = crate::app::format_border_edit(
+                                        new_bottom, self.state.use_metric,
+                                    );
+                                    self.relayout_queue();
+                                } else if (input_in - self.state.user_border.bottom).abs() > 0.0001 {
+                                    self.state.border_edit_b = crate::app::format_border_edit(
+                                        self.state.user_border.bottom, self.state.use_metric,
+                                    );
+                                }
+                            } else {
+                                self.state.border_edit_b = crate::app::format_border_edit(
+                                    self.state.user_border.bottom, self.state.use_metric,
+                                );
+                            }
+                        }
+                    });
                 });
 
                 // ── Print to file ──
@@ -232,16 +417,43 @@ impl App {
 
                 if self.state.selected_page_size_idx != prev_page_size_idx {
                     let new_reported = self.calc_reported_border();
-                    self.state.reported_border_in = new_reported;
-                    if self.state.user_border_in < new_reported {
-                        self.state.user_border_in = new_reported;
+                    self.state.reported_border = new_reported;
+                    self.state.user_border.left =
+                        self.state.user_border.left.max(new_reported.left);
+                    self.state.user_border.right =
+                        self.state.user_border.right.max(new_reported.right);
+                    self.state.user_border.top =
+                        self.state.user_border.top.max(new_reported.top);
+                    self.state.user_border.bottom =
+                        self.state.user_border.bottom.max(new_reported.bottom);
+                    // Re-clamp sum caps for new paper dimensions
+                    let (pw, ph) = self
+                        .state
+                        .caps
+                        .as_ref()
+                        .and_then(|c| c.page_sizes.get(self.state.selected_page_size_idx))
+                        .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
+                        .unwrap_or((8.5, 11.0));
+                    if self.state.user_border.left + self.state.user_border.right > 0.5 * pw {
+                        self.state.user_border.right = (0.5 * pw - self.state.user_border.left)
+                            .max(self.state.reported_border.right);
                     }
-                    if self.state.use_metric {
-                        let mm = vibeprint::layout_engine::inches_to_mm(self.state.user_border_in);
-                        self.state.border_edit_string = format!("{:.2}", mm);
-                    } else {
-                        self.state.border_edit_string = format!("{:.3}", self.state.user_border_in);
+                    if self.state.user_border.top + self.state.user_border.bottom > 0.5 * ph {
+                        self.state.user_border.bottom = (0.5 * ph - self.state.user_border.top)
+                            .max(self.state.reported_border.bottom);
                     }
+                    self.state.border_edit_l =
+                        crate::app::format_border_edit(
+                            self.state.user_border.left, self.state.use_metric);
+                    self.state.border_edit_r =
+                        crate::app::format_border_edit(
+                            self.state.user_border.right, self.state.use_metric);
+                    self.state.border_edit_t =
+                        crate::app::format_border_edit(
+                            self.state.user_border.top, self.state.use_metric);
+                    self.state.border_edit_b =
+                        crate::app::format_border_edit(
+                            self.state.user_border.bottom, self.state.use_metric);
                     self.relayout_queue();
                 }
 

@@ -238,6 +238,27 @@ impl Default for IccPickerContext {
     }
 }
 
+// ── Borders ─────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Borders {
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+impl Default for Borders {
+    fn default() -> Self {
+        Self {
+            left: 0.25,
+            right: 0.25,
+            top: 0.25,
+            bottom: 0.25,
+        }
+    }
+}
+
 // ── Persistent Settings ────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -254,6 +275,10 @@ pub(crate) struct Settings {
     pub bpc: Option<bool>,
     pub output_dir: Option<String>,
     pub user_border_in: Option<f32>,
+    pub user_border_l: Option<f32>,
+    pub user_border_r: Option<f32>,
+    pub user_border_t: Option<f32>,
+    pub user_border_b: Option<f32>,
     pub icc_filter: Option<String>,
     pub show_log: Option<bool>,
     pub extra_option_indices: Option<std::collections::HashMap<String, usize>>,
@@ -318,9 +343,12 @@ pub(crate) struct AppState {
     pub pending_input_slot_key: Option<String>,
 
     // ── Border override ──
-    pub reported_border_in: f32,
-    pub user_border_in: f32,
-    pub border_edit_string: String,
+    pub reported_border: Borders,
+    pub user_border: Borders,
+    pub border_edit_l: String,
+    pub border_edit_r: String,
+    pub border_edit_t: String,
+    pub border_edit_b: String,
     pub border_width_edit_string: String,
     pub border_width_edit_focus: bool,
 
@@ -354,7 +382,7 @@ pub(crate) struct AppState {
     // ── Saved-settings restoration ──
     pub pending_printer_name: Option<String>,
     pub pending_page_size_name: Option<String>,
-    pub pending_user_border_in: Option<f32>,
+    pub pending_user_border: Option<Borders>,
 
     // ── Splash screen ──
     pub discovery_complete: bool,
@@ -434,7 +462,7 @@ impl AppState {
         saved_icc_filter: IccProfileFilter,
         pending_printer_name: Option<String>,
         pending_page_size_name: Option<String>,
-        pending_user_border_in: Option<f32>,
+        pending_user_border: Option<Borders>,
         monitor_icc_profile: Option<Vec<u8>>,
         discovery_rx: Receiver<DiscoveryEvent>,
         saved_show_log: bool,
@@ -490,9 +518,12 @@ impl AppState {
             pending_extra_option_indices: None,
             pending_media_type_key: None,
             pending_input_slot_key: None,
-            reported_border_in: 0.25,
-            user_border_in: 0.25,
-            border_edit_string: format!("{:.3}", 0.25),
+            reported_border: Borders::default(),
+            user_border: Borders::default(),
+            border_edit_l: format!("{:.3}", 0.25),
+            border_edit_r: format!("{:.3}", 0.25),
+            border_edit_t: format!("{:.3}", 0.25),
+            border_edit_b: format!("{:.3}", 0.25),
             border_width_edit_string: String::new(),
             border_width_edit_focus: false,
             engine: saved_engine,
@@ -512,7 +543,7 @@ impl AppState {
             show_log: saved_show_log,
             pending_printer_name,
             pending_page_size_name,
-            pending_user_border_in,
+            pending_user_border,
             discovery_complete: false,
             monitor_icc_profile,
             monitor_icc_override: None,
