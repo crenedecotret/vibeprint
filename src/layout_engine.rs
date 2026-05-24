@@ -58,6 +58,9 @@ pub struct QueuedImage {
     pub size: PrintSize,
     pub fit_to_page: bool,
     pub center_to_page: bool,
+    pub freehand_placement: bool,
+    pub freehand_x_pt: f32,
+    pub freehand_y_pt: f32,
     pub source_icc: Option<PathBuf>,
     pub position: Point,
     pub page: usize,
@@ -167,6 +170,60 @@ pub fn layout_queue(
             // Calculate center position based on actual box size (including outer border expansion)
             let x_px = (page_w_px.saturating_sub(box_w_px)) / 2;
             let y_px = (page_h_px.saturating_sub(box_h_px)) / 2;
+
+            placements.insert(
+                item.id,
+                Placement {
+                    page,
+                    x_px,
+                    y_px,
+                    w_px: box_w_px,
+                    h_px: box_h_px,
+                    rotation_deg: if rotate { 90.0 } else { 0.0 },
+                },
+            );
+
+            page = page.saturating_add(1);
+            cursor_x = 0;
+            cursor_y = 0;
+            row_h = 0;
+            continue;
+        }
+
+        // Freehand placement: place alone on its own page at user-saved position
+        if item.freehand_placement {
+            if cursor_x > 0 || cursor_y > 0 || row_h > 0 {
+                page = page.saturating_add(1);
+            }
+
+            let (mut w_in, mut h_in) = item.size.as_inches();
+            w_in = w_in.max(0.01);
+            h_in = h_in.max(0.01);
+
+            let border_expansion_in = if item.border_type == BorderType::Outer {
+                item.border_width_pt / 72.0
+            } else {
+                0.0
+            };
+
+            let (box_w_px, box_h_px, rotate) = choose_orientation_for_flow_with_state(
+                item.src_size_px,
+                w_in + border_expansion_in * 2.0,
+                h_in + border_expansion_in * 2.0,
+                dpi,
+                0,
+                0,
+                0,
+                page_w_px,
+                page_h_px,
+                spacing_px,
+            );
+
+            // Convert stored point position to pixels, clamp within page
+            let x_px = ((item.freehand_x_pt * dpi as f32 / 72.0).round().max(0.0) as u32)
+                .min(page_w_px.saturating_sub(box_w_px));
+            let y_px = ((item.freehand_y_pt * dpi as f32 / 72.0).round().max(0.0) as u32)
+                .min(page_h_px.saturating_sub(box_h_px));
 
             placements.insert(
                 item.id,
@@ -492,6 +549,9 @@ mod tests {
             },
             fit_to_page: false,
             center_to_page: false,
+            freehand_placement: false,
+            freehand_x_pt: 0.0,
+            freehand_y_pt: 0.0,
             source_icc: None,
             position: Point::default(),
             page: 0,
@@ -521,6 +581,9 @@ mod tests {
             },
             fit_to_page: false,
             center_to_page: false,
+            freehand_placement: false,
+            freehand_x_pt: 0.0,
+            freehand_y_pt: 0.0,
             source_icc: None,
             position: Point::default(),
             page: 0,
@@ -550,6 +613,9 @@ mod tests {
             },
             fit_to_page: true,
             center_to_page: false,
+            freehand_placement: false,
+            freehand_x_pt: 0.0,
+            freehand_y_pt: 0.0,
             source_icc: None,
             position: Point::default(),
             page: 0,
@@ -557,14 +623,14 @@ mod tests {
             placed_w_px: 0,
             placed_h_px: 0,
             src_size_px: Some(src),
-crop_enabled: false,
-             crop_u0: None,
-             crop_v0: None,
-             crop_u1: None,
-             crop_v1: None,
-             crop_inverted: false,
-             border_type: BorderType::None,
-             border_width_pt: 0.0,
+            crop_enabled: false,
+            crop_u0: None,
+            crop_v0: None,
+            crop_u1: None,
+            crop_v1: None,
+            crop_inverted: false,
+            border_type: BorderType::None,
+            border_width_pt: 0.0,
          }
     }
 

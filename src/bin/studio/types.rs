@@ -439,6 +439,12 @@ pub(crate) struct AppState {
     pub crop_editor_resize_start_uv: Option<(f32, f32, f32, f32)>,
     pub crop_editor_inverted: bool,
 
+    // ── Freehand drag state ──
+    pub freehand_dragging: bool,
+    pub freehand_drag_id: Option<Uuid>,
+    pub freehand_drag_start_pos: Option<egui::Pos2>,
+    pub freehand_drag_start_pt: Option<(f32, f32)>,
+
     // ── Preferences modal ──
     pub show_preferences: bool,
     pub use_metric: bool,
@@ -576,6 +582,10 @@ impl AppState {
             crop_editor_resize_start_pos: None,
             crop_editor_resize_start_uv: None,
             crop_editor_inverted: false,
+            freehand_dragging: false,
+            freehand_drag_id: None,
+            freehand_drag_start_pos: None,
+            freehand_drag_start_pt: None,
             show_custom_size_modal: false,
             custom_size_mode: CustomSizeMode::Specific,
             custom_size_w_str: String::new(),

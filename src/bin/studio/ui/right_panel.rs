@@ -1136,6 +1136,9 @@ let auto_uv = if sw != 0 && sh != 0 {
                     {
                         if let Some(item) = self.selected_queue_mut() {
                             item.center_to_page = center_to_page;
+                            if center_to_page {
+                                item.freehand_placement = false;
+                            }
                             self.relayout_queue();
                             // Jump to the item's page after relayout
                             if let Some(id) = self.state.selected_queue_id {
@@ -1146,6 +1149,112 @@ let auto_uv = if sw != 0 && sh != 0 {
                         }
                     }
                 });
+
+                // ── Freehand Placement ──────────────────────────────────
+                ui.add_space(8.0);
+                let mut freehand = self
+                    .selected_queue()
+                    .map(|q| q.freehand_placement)
+                    .unwrap_or(false);
+                let freehand_disabled = self
+                    .selected_queue()
+                    .map(|q| q.fit_to_page)
+                    .unwrap_or(false);
+                ui.add_enabled_ui(!freehand_disabled, |ui| {
+                    if ui
+                        .checkbox(&mut freehand, "Freehand placement")
+                        .changed()
+                    {
+                        if freehand {
+                            // Toggled ON: set flag, disable center, compute centered position
+                            let dpi = self.state.target_dpi as f32;
+                            let (iw, ih) = self.imageable_size_px();
+                            let (bw, bh) = self.selected_queue()
+                                .map(|item| (item.placed_w_px.max(1), item.placed_h_px.max(1)))
+                                .unwrap_or((1, 1));
+                            let cx = (iw.saturating_sub(bw).max(1)) / 2;
+                            let cy = (ih.saturating_sub(bh).max(1)) / 2;
+                            if let Some(item) = self.selected_queue_mut() {
+                                item.freehand_placement = true;
+                                item.center_to_page = false;
+                                item.freehand_x_pt = cx as f32 * 72.0 / dpi;
+                                item.freehand_y_pt = cy as f32 * 72.0 / dpi;
+                            }
+                        } else {
+                            if let Some(item) = self.selected_queue_mut() {
+                                item.freehand_placement = false;
+                            }
+                        }
+                        self.relayout_queue();
+                        if let Some(id) = self.state.selected_queue_id {
+                            if let Some(item) = self.state.queue.iter().find(|q| q.id == id) {
+                                self.state.current_page = item.page;
+                            }
+                        }
+                    }
+                });
+
+                // Show coordinate fields when freehand is active
+                let freehand_state = self.selected_queue().and_then(|item| {
+                    if item.freehand_placement {
+                        Some((item.id, item.freehand_x_pt, item.freehand_y_pt,
+                            item.placed_w_px.max(1), item.placed_h_px.max(1)))
+                    } else {
+                        None
+                    }
+                });
+                if let Some((id, cur_x_pt, cur_y_pt, bw, bh)) = freehand_state {
+                    ui.add_space(4.0);
+                    let dpi = self.state.target_dpi as f32;
+                    let (iw, ih) = self.imageable_size_px();
+                    let use_metric = self.state.use_metric;
+                    let max_x_pt = (iw.saturating_sub(bw)) as f32 * 72.0 / dpi;
+                    let max_y_pt = (ih.saturating_sub(bh)) as f32 * 72.0 / dpi;
+                    let mm_factor = if use_metric { 25.4_f32 } else { 1.0_f32 };
+                    let label = if use_metric { "mm" } else { "in" };
+
+                    let mut display_x = cur_x_pt / 72.0 * mm_factor;
+                    let mut display_y = cur_y_pt / 72.0 * mm_factor;
+                    let range_x = 0.0..=max_x_pt / 72.0 * mm_factor;
+                    let range_y = 0.0..=max_y_pt / 72.0 * mm_factor;
+
+                    let mut update_x = None;
+                    let mut update_y = None;
+
+                    ui.horizontal(|ui| {
+                        ui.label(format!("X ({label}):"));
+                        if ui.add(egui::DragValue::new(&mut display_x)
+                            .speed(0.05)
+                            .range(range_x.clone())
+                        ).changed() {
+                            update_x = Some(display_x);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Y ({label}):"));
+                        if ui.add(egui::DragValue::new(&mut display_y)
+                            .speed(0.05)
+                            .range(range_y.clone())
+                        ).changed() {
+                            update_y = Some(display_y);
+                        }
+                    });
+
+                    if let Some(v) = update_x {
+                        let new_pt = (v / mm_factor * 72.0).clamp(0.0, max_x_pt);
+                        if let Some(item) = self.state.queue.iter_mut().find(|q| q.id == id) {
+                            item.freehand_x_pt = new_pt;
+                        }
+                        self.relayout_queue();
+                    }
+                    if let Some(v) = update_y {
+                        let new_pt = (v / mm_factor * 72.0).clamp(0.0, max_y_pt);
+                        if let Some(item) = self.state.queue.iter_mut().find(|q| q.id == id) {
+                            item.freehand_y_pt = new_pt;
+                        }
+                        self.relayout_queue();
+                    }
+                }
 
                 // ── Border ────────────────────────────────────────────────
                 ui.add_space(12.0);

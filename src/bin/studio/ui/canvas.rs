@@ -35,7 +35,7 @@ impl App {
             paper_h_pt - ub.top * 72.0, // top
         );
 
-        let (resp, _) = ui.allocate_painter(ui.available_size(), Sense::click());
+        let (resp, _) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let canvas_area = resp.rect;
         let inner = Rect::from_min_size(
             canvas_area.min + Vec2::new(RULER_PX, RULER_PX),
@@ -299,6 +299,96 @@ impl App {
                 Stroke::new(1.0, Color32::from_rgba_premultiplied(80, 120, 170, 160))
             };
             painter.rect_stroke(r, 0.0, stroke);
+        }
+
+        // ── Freehand drag handling ──────────────────────────────────────
+        if resp.drag_started() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                if let Some((id, _)) = self
+                    .state
+                    .canvas_hit_rects
+                    .iter()
+                    .rev()
+                    .find(|(_, r)| r.contains(pos))
+                {
+                    if let Some(item) = self.state.queue.iter().find(|q| q.id == *id) {
+                        if item.freehand_placement {
+                            self.state.freehand_dragging = true;
+                            self.state.freehand_drag_id = Some(*id);
+                            self.state.freehand_drag_start_pos = Some(pos);
+                            self.state.freehand_drag_start_pt =
+                                Some((item.freehand_x_pt, item.freehand_y_pt));
+                        }
+                    }
+                }
+            }
+        }
+
+        if self.state.freehand_dragging {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                if let Some(start_pos) = self.state.freehand_drag_start_pos {
+                    if let Some(start_pt) = self.state.freehand_drag_start_pt {
+                        if let Some(id) = self.state.freehand_drag_id {
+                            let dpi = self.state.target_dpi as f32;
+                            let (iw, ih) = self.imageable_size_px();
+                            let dpx = (pos.x - start_pos.x) / sx;
+                            let dpy = (pos.y - start_pos.y) / sy;
+                            let dpt_x = dpx * 72.0 / dpi;
+                            let dpt_y = dpy * 72.0 / dpi;
+                            let mut new_x_pt = start_pt.0 + dpt_x;
+                            let mut new_y_pt = start_pt.1 + dpt_y;
+                            if let Some(item) =
+                                self.state.queue.iter_mut().find(|q| q.id == id)
+                            {
+                                let bw = item.placed_w_px.max(1);
+                                let bh = item.placed_h_px.max(1);
+                                let max_x_pt =
+                                    iw.saturating_sub(bw) as f32 * 72.0 / dpi;
+                                let max_y_pt =
+                                    ih.saturating_sub(bh) as f32 * 72.0 / dpi;
+                                new_x_pt = new_x_pt.clamp(0.0, max_x_pt);
+                                new_y_pt = new_y_pt.clamp(0.0, max_y_pt);
+                                item.freehand_x_pt = new_x_pt;
+                                item.freehand_y_pt = new_y_pt;
+                                item.position.x =
+                                    (new_x_pt * dpi / 72.0).round().max(0.0) as u32;
+                                item.position.y =
+                                    (new_y_pt * dpi / 72.0).round().max(0.0) as u32;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if resp.drag_stopped() {
+            if self.state.freehand_dragging {
+                self.state.freehand_dragging = false;
+                self.state.freehand_drag_id = None;
+                self.state.freehand_drag_start_pos = None;
+                self.state.freehand_drag_start_pt = None;
+                self.relayout_queue();
+            }
+        }
+
+        // ── Cursor for freehand images ──────────────────────────────────
+        if let Some(pos) = resp.hover_pos() {
+            let over_freehand = self.state.canvas_hit_rects.iter().rev().any(|(id, r)| {
+                r.contains(pos)
+                    && self
+                        .state
+                        .queue
+                        .iter()
+                        .any(|q| q.id == *id && q.freehand_placement)
+            });
+            if over_freehand {
+                let icon = if self.state.freehand_dragging {
+                    egui::CursorIcon::Grabbing
+                } else {
+                    egui::CursorIcon::Grab
+                };
+                ui.ctx().set_cursor_icon(icon);
+            }
         }
 
         if resp.clicked() {

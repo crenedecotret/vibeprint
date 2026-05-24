@@ -650,6 +650,21 @@ impl App {
             }
         }
 
+        // Override position for freehand items with their saved positions
+        let dpi = self.state.target_dpi as f32;
+        for qi in &mut self.state.queue {
+            if qi.freehand_placement {
+                let x_px = (qi.freehand_x_pt * dpi / 72.0).round().max(0.0) as u32;
+                let y_px = (qi.freehand_y_pt * dpi / 72.0).round().max(0.0) as u32;
+                let box_w = qi.placed_w_px.max(1);
+                let box_h = qi.placed_h_px.max(1);
+                let max_x = page_w_px.saturating_sub(box_w);
+                let max_y = page_h_px.saturating_sub(box_h);
+                qi.position.x = x_px.min(max_x);
+                qi.position.y = y_px.min(max_y);
+            }
+        }
+
         self.state.page_count = result.page_count.max(1);
         if self.state.current_page >= self.state.page_count {
             self.state.current_page = self.state.page_count.saturating_sub(1);
@@ -680,6 +695,9 @@ impl App {
                 size: print_size,
                 fit_to_page,
                 center_to_page: false,
+                freehand_placement: false,
+                freehand_x_pt: 0.0,
+                freehand_y_pt: 0.0,
                 source_icc: None,
                 position: Point::default(),
                 page: 0,
@@ -687,7 +705,7 @@ impl App {
                 placed_w_px: 0,
                 placed_h_px: 0,
                 src_size_px: Some(src_size),
-crop_enabled: false,
+                crop_enabled: false,
                  crop_u0: None,
                  crop_v0: None,
                  crop_u1: None,
@@ -741,6 +759,9 @@ crop_enabled: false,
             size: print_size,
             fit_to_page: false,
             center_to_page: false,
+            freehand_placement: false,
+            freehand_x_pt: 0.0,
+            freehand_y_pt: 0.0,
             source_icc: None,
             position: vibeprint::layout_engine::Point::default(),
             page: 0,
@@ -748,7 +769,7 @@ crop_enabled: false,
             placed_w_px: 0,
             placed_h_px: 0,
             src_size_px: Some(src_size),
-crop_enabled: false,
+            crop_enabled: false,
              crop_u0: None,
              crop_v0: None,
              crop_u1: None,

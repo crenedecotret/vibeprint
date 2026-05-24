@@ -117,6 +117,56 @@ impl eframe::App for App {
             }
         }
 
+        // Arrow key nudge for freehand placement
+        if !ctx.wants_keyboard_input() {
+            let shift = ctx.input(|i| i.modifiers.shift);
+            let step_pt = if self.state.use_metric {
+                if shift { 5.0 / 25.4 * 72.0 } else { 1.0 / 25.4 * 72.0 }
+            } else {
+                if shift { 14.4 } else { 1.0 }
+            };
+            if let Some(id) = self.state.selected_queue_id {
+                let is_freehand = self.state.queue.iter().any(|q| q.id == id && q.freehand_placement && !q.fit_to_page);
+                if is_freehand {
+                    let (iw, ih) = self.imageable_size_px();
+                    let dpi = self.state.target_dpi as f32;
+                    let (bw, bh) = self.state.queue.iter().find(|q| q.id == id)
+                        .map(|q| (q.placed_w_px.max(1), q.placed_h_px.max(1)))
+                        .unwrap_or((1, 1));
+                    let max_x_pt = iw.saturating_sub(bw) as f32 * 72.0 / dpi;
+                    let max_y_pt = ih.saturating_sub(bh) as f32 * 72.0 / dpi;
+                    let step = step_pt;
+                    let mut moved = false;
+                    let mut new_x = 0.0f32;
+                    let mut new_y = 0.0f32;
+                    if let Some(item) = self.state.queue.iter().find(|q| q.id == id) {
+                        new_x = item.freehand_x_pt;
+                        new_y = item.freehand_y_pt;
+                    }
+                    if ctx.input(|i| i.key_pressed(eframe::egui::Key::ArrowLeft)) {
+                        new_x = (new_x - step).max(0.0);
+                        moved = true;
+                    } else if ctx.input(|i| i.key_pressed(eframe::egui::Key::ArrowRight)) {
+                        new_x = (new_x + step).min(max_x_pt);
+                        moved = true;
+                    } else if ctx.input(|i| i.key_pressed(eframe::egui::Key::ArrowUp)) {
+                        new_y = (new_y + step).min(max_y_pt);
+                        moved = true;
+                    } else if ctx.input(|i| i.key_pressed(eframe::egui::Key::ArrowDown)) {
+                        new_y = (new_y - step).min(max_y_pt).max(0.0);
+                        moved = true;
+                    }
+                    if moved {
+                        if let Some(item) = self.state.queue.iter_mut().find(|q| q.id == id) {
+                            item.freehand_x_pt = new_x;
+                            item.freehand_y_pt = new_y;
+                        }
+                        self.relayout_queue();
+                    }
+                }
+            }
+        }
+
         if self.state.show_props {
             self.show_printer_props(ctx);
         }
