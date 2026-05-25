@@ -271,6 +271,36 @@ impl App {
                             );
                             self.relayout_queue();
                         }
+
+                        ui.add_space(4.0);
+
+                        if ui
+                            .small_button("L")
+                            .on_hover_text("Copy left border to all sides (capped by printer minimum)")
+                            .clicked()
+                        {
+                            let left_val = self.state.user_border.left;
+                            let rb = self.state.reported_border;
+                            let max_reported = rb.left.max(rb.right).max(rb.top).max(rb.bottom);
+                            let target = if max_reported > left_val {
+                                max_reported
+                            } else {
+                                left_val
+                            };
+                            self.state.user_border.left = target;
+                            self.state.user_border.right = target;
+                            self.state.user_border.top = target;
+                            self.state.user_border.bottom = target;
+                            self.state.border_edit_l =
+                                crate::app::format_border_edit(target, self.state.use_metric);
+                            self.state.border_edit_r =
+                                crate::app::format_border_edit(target, self.state.use_metric);
+                            self.state.border_edit_t =
+                                crate::app::format_border_edit(target, self.state.use_metric);
+                            self.state.border_edit_b =
+                                crate::app::format_border_edit(target, self.state.use_metric);
+                            self.relayout_queue();
+                        }
                     });
 
                     // Row 2: Top + Bottom
