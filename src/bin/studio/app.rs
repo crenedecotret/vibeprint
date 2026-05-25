@@ -15,10 +15,10 @@ use vibeprint::{
 use crate::icc::{apply_preview_transform, extract_file_date, extract_file_size};
 use crate::types::{
     AppState, Borders, Engine, IccProfileEntry, IccProfileFilter, IccProfileSource, Intent,
-    LoadKind, ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX, print_sizes,
-    QUEUE_SPACING_IN, THUMB_PX,
+    LoadKind, MAX_PREVIEW_PX, ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX,
+    print_sizes, QUEUE_SPACING_IN, THUMB_PX,
 };
-use crate::utils::{extract_embedded_icc, is_image, load_thumb};
+use crate::utils::{extract_embedded_icc_from_bytes, is_image, load_thumb};
 
 /// Main application wrapper
 pub struct App {
@@ -33,6 +33,38 @@ impl App {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let out_dir = dirs::desktop_dir().unwrap_or_else(|| home.clone());
         let (thumb_tx, thumb_rx) = channel::<(PathBuf, ColorImage, Option<Vec<u8>>, LoadKind)>();
+
+        // Dedicated staging thread: processes one image at a time (no HDD thrashing)
+        let (stager_tx, stager_rx) = channel::<PathBuf>();
+        let stager_thumb_tx = thumb_tx.clone();
+        thread::spawn(move || {
+            while let Ok(mut path) = stager_rx.recv() {
+                while let Ok(newer) = stager_rx.try_recv() {
+                    path = newer;
+                }
+                let data = match std::fs::read(&path) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let embedded_icc = extract_embedded_icc_from_bytes(&data);
+                if let Ok(img) = image::load_from_memory(&data) {
+                    let rgb = img.into_rgb8();
+                    let size = [rgb.width() as usize, rgb.height() as usize];
+                    let pixels = rgb
+                        .into_raw()
+                        .chunks_exact(3)
+                        .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
+                        .collect();
+                    let _ = stager_thumb_tx.send((
+                        path,
+                        ColorImage { size, pixels },
+                        embedded_icc,
+                        LoadKind::FullResStaged,
+                    ));
+                }
+            }
+        });
+
         let s = load_settings();
 
         let start_dir = s
@@ -186,6 +218,7 @@ impl App {
             s.bpc.unwrap_or(true),
             s.use_metric.unwrap_or(false),
         );
+        state.stager_tx = Some(stager_tx);
         state.pending_extra_option_indices = s.extra_option_indices;
         state.pending_media_type_key = s.media_type_key;
         state.pending_input_slot_key = s.input_slot_key;
@@ -220,6 +253,7 @@ impl App {
     }
 
     pub(crate) fn scan_dir(&mut self) {
+        self.state.tree_children_cache.clear();
         self.state.subdirs.clear();
         self.state.image_files.clear();
 
@@ -320,26 +354,7 @@ impl App {
             self.state.right_tab = RightTab::ImageProperties;
         }
 
-        let tx = self.state.thumb_tx.clone();
-        thread::spawn(move || {
-            let embedded_icc = extract_embedded_icc(&path);
-
-            if let Ok(img) = image::open(&path) {
-                let rgb = img.into_rgb8();
-                let size = [rgb.width() as usize, rgb.height() as usize];
-                let pixels = rgb
-                    .into_raw()
-                    .chunks_exact(3)
-                    .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
-                    .collect();
-                let _ = tx.send((
-                    path,
-                    ColorImage { size, pixels },
-                    embedded_icc,
-                    LoadKind::FullResStaged,
-                ));
-            }
-        });
+        let _ = self.state.stager_tx.as_ref().unwrap().send(path);
     }
 
     pub(crate) fn mark_preview_dirty(&mut self) {
@@ -348,7 +363,14 @@ impl App {
     }
 
     pub(crate) fn rebuild_canvas_texture(&mut self, ctx: &Context) {
-        self.state.preview_textures.clear();
+        // Compute ICC settings hash — only rebuilds transform when settings actually change
+        let icc_hash = self.icc_settings_hash();
+        let icc_changed = icc_hash != self.state.preview_icc_settings_hash;
+        if icc_changed {
+            self.state.preview_icc_images.clear();
+            self.state.preview_icc_settings_hash = icc_hash;
+            self.state.preview_textures.clear();
+        }
 
         let mut seen = HashSet::new();
         let paths: Vec<PathBuf> = self
@@ -366,41 +388,28 @@ impl App {
             .collect();
 
         for path in paths {
-            let Some(base) = self.ensure_full_image_loaded(&path) else {
-                continue;
-            };
-            let mut ci = base.clone();
-
-            if let Some(ref monitor_profile) = self.state.monitor_icc_profile {
-                let mut pixel_bytes: Vec<u8> = ci
-                    .pixels
-                    .iter()
-                    .flat_map(|c| [c.r(), c.g(), c.b()])
-                    .collect();
-
-                let src_icc = self
-                    .state
-                    .embedded_icc_by_path
-                    .get(&path)
-                    .and_then(|v| v.as_deref());
-
-                if apply_preview_transform(
-                    monitor_profile,
-                    src_icc,
-                    self.state.output_icc.as_ref().map(|e| &e.path),
-                    &mut pixel_bytes,
-                    self.state.intent.to_lcms(),
-                    self.state.bpc,
-                    self.state.softproof_enabled,
-                )
-                .is_some()
-                {
-                    ci.pixels = pixel_bytes
-                        .chunks_exact(3)
-                        .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
-                        .collect();
+            // Skip items that already have a valid texture (no ICC change)
+            if !icc_changed && self.state.preview_textures.contains_key(&path) {
+                if self.state.selected.as_ref() == Some(&path) {
+                    if let Some(tex) = self.state.preview_textures.get(&path) {
+                        self.state.canvas_tex = Some(tex.clone());
+                    }
                 }
+                continue;
             }
+
+            let ci = if let Some(cached) = self.state.preview_icc_images.get(&path) {
+                // Cache hit — ICC settings unchanged, skip expensive transform
+                cached.clone()
+            } else {
+                // Clone base image to release the &mut self borrow from ensure_full_image_loaded
+                let Some(base) = self.ensure_full_image_loaded(&path).cloned() else {
+                    continue;
+                };
+                let ci = self.build_preview_image(&path, &base);
+                self.state.preview_icc_images.insert(path.clone(), ci.clone());
+                ci
+            };
 
             let tex_name = format!("page_preview::{}", path.to_string_lossy());
             let tex = ctx.load_texture(&tex_name, ci, egui::TextureOptions::LINEAR);
@@ -423,9 +432,94 @@ impl App {
         self.state.preview_dirty = false;
     }
 
+    /// Build a preview ColorImage from the cached full image, applying ICC transform if needed.
+    fn build_preview_image(&self, path: &PathBuf, base: &ColorImage) -> ColorImage {
+        if let Some(ref monitor_profile) = self.state.monitor_icc_profile {
+            let (src_w, src_h) = (base.size[0], base.size[1]);
+            let max_dim = src_w.max(src_h);
+
+            // For large images, downscale before ICC transform to reduce CPU work
+            let pixel_bytes_base: Vec<u8> = base
+                .pixels
+                .iter()
+                .flat_map(|c| [c.r(), c.g(), c.b()])
+                .collect();
+
+            let (scale_w, scale_h, mut pixel_bytes) = if max_dim > MAX_PREVIEW_PX as usize {
+                let scale = MAX_PREVIEW_PX as f64 / max_dim as f64;
+                let new_w = (src_w as f64 * scale).round() as u32;
+                let new_h = (src_h as f64 * scale).round() as u32;
+                let rgb = image::RgbImage::from_raw(src_w as u32, src_h as u32, pixel_bytes_base)
+                    .expect("RgbImage from_raw with valid dimensions");
+                let scaled = image::imageops::resize(
+                    &rgb,
+                    new_w,
+                    new_h,
+                    image::imageops::FilterType::CatmullRom,
+                );
+                (new_w as usize, new_h as usize, scaled.into_raw())
+            } else {
+                (src_w, src_h, pixel_bytes_base)
+            };
+
+            let src_icc = self
+                .state
+                .embedded_icc_by_path
+                .get(path)
+                .and_then(|v| v.as_deref());
+
+            if apply_preview_transform(
+                monitor_profile,
+                src_icc,
+                self.state.output_icc.as_ref().map(|e| &e.path),
+                &mut pixel_bytes,
+                self.state.intent.to_lcms(),
+                self.state.bpc,
+                self.state.softproof_enabled,
+            )
+            .is_some()
+            {
+                ColorImage {
+                    size: [scale_w, scale_h],
+                    pixels: pixel_bytes
+                        .chunks_exact(3)
+                        .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
+                        .collect(),
+                }
+            } else {
+                base.clone()
+            }
+        } else {
+            base.clone()
+        }
+    }
+
+    /// Hash of ICC settings that determine the preview transform.
+    fn icc_settings_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        if let Some(ref profile) = self.state.monitor_icc_profile {
+            profile.hash(&mut h);
+        }
+        if let Some(ref entry) = self.state.output_icc {
+            entry.path.hash(&mut h);
+        }
+        let intent_byte: u8 = match self.state.intent {
+            crate::types::Intent::Perceptual => 0,
+            crate::types::Intent::Relative => 1,
+            crate::types::Intent::Saturation => 2,
+        };
+        intent_byte.hash(&mut h);
+        self.state.bpc.hash(&mut h);
+        self.state.softproof_enabled.hash(&mut h);
+        h.finish()
+    }
+
     pub(crate) fn ensure_full_image_loaded(&mut self, path: &PathBuf) -> Option<&ColorImage> {
         if !self.state.full_images.contains_key(path) {
-            let img = image::open(path).ok()?.into_rgb8();
+            let data = std::fs::read(path).ok()?;
+            let img = image::load_from_memory(&data).ok()?.into_rgb8();
             let size = [img.width() as usize, img.height() as usize];
             let pixels = img
                 .into_raw()
@@ -438,7 +532,7 @@ impl App {
             self.state
                 .embedded_icc_by_path
                 .entry(path.clone())
-                .or_insert_with(|| extract_embedded_icc(path));
+                .or_insert_with(|| extract_embedded_icc_from_bytes(&data));
         }
         self.state.full_images.get(path)
     }

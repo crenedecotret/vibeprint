@@ -1,4 +1,4 @@
-use std::{fs::File, io::BufReader, path::Path};
+use std::{fs::File, io::{BufReader, Cursor, Read, Seek}, path::Path};
 
 use anyhow::{bail, Context, Result};
 use image::{
@@ -888,17 +888,20 @@ fn resize_ewa_cubic(
 fn load_image_with_dpi_and_embedded_icc(
     path: &Path,
 ) -> Result<(LoadedImage, Option<f64>, Option<Vec<u8>>)> {
-    let dyn_img =
-        image::open(path).with_context(|| format!("failed to decode image: {}", path.display()))?;
+    let data = std::fs::read(path)
+        .with_context(|| format!("failed to read image: {}", path.display()))?;
+
+    let dyn_img = image::load_from_memory(&data)
+        .with_context(|| format!("failed to decode image: {}", path.display()))?;
 
     let (dpi, embedded_icc) = if is_tiff_path(path) {
-        read_tiff_dpi_and_embedded_icc(path).unwrap_or((None, None))
+        read_tiff_dpi_and_embedded_icc_from_bytes(&data).unwrap_or((None, None))
     } else if is_jpeg_path(path) {
-        read_jpeg_dpi_and_embedded_icc(path)
+        parse_jpeg_metadata(&data)
     } else if is_png_path(path) {
-        read_png_dpi_and_embedded_icc(path)
+        parse_png_metadata(&data)
     } else if is_webp_path(path) {
-        (None, read_webp_embedded_icc(path))
+        (None, parse_webp_icc(&data))
     } else {
         (None, None)
     };
@@ -939,17 +942,16 @@ fn is_webp_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn read_png_dpi_and_embedded_icc(path: &Path) -> (Option<f64>, Option<Vec<u8>>) {
+fn parse_png_metadata(data: &[u8]) -> (Option<f64>, Option<Vec<u8>>) {
     // ICC: delegate to image crate's PngDecoder — handles iCCP zlib decompression
     let icc = (|| -> Option<Vec<u8>> {
-        let file = File::open(path).ok()?;
-        let mut decoder = PngDecoder::new(BufReader::new(file)).ok()?;
+        let cursor = Cursor::new(data);
+        let mut decoder = PngDecoder::new(BufReader::new(cursor)).ok()?;
         decoder.icc_profile().ok().flatten()
     })();
 
     // DPI: scan for pHYs chunk (pixels per unit + unit type)
     let dpi = (|| -> Option<f64> {
-        let data = std::fs::read(path).ok()?;
         if data.len() < 8 || &data[0..8] != b"\x89PNG\r\n\x1a\n" {
             return None;
         }
@@ -982,8 +984,7 @@ fn read_png_dpi_and_embedded_icc(path: &Path) -> (Option<f64>, Option<Vec<u8>>) 
     (dpi, icc)
 }
 
-fn read_webp_embedded_icc(path: &Path) -> Option<Vec<u8>> {
-    let data = std::fs::read(path).ok()?;
+fn parse_webp_icc(data: &[u8]) -> Option<Vec<u8>> {
     // RIFF header: "RIFF" + 4-byte LE size + "WEBP"
     if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WEBP" {
         return None;
@@ -1005,12 +1006,7 @@ fn read_webp_embedded_icc(path: &Path) -> Option<Vec<u8>> {
     None
 }
 
-fn read_jpeg_dpi_and_embedded_icc(path: &Path) -> (Option<f64>, Option<Vec<u8>>) {
-    let data = match std::fs::read(path) {
-        Ok(d) => d,
-        Err(_) => return (None, None),
-    };
-
+fn parse_jpeg_metadata(data: &[u8]) -> (Option<f64>, Option<Vec<u8>>) {
     // Must start with JPEG SOI marker FF D8
     if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
         return (None, None);
@@ -1101,17 +1097,16 @@ fn dynamic_to_rgb8_or_rgb16(img: DynamicImage) -> Result<LoadedImage> {
     })
 }
 
-fn read_tiff_dpi_and_embedded_icc(path: &Path) -> Result<(Option<f64>, Option<Vec<u8>>)> {
-    let file =
-        File::open(path).with_context(|| format!("failed to open TIFF: {}", path.display()))?;
-    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(file))
-        .context("failed to create TIFF decoder")?;
-    let dpi = read_tiff_dpi(&mut decoder);
-    let embedded_icc = read_tiff_embedded_icc(&mut decoder);
+fn read_tiff_dpi_and_embedded_icc_from_bytes(data: &[u8]) -> Result<(Option<f64>, Option<Vec<u8>>)> {
+    let cursor = Cursor::new(data);
+    let mut decoder = tiff::decoder::Decoder::new(BufReader::new(cursor))
+        .context("failed to create TIFF decoder from bytes")?;
+    let dpi = read_tiff_dpi_generic(&mut decoder);
+    let embedded_icc = read_tiff_embedded_icc_generic(&mut decoder);
     Ok((dpi, embedded_icc))
 }
 
-fn read_tiff_dpi(decoder: &mut tiff::decoder::Decoder<BufReader<File>>) -> Option<f64> {
+fn read_tiff_dpi_generic<R: Read + Seek>(decoder: &mut tiff::decoder::Decoder<BufReader<R>>) -> Option<f64> {
     use tiff::decoder::ifd::Value;
     use tiff::tags::Tag;
 
@@ -1143,8 +1138,8 @@ fn read_tiff_dpi(decoder: &mut tiff::decoder::Decoder<BufReader<File>>) -> Optio
     dpi
 }
 
-fn read_tiff_embedded_icc(
-    decoder: &mut tiff::decoder::Decoder<BufReader<File>>,
+fn read_tiff_embedded_icc_generic<R: Read + Seek>(
+    decoder: &mut tiff::decoder::Decoder<BufReader<R>>,
 ) -> Option<Vec<u8>> {
     use tiff::decoder::ifd::Value;
     use tiff::tags::Tag;

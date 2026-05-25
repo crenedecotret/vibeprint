@@ -479,39 +479,6 @@ fn fitted_area(src_w: f32, src_h: f32, box_w: f32, box_h: f32) -> f32 {
     fw * fh
 }
 
-fn packing_capacity(
-    box_w_px: u32,
-    box_h_px: u32,
-    page_w_px: u32,
-    page_h_px: u32,
-    spacing_px: u32,
-) -> u32 {
-    let page_w_px = page_w_px.max(1);
-    let page_h_px = page_h_px.max(1);
-    if box_w_px == 0 || box_h_px == 0 || box_w_px > page_w_px || box_h_px > page_h_px {
-        return 0;
-    }
-
-    let cols = if box_w_px.saturating_add(spacing_px) == 0 {
-        0
-    } else {
-        page_w_px
-            .saturating_add(spacing_px)
-            .checked_div(box_w_px.saturating_add(spacing_px))
-            .unwrap_or(0)
-    };
-    let rows = if box_h_px.saturating_add(spacing_px) == 0 {
-        0
-    } else {
-        page_h_px
-            .saturating_add(spacing_px)
-            .checked_div(box_h_px.saturating_add(spacing_px))
-            .unwrap_or(0)
-    };
-
-    cols.saturating_mul(rows).max(1)
-}
-
 pub fn should_rotate_for_full_page(
     src_size_px: Option<(u32, u32)>,
     page_w_px: u32,

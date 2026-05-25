@@ -181,7 +181,22 @@ pub(crate) fn load_thumb(
     size: u32,
     tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>, LoadKind)>,
 ) {
-    if let Ok(img) = image::open(&path) {
+    let data = match std::fs::read(&path) {
+        Ok(d) => d,
+        Err(_) => {
+            let _ = tx.send((
+                path,
+                ColorImage {
+                    size: [1, 1],
+                    pixels: vec![Color32::from_rgb(200, 0, 80)],
+                },
+                None,
+                LoadKind::Thumb,
+            ));
+            return;
+        }
+    };
+    if let Ok(img) = image::load_from_memory(&data) {
         let thumb = img.thumbnail(size, size).into_rgb8();
         let w = thumb.width() as usize;
         let h = thumb.height() as usize;
@@ -200,7 +215,6 @@ pub(crate) fn load_thumb(
             LoadKind::Thumb,
         ));
     } else {
-        // Signal failure by sending an empty 1×1 magenta image
         let _ = tx.send((
             path,
             ColorImage {
@@ -548,6 +562,7 @@ pub(crate) fn draw_tree_node(
     depth: usize,
     current: &PathBuf,
     expanded: &HashMap<PathBuf, bool>,
+    tree_cache: &mut HashMap<PathBuf, Vec<PathBuf>>,
     nav: &mut Option<PathBuf>,
     toggle: &mut Option<(PathBuf, bool)>,
 ) {
@@ -564,15 +579,29 @@ pub(crate) fn draw_tree_node(
         return;
     }
 
-    // Check for any non-hidden subdirectory
-    let has_children = std::fs::read_dir(path)
-        .ok()
-        .map(|rd| {
-            rd.flatten().any(|e| {
-                let n = e.file_name().to_string_lossy().to_string();
-                !n.starts_with('.') && e.path().is_dir()
+    // Populate cache lazily (disk read happens once, then cached)
+    if !tree_cache.contains_key(path) {
+        let children: Vec<PathBuf> = std::fs::read_dir(path)
+            .ok()
+            .map(|rd| {
+                let mut v: Vec<PathBuf> = rd
+                    .flatten()
+                    .filter(|e| {
+                        let n = e.file_name().to_string_lossy().to_string();
+                        !n.starts_with('.') && e.path().is_dir()
+                    })
+                    .map(|e| e.path())
+                    .collect();
+                v.sort();
+                v
             })
-        })
+            .unwrap_or_default();
+        tree_cache.insert(path.clone(), children);
+    }
+
+    let has_children = tree_cache
+        .get(path)
+        .map(|c| !c.is_empty())
         .unwrap_or(false);
 
     // Default: home (depth==0) starts expanded; everything else collapsed
@@ -581,6 +610,15 @@ pub(crate) fn draw_tree_node(
     // Also expand if current dir is a descendant of this node
     let is_ancestor = !is_expanded && current.starts_with(path) && current != path;
     let is_expanded = is_expanded || is_ancestor;
+
+    let children: Vec<PathBuf> = if is_expanded {
+        tree_cache
+            .get(path)
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     let indent = depth as f32 * 14.0 + 4.0;
 
@@ -640,19 +678,8 @@ pub(crate) fn draw_tree_node(
     });
 
     if is_expanded {
-        if let Ok(rd) = std::fs::read_dir(path) {
-            let mut children: Vec<PathBuf> = rd
-                .flatten()
-                .filter(|e| {
-                    let n = e.file_name().to_string_lossy().to_string();
-                    !n.starts_with('.') && e.path().is_dir()
-                })
-                .map(|e| e.path())
-                .collect();
-            children.sort();
-            for child in &children {
-                draw_tree_node(ui, child, depth + 1, current, expanded, nav, toggle);
-            }
+        for child in &children {
+            draw_tree_node(ui, child, depth + 1, current, expanded, tree_cache, nav, toggle);
         }
     }
 }
@@ -671,164 +698,162 @@ pub(crate) fn check_size_fit(w_in: f32, h_in: f32, ia_w_in: f32, ia_h_in: f32) -
     }
 }
 
-/// Extract embedded ICC profile from image file (JPEG APP2, PNG iCCP, TIFF tag)
-pub(crate) fn extract_embedded_icc(path: &std::path::Path) -> Option<Vec<u8>> {
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())?
-        .to_ascii_lowercase();
-    let data = std::fs::read(path).ok()?;
-
-    match ext.as_str() {
-        "jpg" | "jpeg" => {
-            // Collect all APP2 ICC_PROFILE chunks, then reassemble sorted by sequence number
-            if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
-                return None;
-            }
-            let mut icc_segments: Vec<(u8, Vec<u8>)> = Vec::new();
-            let mut i = 2usize;
-            while i + 1 < data.len() {
-                if data[i] != 0xFF {
-                    break;
-                }
-                let marker = data[i + 1];
-                i += 2;
-                // Markers without a length field
-                if marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7) {
-                    continue;
-                }
-                // SOS starts compressed data — stop scanning
-                if marker == 0xDA {
-                    break;
-                }
-                if i + 2 > data.len() {
-                    break;
-                }
-                let seg_len = ((data[i] as usize) << 8) | (data[i + 1] as usize);
-                if seg_len < 2 || i + seg_len > data.len() {
-                    break;
-                }
-                let payload = &data[i + 2..i + seg_len];
-                i += seg_len;
-                // APP2 (FF E2): ICC_PROFILE
-                if marker == 0xE2 && payload.len() > 14 && &payload[0..12] == b"ICC_PROFILE\0" {
-                    let seq_num = payload[12];
-                    let chunk_data = payload[14..].to_vec();
-                    icc_segments.push((seq_num, chunk_data));
-                }
-            }
-            if icc_segments.is_empty() {
-                None
-            } else {
-                icc_segments.sort_by_key(|(seq, _)| *seq);
-                let mut combined = Vec::new();
-                for (_, chunk) in icc_segments {
-                    combined.extend_from_slice(&chunk);
-                }
-                Some(combined)
-            }
-        }
-        "png" => {
-            // Look for iCCP chunk
-            let mut i = 8; // Skip PNG signature
-            while i < data.len().saturating_sub(12) {
-                let len = ((data[i] as usize) << 24)
-                    | ((data[i + 1] as usize) << 16)
-                    | ((data[i + 2] as usize) << 8)
-                    | (data[i + 3] as usize);
-                let chunk_type = &data[i + 4..i + 8];
-                if chunk_type == b"iCCP" {
-                    // iCCP chunk: profile name + compression method + compressed profile
-                    let chunk_data = &data[i + 8..i + 8 + len];
-                    // Find null terminator for profile name
-                    let null_pos = chunk_data.iter().position(|&b| b == 0)?;
-                    let compression = chunk_data.get(null_pos + 1)?;
-                    if *compression == 0 {
-                        // deflate
-                        let compressed = &chunk_data[null_pos + 2..];
-                        use std::io::Read;
-                        let mut decoder = flate2::read::ZlibDecoder::new(compressed);
-                        let mut profile = Vec::new();
-                        if decoder.read_to_end(&mut profile).is_ok() {
-                            return Some(profile);
-                        }
-                    }
-                } else if chunk_type == b"IEND" {
-                    break;
-                }
-                i += 12 + len; // len + type + data + CRC
-            }
-            None
-        }
-        "tif" | "tiff" => {
-            // Look for ICC tag (34675 = 0x8773)
-            if data.len() < 8 {
-                return None;
-            }
-            let little_endian = data[0] == 0x49; // "II" = little endian
-            let ifd_offset = if little_endian {
-                (data[4] as usize)
-                    | ((data[5] as usize) << 8)
-                    | ((data[6] as usize) << 16)
-                    | ((data[7] as usize) << 24)
-            } else {
-                ((data[4] as usize) << 24)
-                    | ((data[5] as usize) << 16)
-                    | ((data[6] as usize) << 8)
-                    | (data[7] as usize)
-            };
-
-            if ifd_offset + 2 > data.len() {
-                return None;
-            }
-            let num_entries = if little_endian {
-                (data[ifd_offset] as usize) | ((data[ifd_offset + 1] as usize) << 8)
-            } else {
-                ((data[ifd_offset] as usize) << 8) | (data[ifd_offset + 1] as usize)
-            };
-
-            let mut offset = ifd_offset + 2;
-            for _ in 0..num_entries {
-                if offset + 12 > data.len() {
-                    break;
-                }
-                let tag = if little_endian {
-                    (data[offset] as u16) | ((data[offset + 1] as u16) << 8)
-                } else {
-                    ((data[offset] as u16) << 8) | (data[offset + 1] as u16)
-                };
-                if tag == 34675 {
-                    // ICC profile tag
-                    let len = if little_endian {
-                        (data[offset + 4] as usize)
-                            | ((data[offset + 5] as usize) << 8)
-                            | ((data[offset + 6] as usize) << 16)
-                            | ((data[offset + 7] as usize) << 24)
-                    } else {
-                        ((data[offset + 4] as usize) << 24)
-                            | ((data[offset + 5] as usize) << 16)
-                            | ((data[offset + 6] as usize) << 8)
-                            | (data[offset + 7] as usize)
-                    };
-                    let value_offset = if little_endian {
-                        (data[offset + 8] as usize)
-                            | ((data[offset + 9] as usize) << 8)
-                            | ((data[offset + 10] as usize) << 16)
-                            | ((data[offset + 11] as usize) << 24)
-                    } else {
-                        ((data[offset + 8] as usize) << 24)
-                            | ((data[offset + 9] as usize) << 16)
-                            | ((data[offset + 10] as usize) << 8)
-                            | (data[offset + 11] as usize)
-                    };
-                    if value_offset + len <= data.len() {
-                        return Some(data[value_offset..value_offset + len].to_vec());
-                    }
-                }
-                offset += 12;
-            }
-            None
-        }
-        _ => None,
+/// Extract embedded ICC profile from raw file bytes (magic-byte detection)
+pub(crate) fn extract_embedded_icc_from_bytes(data: &[u8]) -> Option<Vec<u8>> {
+    if data.starts_with(b"\xFF\xD8") {
+        // JPEG
+        parse_jpeg_icc_chunks(data)
+    } else if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        // PNG
+        parse_png_icc_chunk(data)
+    } else if data.len() >= 2 && (data[0] == 0x49 || data[0] == 0x4d)
+        && (data[1] == 0x49 || data[1] == 0x4d)
+    {
+        // TIFF (II or MM)
+        parse_tiff_icc_tag(data)
+    } else {
+        None
     }
+}
+
+fn parse_jpeg_icc_chunks(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 4 {
+        return None;
+    }
+    let mut icc_segments: Vec<(u8, Vec<u8>)> = Vec::new();
+    let mut i = 2usize;
+    while i + 1 < data.len() {
+        if data[i] != 0xFF {
+            break;
+        }
+        let marker = data[i + 1];
+        i += 2;
+        if marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7) {
+            continue;
+        }
+        if marker == 0xDA {
+            break;
+        }
+        if i + 2 > data.len() {
+            break;
+        }
+        let seg_len = ((data[i] as usize) << 8) | (data[i + 1] as usize);
+        if seg_len < 2 || i + seg_len > data.len() {
+            break;
+        }
+        let payload = &data[i + 2..i + seg_len];
+        i += seg_len;
+        if marker == 0xE2 && payload.len() > 14 && &payload[0..12] == b"ICC_PROFILE\0" {
+            let seq_num = payload[12];
+            let chunk_data = payload[14..].to_vec();
+            icc_segments.push((seq_num, chunk_data));
+        }
+    }
+    if icc_segments.is_empty() {
+        None
+    } else {
+        icc_segments.sort_by_key(|(seq, _)| *seq);
+        let mut combined = Vec::new();
+        for (_, chunk) in icc_segments {
+            combined.extend_from_slice(&chunk);
+        }
+        Some(combined)
+    }
+}
+
+fn parse_png_icc_chunk(data: &[u8]) -> Option<Vec<u8>> {
+    let mut i = 8;
+    while i < data.len().saturating_sub(12) {
+        let len = ((data[i] as usize) << 24)
+            | ((data[i + 1] as usize) << 16)
+            | ((data[i + 2] as usize) << 8)
+            | (data[i + 3] as usize);
+        let chunk_type = &data[i + 4..i + 8];
+        if chunk_type == b"iCCP" {
+            let chunk_data = &data[i + 8..i + 8 + len];
+            let null_pos = chunk_data.iter().position(|&b| b == 0)?;
+            let compression = chunk_data.get(null_pos + 1)?;
+            if *compression == 0 {
+                let compressed = &chunk_data[null_pos + 2..];
+                use std::io::Read;
+                let mut decoder = flate2::read::ZlibDecoder::new(compressed);
+                let mut profile = Vec::new();
+                if decoder.read_to_end(&mut profile).is_ok() {
+                    return Some(profile);
+                }
+            }
+        } else if chunk_type == b"IEND" {
+            break;
+        }
+        i += 12 + len;
+    }
+    None
+}
+
+fn parse_tiff_icc_tag(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 8 {
+        return None;
+    }
+    let little_endian = data[0] == 0x49;
+    let ifd_offset = if little_endian {
+        (data[4] as usize)
+            | ((data[5] as usize) << 8)
+            | ((data[6] as usize) << 16)
+            | ((data[7] as usize) << 24)
+    } else {
+        ((data[4] as usize) << 24)
+            | ((data[5] as usize) << 16)
+            | ((data[6] as usize) << 8)
+            | (data[7] as usize)
+    };
+
+    if ifd_offset + 2 > data.len() {
+        return None;
+    }
+    let num_entries = if little_endian {
+        (data[ifd_offset] as usize) | ((data[ifd_offset + 1] as usize) << 8)
+    } else {
+        ((data[ifd_offset] as usize) << 8) | (data[ifd_offset + 1] as usize)
+    };
+
+    let mut offset = ifd_offset + 2;
+    for _ in 0..num_entries {
+        if offset + 12 > data.len() {
+            break;
+        }
+        let tag = if little_endian {
+            (data[offset] as u16) | ((data[offset + 1] as u16) << 8)
+        } else {
+            ((data[offset] as u16) << 8) | (data[offset + 1] as u16)
+        };
+        if tag == 34675 {
+            let len = if little_endian {
+                (data[offset + 4] as usize)
+                    | ((data[offset + 5] as usize) << 8)
+                    | ((data[offset + 6] as usize) << 16)
+                    | ((data[offset + 7] as usize) << 24)
+            } else {
+                ((data[offset + 4] as usize) << 24)
+                    | ((data[offset + 5] as usize) << 16)
+                    | ((data[offset + 6] as usize) << 8)
+                    | (data[offset + 7] as usize)
+            };
+            let value_offset = if little_endian {
+                (data[offset + 8] as usize)
+                    | ((data[offset + 9] as usize) << 8)
+                    | ((data[offset + 10] as usize) << 16)
+                    | ((data[offset + 11] as usize) << 24)
+            } else {
+                ((data[offset + 8] as usize) << 24)
+                    | ((data[offset + 9] as usize) << 16)
+                    | ((data[offset + 10] as usize) << 8)
+                    | (data[offset + 11] as usize)
+            };
+            if value_offset + len <= data.len() {
+                return Some(data[value_offset..value_offset + len].to_vec());
+            }
+        }
+        offset += 12;
+    }
+    None
 }

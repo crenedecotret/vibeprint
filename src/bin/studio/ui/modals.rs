@@ -881,8 +881,42 @@ impl App {
                     // Step 1: Start with full resolution image
                     let mut preview_img = full_image.clone();
 
-                    // Step 2: Apply ICC color management at FULL RESOLUTION (before any resize)
-                    // This is critical for wide-gamut profiles like ProPhoto RGB
+                    // Step 2: Downscale BEFORE ICC transform (saves ~16× pixel work)
+                    if scale < 1.0 {
+                        let preview_w = (img_w * scale) as u32;
+                        let preview_h = (img_h * scale) as u32;
+                        let rgb_img = image::RgbImage::from_raw(
+                            preview_img.size[0] as u32,
+                            preview_img.size[1] as u32,
+                            preview_img
+                                .pixels
+                                .iter()
+                                .flat_map(|p| [p.r(), p.g(), p.b()])
+                                .collect(),
+                        )
+                        .unwrap_or_else(|| {
+                            image::RgbImage::new(
+                                preview_img.size[0] as u32,
+                                preview_img.size[1] as u32,
+                            )
+                        });
+                        let resized = image::imageops::resize(
+                            &rgb_img,
+                            preview_w,
+                            preview_h,
+                            image::imageops::FilterType::CatmullRom,
+                        );
+                        preview_img = eframe::egui::ColorImage {
+                            size: [preview_w as usize, preview_h as usize],
+                            pixels: resized
+                                .into_raw()
+                                .chunks_exact(3)
+                                .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
+                                .collect(),
+                        };
+                    }
+
+                    // Step 3: Apply ICC transform on the (now smaller) preview
                     if let Some(ref monitor_profile) = self.state.monitor_icc_profile {
                         let mut pixel_bytes: Vec<u8> = preview_img
                             .pixels
@@ -903,7 +937,7 @@ impl App {
                             &mut pixel_bytes,
                             self.state.intent.to_lcms(),
                             self.state.bpc,
-                            false, // no soft proof in crop editor
+                            false,
                         )
                         .is_some()
                         {
@@ -913,47 +947,6 @@ impl App {
                                 .collect();
                         }
                     }
-
-                    // Step 3: Downscale AFTER color management (if needed)
-                    let preview_img = if scale < 1.0 {
-                        let preview_w = (img_w * scale) as u32;
-                        let preview_h = (img_h * scale) as u32;
-
-                        // Convert ColorImage to RgbImage for resizing
-                        let rgb_img = image::RgbImage::from_raw(
-                            preview_img.size[0] as u32,
-                            preview_img.size[1] as u32,
-                            preview_img
-                                .pixels
-                                .iter()
-                                .flat_map(|p| [p.r(), p.g(), p.b()])
-                                .collect(),
-                        )
-                        .unwrap_or_else(|| {
-                            image::RgbImage::new(
-                                preview_img.size[0] as u32,
-                                preview_img.size[1] as u32,
-                            )
-                        });
-
-                        let resized = image::imageops::resize(
-                            &rgb_img,
-                            preview_w,
-                            preview_h,
-                            image::imageops::FilterType::Lanczos3,
-                        );
-
-                        eframe::egui::ColorImage {
-                            size: [preview_w as usize, preview_h as usize],
-                            pixels: resized
-                                .into_raw()
-                                .chunks_exact(3)
-                                .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
-                                .collect(),
-                        }
-                    } else {
-                        preview_img
-                    };
 
                     let tex =
                         ctx.load_texture(&tex_name, preview_img, egui::TextureOptions::LINEAR);
@@ -1344,10 +1337,6 @@ if apply_btn.clicked() {
                                  self.relayout_queue();
                              }
                              self.state.show_crop_editor = false;
-                            // Clean up the temporary texture
-                            let tex_name: std::path::PathBuf =
-                                format!("crop_preview_{}", q_filepath_str).into();
-                            self.state.preview_textures.remove(&tex_name);
                         }
 
                         // Reset button (middle)
@@ -1382,10 +1371,6 @@ if apply_btn.clicked() {
                             .clicked()
                         {
                             self.state.show_crop_editor = false;
-                            // Clean up the temporary texture
-                            let tex_name: std::path::PathBuf =
-                                format!("crop_preview_{}", q_filepath_str).into();
-                            self.state.preview_textures.remove(&tex_name);
                         }
 
                         ui.add_space(20.0);

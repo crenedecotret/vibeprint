@@ -126,6 +126,7 @@ impl App {
                     0,
                     &self.state.current_dir,
                     &self.state.tree_expanded,
+                    &mut self.state.tree_children_cache,
                     &mut tree_nav,
                     &mut tree_toggle,
                 );

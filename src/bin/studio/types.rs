@@ -17,8 +17,8 @@ pub(crate) const RIGHT_W: f32 = 295.0;
 pub(crate) const THUMB_PX: u32 = 96;
 pub(crate) const RULER_PX: f32 = 22.0;
 pub(crate) const FIT_PAGE_IDX: usize = 15; // sentinel index = "Fit to Page"
-pub(crate) const CUSTOM_SIZE_IDX: usize = 16; // sentinel index = "Custom size…"
 pub(crate) const QUEUE_SPACING_IN: f32 = 0.25;
+pub(crate) const MAX_PREVIEW_PX: u32 = 1024; // longest edge limit for canvas preview
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum CustomSizeMode {
@@ -298,6 +298,7 @@ pub(crate) struct AppState {
     pub thumbs: HashMap<PathBuf, ThumbState>,
     pub thumb_tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>, LoadKind)>,
     pub thumb_rx: Receiver<(PathBuf, ColorImage, Option<Vec<u8>>, LoadKind)>,
+    pub stager_tx: Option<std::sync::mpsc::Sender<PathBuf>>,
     pub staged: Option<PathBuf>,
     pub staged_embedded_icc: Option<Vec<u8>>,
     pub staged_source_image: Option<ColorImage>,
@@ -311,6 +312,10 @@ pub(crate) struct AppState {
     pub full_images: HashMap<PathBuf, ColorImage>,
     pub embedded_icc_by_path: HashMap<PathBuf, Option<Vec<u8>>>,
     pub preview_textures: HashMap<PathBuf, TextureHandle>,
+    /// Cached ICC-transformed images (keyed by path). Only rebuilt when ICC settings change.
+    pub preview_icc_images: HashMap<PathBuf, ColorImage>,
+    /// Hash of ICC settings that produced the cached preview_icc_images.
+    pub preview_icc_settings_hash: u64,
     pub preview_dirty: bool,
     pub preview_cache_page: Option<usize>,
     pub queue: Vec<QueuedImage>,
@@ -321,6 +326,7 @@ pub(crate) struct AppState {
     pub nav_history: Vec<PathBuf>,
     pub nav_forward: Vec<PathBuf>,
     pub tree_expanded: HashMap<PathBuf, bool>,
+    pub tree_children_cache: HashMap<PathBuf, Vec<PathBuf>>,
     pub addr_bar: String,
     pub thumb_zoom: f32,
     pub thumb_pool: rayon::ThreadPool,
@@ -482,6 +488,7 @@ impl AppState {
             thumbs: HashMap::new(),
             thumb_tx,
             thumb_rx,
+            stager_tx: None,
             staged: None,
             staged_embedded_icc: None,
             staged_source_image: None,
@@ -495,6 +502,8 @@ impl AppState {
             full_images: HashMap::new(),
             embedded_icc_by_path: HashMap::new(),
             preview_textures: HashMap::new(),
+            preview_icc_images: HashMap::new(),
+            preview_icc_settings_hash: 0,
             preview_dirty: true,
             preview_cache_page: None,
             queue: Vec::new(),
@@ -505,6 +514,7 @@ impl AppState {
             nav_history: Vec::new(),
             nav_forward: Vec::new(),
             tree_expanded: HashMap::new(),
+            tree_children_cache: HashMap::new(),
             addr_bar: String::new(),
             thumb_zoom: 1.0,
             thumb_pool: rayon::ThreadPoolBuilder::new()

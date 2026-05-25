@@ -1410,19 +1410,6 @@ let current_pt = border_width_pt.min(max_border_pt);
                                 self.state.border_width_edit_string = format!("{:.3}", border_width_pt.min(max_border_pt));
                             }
                         }
-                        // Also apply on-the-fly for immediate visual feedback while typing
-                        if resp.changed() && resp.has_focus() {
-                            if self.state.use_metric {
-                                if let Ok(mm_val) = self.state.border_width_edit_string.parse::<u32>() {
-                                    let pt = vibeprint::layout_engine::mm_to_inches(mm_val as f32) * 72.0;
-                                    border_width_pt = pt.max(0.0).min(max_border_pt);
-                                }
-                            } else {
-                                if let Ok(v) = self.state.border_width_edit_string.parse::<f32>() {
-                                    border_width_pt = v.max(0.0).min(max_border_pt);
-                                }
-                            }
-                        }
                         ui.label(if self.state.use_metric { "mm" } else { "pt" });
                         let max_label = if self.state.use_metric {
                             format!("max {}", (vibeprint::layout_engine::inches_to_mm(max_border_pt / 72.0)).round() as u32)
