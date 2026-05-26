@@ -807,6 +807,7 @@ impl App {
                  crop_inverted: false,
                  border_type: vibeprint::layout_engine::BorderType::None,
                 border_width_pt: 4.0,
+                force_original_orientation: false,
             });
         self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
         self.state.selected = Some(path.clone());
@@ -871,6 +872,7 @@ impl App {
              crop_inverted: false,
              border_type: vibeprint::layout_engine::BorderType::None,
             border_width_pt: 4.0,
+            force_original_orientation: false,
         });
         self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
         self.state.selected = Some(path.clone());
@@ -1454,6 +1456,11 @@ impl App {
                 let will_rotate =
                     vibeprint::layout_engine::should_rotate_for_full_page(q.src_size_px, w, h);
                 let will_rotate = if q.crop_inverted { !will_rotate } else { will_rotate };
+                let will_rotate = if q.force_original_orientation {
+                    q.crop_inverted
+                } else {
+                    will_rotate
+                };
                 let stored_uv = match (q.crop_u0, q.crop_v0, q.crop_u1, q.crop_v1) {
                     (Some(u0), Some(v0), Some(u1), Some(v1)) => Some((u0, v0, u1, v1)),
                     _ => None,
@@ -1478,6 +1485,11 @@ impl App {
             let will_rotate =
                 vibeprint::layout_engine::should_rotate_for_full_page(q.src_size_px, w, h);
             let will_rotate = if q.crop_inverted { !will_rotate } else { will_rotate };
+            let will_rotate = if q.force_original_orientation {
+                q.crop_inverted
+            } else {
+                will_rotate
+            };
             // Calculate border width in pixels for the processor
             let border_width_px = if q.border_type != vibeprint::layout_engine::BorderType::None {
                 ((q.border_width_pt / 72.0) * self.state.target_dpi as f32).round() as u32

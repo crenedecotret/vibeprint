@@ -76,6 +76,7 @@ pub struct QueuedImage {
     pub crop_inverted: bool,
     pub border_type: BorderType,
     pub border_width_pt: f32,
+    pub force_original_orientation: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -114,7 +115,8 @@ pub fn layout_queue(
                 page = page.saturating_add(1);
             }
 
-            let rotate = should_rotate_for_full_page(item.src_size_px, page_w_px, page_h_px);
+            let rotate = should_rotate_for_full_page(item.src_size_px, page_w_px, page_h_px)
+                && !item.force_original_orientation;
             placements.insert(
                 item.id,
                 Placement {
@@ -165,6 +167,7 @@ pub fn layout_queue(
                 page_h_px,
                 spacing_px,
             );
+            let rotate = rotate && !item.force_original_orientation;
             // box_w_px / box_h_px already include the border expansion
 
             // Calculate center position based on actual box size (including outer border expansion)
@@ -218,6 +221,7 @@ pub fn layout_queue(
                 page_h_px,
                 spacing_px,
             );
+            let rotate = rotate && !item.force_original_orientation;
 
             // Convert stored point position to pixels, clamp within page
             let x_px = ((item.freehand_x_pt * dpi as f32 / 72.0).round().max(0.0) as u32)
@@ -255,6 +259,42 @@ pub fn layout_queue(
         } else {
             0.0
         };
+
+        // When force_original_orientation is set, isolate to its own page (no rotation,
+        // no flow packing) — same page-break logic as center_to_page but top-left aligned.
+        if item.force_original_orientation {
+            if cursor_x > 0 || cursor_y > 0 || row_h > 0 {
+                page = page.saturating_add(1);
+            }
+            let (box_w_px, box_h_px, _) = choose_orientation_for_flow_with_state(
+                item.src_size_px,
+                w_in + border_expansion_in * 2.0,
+                h_in + border_expansion_in * 2.0,
+                dpi,
+                0,
+                0,
+                0,
+                page_w_px,
+                page_h_px,
+                spacing_px,
+            );
+            placements.insert(
+                item.id,
+                Placement {
+                    page,
+                    x_px: 0,
+                    y_px: 0,
+                    w_px: box_w_px,
+                    h_px: box_h_px,
+                    rotation_deg: 0.0,
+                },
+            );
+            page = page.saturating_add(1);
+            cursor_x = 0;
+            cursor_y = 0;
+            row_h = 0;
+            continue;
+        }
 
         let (box_w_px, box_h_px, rotate) = choose_orientation_for_flow_with_state(
             item.src_size_px,
@@ -534,6 +574,7 @@ mod tests {
             crop_inverted: false,
             border_type: BorderType::None,
             border_width_pt: 0.0,
+            force_original_orientation: false,
         }
     }
 
@@ -566,6 +607,7 @@ mod tests {
             crop_inverted: false,
             border_type: BorderType::None,
             border_width_pt: 0.0,
+            force_original_orientation: false,
         }
     }
 
@@ -598,7 +640,8 @@ mod tests {
             crop_inverted: false,
             border_type: BorderType::None,
             border_width_pt: 0.0,
-         }
+            force_original_orientation: false,
+        }
     }
 
     #[test]

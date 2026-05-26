@@ -749,6 +749,7 @@ impl App {
         let q_src_size_px = q.src_size_px;
         let q_border_type = q.border_type;
         let q_border_width_pt = q.border_width_pt;
+        let q_force_original_orientation = q.force_original_orientation;
 
         let screen = ctx.screen_rect();
         let width = (screen.width() * 0.90).clamp(800.0, 1400.0);
@@ -810,6 +811,11 @@ impl App {
                     fw * fh
                 };
                 let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+                let will_rotate = if q_force_original_orientation {
+                    self.state.crop_editor_inverted
+                } else {
+                    will_rotate
+                };
 
                 let (target_w, target_h) = if will_rotate {
                     (oriented_h, oriented_w)

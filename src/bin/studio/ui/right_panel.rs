@@ -920,6 +920,11 @@ if let Some(item) = self.selected_queue_mut() {
                                             (sh as f32 * s) * (sw as f32 * s)
                                         };
                                         let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+                                        let will_rotate = if item.force_original_orientation {
+                                            item.crop_inverted
+                                        } else {
+                                            will_rotate
+                                        };
 
                                         // For crop calculation, swap dimensions if rotation is needed
                                         let (calc_w, calc_h) = if will_rotate {
@@ -1027,6 +1032,7 @@ if let Some(item) = self.selected_queue_mut() {
                             // Initialize crop editor with current UVs or auto-calculated
                             // Extract all data from q before modifying state
                             let crop_inverted = q.crop_inverted;
+                            let force_original_orientation = q.force_original_orientation;
                             let stored_uv = match (q.crop_u0, q.crop_v0, q.crop_u1, q.crop_v1) {
                                 (Some(u0), Some(v0), Some(u1), Some(v1)) => Some((u0, v0, u1, v1)),
                                 _ => None,
@@ -1063,6 +1069,11 @@ if let Some(item) = self.selected_queue_mut() {
                                 (src_h * s) * (src_w * s)
                             };
                             let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+                            let will_rotate = if force_original_orientation {
+                                crop_inverted
+                            } else {
+                                will_rotate
+                            };
 
                             // For crop calculation, swap dimensions if rotation is needed
                             // so calc_crop_uv returns UVs in original image space
@@ -1179,6 +1190,85 @@ let auto_uv = if sw != 0 && sh != 0 {
                         }
                     }
                 });
+
+                // ── Keep Original Orientation ──────────────────────────────
+                ui.add_space(8.0);
+                let (force_orig_disabled, force_orig_tooltip) = self
+                    .selected_queue()
+                    .map(|q| {
+                        // If already forced, always keep enabled so user can uncheck.
+                        if q.force_original_orientation {
+                            return (false, String::new());
+                        }
+
+                        if q.src_size_px.is_none() {
+                            return (true, "No source image".to_string());
+                        }
+
+                        // Use the actual placed dimensions to determine rotation — this
+                        // matches should_rotate_for_full_page used by canvas and processor.
+                        let will_rotate = vibeprint::layout_engine::should_rotate_for_full_page(
+                            q.src_size_px,
+                            q.placed_w_px.max(1),
+                            q.placed_h_px.max(1),
+                        );
+                        // Apply crop_inverted flip: effective rotation = what the user sees
+                        let effective_will_rotate =
+                            if q.crop_inverted { !will_rotate } else { will_rotate };
+
+                        // Condition 1: already in original orientation (checkbox is no-op)
+                        if !effective_will_rotate {
+                            return (true, "Image is already in its natural orientation".to_string());
+                        }
+
+                        // Condition 2: image cannot fit at its print size without rotation
+                        let (w_in, h_in) = if q.fit_to_page {
+                            self.imageable_size_in()
+                        } else {
+                            q.size.as_inches()
+                        };
+                        let border_expansion = if q.border_type
+                            == vibeprint::layout_engine::BorderType::Outer
+                        {
+                            q.border_width_pt / 72.0 * 2.0
+                        } else {
+                            0.0
+                        };
+                        let expanded_w = w_in + border_expansion;
+                        let expanded_h = h_in + border_expansion;
+                        let (ia_w, ia_h) = self.imageable_size_in();
+                        let (fits, _) = check_size_fit(expanded_w, expanded_h, ia_w, ia_h);
+                        if !fits {
+                            return (true, "Image cannot fit without rotation at this print size".to_string());
+                        }
+
+                        (false, String::new())
+                    })
+                    .unwrap_or((true, String::new()));
+
+                let mut force_orig = self
+                    .selected_queue()
+                    .map(|q| q.force_original_orientation)
+                    .unwrap_or(false);
+
+                let force_orig_resp = ui.add_enabled(
+                    !force_orig_disabled,
+                    egui::Checkbox::new(&mut force_orig, "Keep original orientation"),
+                );
+                if force_orig_resp.changed() {
+                    if let Some(item) = self.selected_queue_mut() {
+                        item.force_original_orientation = force_orig;
+                        self.relayout_queue();
+                        if let Some(id) = self.state.selected_queue_id {
+                            if let Some(item) = self.state.queue.iter().find(|q| q.id == id) {
+                                self.state.current_page = item.page;
+                            }
+                        }
+                    }
+                }
+                if force_orig_disabled && !force_orig_tooltip.is_empty() {
+                    force_orig_resp.on_disabled_hover_text(&force_orig_tooltip);
+                }
 
                 // ── Freehand Placement ──────────────────────────────────
                 ui.add_space(8.0);
@@ -1483,6 +1573,7 @@ let current_pt = border_width_pt.min(max_border_pt);
                     };
                     let src_size_px = self.selected_queue().and_then(|q| q.src_size_px).unwrap_or((1, 1));
                     let crop_inverted = self.selected_queue().map(|q| q.crop_inverted).unwrap_or(false);
+                    let force_original_orientation = self.selected_queue().map(|q| q.force_original_orientation).unwrap_or(false);
 
                     if type_changed || width_changed {
                         // Compute oriented dimensions and rotation to determine
@@ -1505,6 +1596,11 @@ let current_pt = border_width_pt.min(max_border_pt);
                             (sh_f * s) * (sw_f * s)
                         };
                         let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+                        let will_rotate = if force_original_orientation {
+                            crop_inverted
+                        } else {
+                            will_rotate
+                        };
                         let effective_will_rotate = if crop_inverted { !will_rotate } else { will_rotate };
                         let (full_w, full_h) = if effective_will_rotate {
                             (oriented_h, oriented_w)

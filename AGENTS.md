@@ -5,8 +5,10 @@ ICC-aware print layout engine (Rust). Two binaries: `vibeprint` (CLI) and `studi
 ## Build
 
 ```bash
-cargo build --release                       # Build both binaries (default features = monitor-icc)
 cargo build --release --no-default-features  # CLI-only, no X11 deps
+cargo build --release                       # Build both binaries (default features = monitor-icc) ALWAYS BUILD THIS LAST
+
+
 ```
 
 - `monitor-icc` feature (default) pulls in `x11` and `libc` crates.
