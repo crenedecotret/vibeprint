@@ -15,6 +15,18 @@ This document describes how the crop editor, inner borders, and outer borders wo
 - With inversion: Image does NOT rotate if it would normally rotate, and rotates if it wouldn't normally rotate
 - Inversion is stored in `QueuedImage.crop_inverted` boolean field
 
+### Force Original Orientation
+
+**Purpose:** `force_original_orientation` prevents the layout engine from rotating a specific image regardless of what fits better. Unlike crop inversion (which flips the rotation decision), this forces the image to stay in its natural orientation, period.
+
+**How it works:**
+- When enabled: The image is displayed in its original orientation (portrait images stay portrait, landscape stay landscape)
+- The effective rotation becomes `crop_inverted` (true = rotated, false = not rotated)
+- This is a per-image setting in `QueuedImage.force_original_orientation`
+- The canvas dims the edit button when the image is already in its natural orientation, or when the natural box cannot fit within the page bounds
+
+**Interaction with Crop Inversion:** When `force_original_orientation` is enabled, `crop_inverted` effectively becomes the rotation decision: `effective_will_rotate = crop_inverted` instead of the normal `should_rotate` logic.
+
 ### Visible Area Calculation
 
 The visible area is the portion of the print where the image appears:
@@ -52,66 +64,69 @@ The visible area is the portion of the print where the image appears:
 
 ## Code Locations and Logic Flow
 
-### 1. Crop Enable (right_panel.rs:660-755)
+### 1. Crop Enable (right_panel.rs — Crop Image checkbox handler in `draw_tab_image`)
 
 **When triggered:** User clicks "Crop Image" checkbox to enable crop
 
 **Flow:**
-1. Calculate `will_rotate` based on oriented dimensions (line 680)
-2. Set `(calc_w, calc_h)` based on `will_rotate` (lines 683-687)
-3. **For Inner Border with Inversion:** 
-   - Swap `calc_w, calc_h` before shrinking (line 717-721)
-   - Shrink by border amount (lines 722-725)
-   - Swap back (lines 726-730)
-4. Calculate `will_rotate_for_uv` accounting for inversion (lines 737-741)
-5. Call `calc_crop_uv(calc_w, calc_h, ...)` to get UVs (lines 742-750)
+1. Calculate `will_rotate` based on oriented dimensions
+2. If `force_original_orientation` is set, override `will_rotate = crop_inverted`
+3. Set `(calc_w, calc_h)` based on `will_rotate`
+4. **For Inner/Outer Border with Inversion:** swap before border adjustment, expand/shrink, swap back
+5. Calculate `will_rotate_for_uv` accounting for inversion
+6. Call `calc_crop_uv(calc_w, calc_h, ...)` to get UVs
 
 **Key Point:** The crop enable path correctly accounts for inversion in both:
 - The dimension calculations (swap before/after border adjustment)
 - The UV calculation (`will_rotate_for_uv`)
+- `force_original_orientation` overrides `will_rotate` before border adjustment
 
-### 2. Border Width/Type Change (right_panel.rs:1120-1240)
+### 2. Border Width/Type Change (right_panel.rs — border type/width handler in `draw_tab_image`)
 
 **When triggered:** User changes border type (None/Inner/Outer) or border width
 
 **Flow:**
-1. Calculate `will_rotate` based on oriented dimensions (line 1161)
-2. **CRITICAL:** Calculate `effective_will_rotate` accounting for inversion (line 1162)
-3. Set `(full_w, full_h)` based on `effective_will_rotate` (lines 1163-1166)
-4. Apply border to get `new_vis_w, new_vis_h` (lines 1175-1187)
-5. Calculate `target_aspect = (new_vis_w / new_vis_h) / src_aspect` (lines 1194-1196)
-6. Recalculate UVs preserving center point and area (lines 1209-1225)
+1. Set default border width BEFORE crop calculation (order matters)
+2. Calculate `will_rotate` based on oriented dimensions
+3. If `force_original_orientation` is set, override `will_rotate = crop_inverted`
+4. **CRITICAL:** Calculate `effective_will_rotate` accounting for inversion
+5. Set `(full_w, full_h)` based on `effective_will_rotate`
+6. Apply border to get `new_vis_w, new_vis_h`
+7. Calculate `target_aspect = (new_vis_w / new_vis_h) / src_aspect`
+8. Recalculate UVs preserving center point and area
 
-**Key Point:** The border change path now uses `effective_will_rotate` to match the crop enable logic. Previously it used `will_rotate` directly, causing distortion for inverted crops.
+**Key Point:** The border change path uses `effective_will_rotate` to match the crop enable logic. Previously it used `will_rotate` directly, causing distortion for inverted crops.
 
-### 3. Crop Editor Modal (modals.rs:719-1399)
+### 3. Crop Editor Modal (modals.rs — `show_crop_editor`)
 
 **When triggered:** User clicks "Edit" button to open crop editor
 
 **Flow:**
 1. Load stored UVs or calculate auto-crop UVs
-2. Calculate `will_rotate` for the oriented box (line 808)
-3. Adjust display rect for borders
-4. Handle user interactions (drag, resize)
-5. On "Apply": Save UVs back to queue item
+2. Calculate `will_rotate` for the oriented box
+3. If `force_original_orientation` is set, override `will_rotate = crop_editor_inverted`
+4. Set `(target_w, target_h)` based on `will_rotate`
+5. Adjust display rect for borders
+6. Handle user interactions (drag, resize, zoom, right-click invert)
+7. On "Apply": Save UVs and inversion state back to queue item
 
 **Key Point:** The crop editor displays the crop selection based on the visible area (after border adjustment), so it correctly shows the aspect ratio that will be rendered.
 
-### 4. Canvas Preview (canvas.rs:97-233)
+### 4. Canvas Preview (canvas.rs — render loop in `show`)
 
 **When triggered:** Main window renders the print preview
 
 **Flow:**
-1. Get box dimensions from `queued_box_px()` (line 97)
-2. Calculate `display_rect` accounting for border type (lines 116-137)
-3. Calculate `will_rotate_for_display` accounting for inversion (lines 162-171)
-4. Apply UVs to the mesh, rotating if needed (lines 185-232)
+1. Get box dimensions from `queued_box_px()`
+2. Calculate `display_rect` accounting for border type
+3. Calculate `will_rotate_for_display` accounting for inversion and `force_original_orientation`
+4. Apply UVs to the mesh, rotating if needed
 
 **Key Point:** The canvas uses `queued_box_px()` which returns different dimensions based on border type:
 - Inner border: Returns original cell size (border eats inside)
 - Outer border: Returns expanded cell size (border adds outside)
 
-### 5. queued_box_px (app.rs:488-526)
+### 5. queued_box_px (app.rs — `queued_box_px` method)
 
 **Purpose:** Calculate pixel dimensions of a queue item's placement box
 
@@ -135,7 +150,7 @@ else:
 
 **Key Point:** This ensures the processor and canvas preview use dimensions that match the actual visible area after accounting for borders and inversion.
 
-### 6. Processor (processor.rs:214-248)
+### 6. Processor (processor.rs — `process_placed`)
 
 **When triggered:** Export/print generates the final output
 
@@ -180,7 +195,7 @@ Same setup but inverted:
 
 **Cause:** Border change recalculation used `will_rotate` directly instead of `effective_will_rotate`
 
-**Fix:** Line 1162 in right_panel.rs:
+**Fix:** In the border change handler in `right_panel.rs`:
 ```rust
 let effective_will_rotate = if crop_inverted { !will_rotate } else { will_rotate };
 ```
@@ -189,13 +204,13 @@ let effective_will_rotate = if crop_inverted { !will_rotate } else { will_rotate
 
 **Cause:** `queued_box_px` didn't swap dimensions for inner borders with inversion
 
-**Fix:** Added inner border swap logic to `queued_box_px` (app.rs:518-520)
+**Fix:** Added inner border swap logic to `queued_box_px` in `app.rs`
 
 ### Issue: Crop editor shows wrong selection after border change
 
 **Cause:** UVs were recalculated with wrong aspect ratio due to `will_rotate` mismatch
 
-**Fix:** Use `effective_will_rotate` in border change handler (right_panel.rs:1162)
+**Fix:** Use `effective_will_rotate` in border change handler in `right_panel.rs`
 
 ### Issue: Minor distortion when switching from "None" to "Inner" border
 
@@ -205,7 +220,7 @@ let effective_will_rotate = if crop_inverted { !will_rotate } else { will_rotate
 1. Changed default border width on first enable to a small fixed value (1mm or 1pt) instead of calculated value
 2. **Critical:** Moved the border width assignment to BEFORE the crop UV recalculation
 
-**Code:** `src/bin/studio/ui/right_panel.rs:1127-1134`
+**Code:** `src/bin/studio/ui/right_panel.rs` — border type/width change handler, before crop recalculation
 ```rust
 // IMPORTANT: Set default border width BEFORE crop calculation
 // so UV recalculation uses the correct border size
@@ -232,21 +247,25 @@ When modifying crop/border code, verify:
 - [ ] Reset crop in editor: aspect correct
 - [ ] Canvas preview matches crop editor display
 - [ ] Export/print matches preview
+- [ ] Force original orientation: image stays in natural orientation
+- [ ] Force original orientation + crop inverted: effective rotation is inverted
+- [ ] Force original orientation + inner border: aspect correct
 
 ## Key Takeaways
 
 1. **Inversion affects display rotation, not UV calculation directly**
 2. **Always use `effective_will_rotate` when dimensions affect the visible area**
 3. **Inner borders shrink the visible area, outer borders expand the cell**
-4. **Crop UVs are calculated once, then adjusted (not recalculated) for border changes**
-5. **The three paths (crop enable, border change, canvas preview) must use consistent logic**
+4. **`force_original_orientation` overrides the normal rotation calculation, using `crop_inverted` as the effective rotation**
+5. **Crop UVs are calculated once, then adjusted (not recalculated) for border changes**
+6. **The four paths (crop enable, border change, crop editor, canvas preview) must use consistent logic for both inversion and force_original_orientation**
 
 ## Code References
 
-- **Crop enable:** `src/bin/studio/ui/right_panel.rs:660-755`
-- **Border change:** `src/bin/studio/ui/right_panel.rs:1120-1240`
-- **Crop editor:** `src/bin/studio/ui/modals.rs:719-1399`
-- **Canvas preview:** `src/bin/studio/ui/canvas.rs:97-233`
-- **Box dimensions:** `src/bin/studio/app.rs:488-526`
-- **Processor:** `src/processor.rs:214-248`
-- **UV calculation:** `src/bin/studio/utils.rs:37-113`
+- **Crop enable:** `src/bin/studio/ui/right_panel.rs` — Crop Image checkbox handler in `draw_tab_image`
+- **Border change:** `src/bin/studio/ui/right_panel.rs` — border type/width change handler in `draw_tab_image`
+- **Crop editor:** `src/bin/studio/ui/modals.rs` — `show_crop_editor` method
+- **Canvas preview:** `src/bin/studio/ui/canvas.rs` — render loop in `show`
+- **Box dimensions:** `src/bin/studio/app.rs` — `queued_box_px` method
+- **Processor:** `src/processor.rs` — `process_placed`
+- **UV calculation:** `src/bin/studio/utils.rs` — `calc_crop_uv`

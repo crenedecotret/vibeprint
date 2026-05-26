@@ -1,17 +1,21 @@
-Vibeprint Studio is an ICC aware print layout engine build entirely in RUST.
+# Vibeprint
 
-This was entirely vibe coded. I havent writen a line of code in 30 years.
+ICC-aware print layout engine built in Rust. Two binaries: `vibeprint` (CLI) and `studio` (GUI).
 
+> This was entirely vibe coded. I haven't written a line of code in 30 years.
 
-Please Note: Monitor ICC profile will not load under wayland (for now). It uses specific X11 specific APIs
+**Note:** Monitor ICC profile loading requires X11 — does **not** work on Wayland (for now).
 
-There are some dependencies required to use Vibeprint Studio
+## System Dependencies
 
-# RUST toolchain
+### Rust toolchain
+```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
+```
 
-# UBUNTU Core dependencies
+### Ubuntu
+```bash
 sudo apt install \
     libcups2 cups-client libcups2-dev \
     liblcms2-2 liblcms2-dev \
@@ -19,9 +23,10 @@ sudo apt install \
     libxrandr2 libxrandr-dev \
     ghostscript \
     libtiff-tools
+```
 
-
-# FEDORA Core dependencies
+### Fedora
+```bash
 sudo dnf install \
     cups-libs cups-client \
     lcms2 lcms2-devel \
@@ -29,22 +34,48 @@ sudo dnf install \
     libXrandr libXrandr-devel \
     ghostscript \
     libtiff-tools
+```
 
-# How to compile
+## Build
 
-# Clone the repository
+```bash
+# Clone
 git clone https://github.com/crenedecotret/vibeprint.git
 cd vibeprint
 
-# Build CLI tool (vibeprint)
-cargo build --release
-
-# Build Studio GUI (studio) - requires all system deps above
-cargo build --release
-
-# Build without monitor ICC support (no X11 deps needed)
+# CLI-only build (no X11 deps needed)
 cargo build --release --no-default-features
 
-# Output binaries
-Located in /target/release/:
-vibeprint (Command-line tool)    studio (GUI application)
+# Full build with Studio GUI (requires all system deps above)
+cargo build --release
+```
+
+Binaries are placed in `target/release/`:
+- `vibeprint` — command-line image processor
+- `studio` — GUI application
+
+## Quick Start (CLI)
+
+```bash
+cargo run --release --bin vibeprint -- process --input in.tif --output out.tif --dpi 720
+cargo run --release --bin vibeprint -- printers          # List CUPS printers
+cargo run --release --bin vibeprint -- meta image.tif     # Image metadata
+```
+
+## Quick Start (GUI)
+
+```bash
+cargo run --release --bin studio
+```
+
+## Test
+
+```bash
+cargo test
+```
+
+## More Info
+
+- CLI options: see `cargo run --bin vibeprint -- --help`
+- Crop/border/inversion internals: `CROP_AND_BORDER.md`
+- Agent instructions: `AGENTS.md`
