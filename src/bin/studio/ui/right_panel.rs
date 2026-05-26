@@ -1221,12 +1221,24 @@ let auto_uv = if sw != 0 && sh != 0 {
                             return (true, "Image is already in its natural orientation".to_string());
                         }
 
-                        // Condition 2: image cannot fit at its print size without rotation
+                        // Condition 2: image cannot fit without rotation at its print size
                         let (w_in, h_in) = if q.fit_to_page {
                             self.imageable_size_in()
                         } else {
                             q.size.as_inches()
                         };
+                        
+                        // Determine source orientation and compute natural box dimensions
+                        let (sw, sh) = q.src_size_px.unwrap();
+                        let src_landscape = sw as f32 > sh as f32;
+                        let (natural_w, natural_h) = if src_landscape {
+                            // Landscape source: natural box is landscape (swap to h×w)
+                            (h_in, w_in)
+                        } else {
+                            // Portrait source: natural box is portrait (keep w×h)
+                            (w_in, h_in)
+                        };
+                        
                         let border_expansion = if q.border_type
                             == vibeprint::layout_engine::BorderType::Outer
                         {
@@ -1234,11 +1246,13 @@ let auto_uv = if sw != 0 && sh != 0 {
                         } else {
                             0.0
                         };
-                        let expanded_w = w_in + border_expansion;
-                        let expanded_h = h_in + border_expansion;
+                        let expanded_w = natural_w + border_expansion;
+                        let expanded_h = natural_h + border_expansion;
                         let (ia_w, ia_h) = self.imageable_size_in();
-                        let (fits, _) = check_size_fit(expanded_w, expanded_h, ia_w, ia_h);
-                        if !fits {
+                        
+                        // Check if natural box fits WITHOUT rotation (portrait orientation only)
+                        let fits_without_rotation = expanded_w <= ia_w && expanded_h <= ia_h;
+                        if !fits_without_rotation {
                             return (true, "Image cannot fit without rotation at this print size".to_string());
                         }
 
