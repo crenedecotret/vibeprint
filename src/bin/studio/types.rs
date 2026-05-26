@@ -286,6 +286,7 @@ pub(crate) struct Settings {
     pub input_slot_key: Option<String>,
     pub monitor_icc_override: Option<String>,
     pub use_metric: Option<bool>,
+    pub safe_8bit_tiff_print_path: Option<bool>,
 }
 
 // ── App State ───────────────────────────────────────────────────────────────
@@ -454,6 +455,7 @@ pub(crate) struct AppState {
     // ── Preferences modal ──
     pub show_preferences: bool,
     pub use_metric: bool,
+    pub safe_8bit_tiff_print_path: bool,
 
     // ── About modal ──
     pub show_about: bool,
@@ -480,6 +482,7 @@ impl AppState {
         saved_show_log: bool,
         saved_bpc: bool,
         saved_use_metric: bool,
+        saved_safe_8bit: bool,
     ) -> Self {
         Self {
             current_dir: home.clone(),
@@ -604,6 +607,7 @@ impl AppState {
             custom_size_input_is_metric: false,
             show_preferences: false,
             use_metric: saved_use_metric,
+            safe_8bit_tiff_print_path: saved_safe_8bit,
             show_about: false,
             icc_picker_context: IccPickerContext::Output,
         }

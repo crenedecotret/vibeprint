@@ -217,6 +217,7 @@ impl App {
             saved_show_log,
             s.bpc.unwrap_or(true),
             s.use_metric.unwrap_or(false),
+            s.safe_8bit_tiff_print_path.unwrap_or(false),
         );
         state.stager_tx = Some(stager_tx);
         state.pending_extra_option_indices = s.extra_option_indices;
@@ -1558,9 +1559,28 @@ impl App {
                     8
                 }
             }
-            ProcessTarget::Print => 16,
+            ProcessTarget::Print => {
+                if self.state.safe_8bit_tiff_print_path {
+                    8
+                } else {
+                    16
+                }
+            }
         };
         let sharpen = self.state.sharpen;
+
+        let embed_icc = match target {
+            ProcessTarget::Export => true,
+            ProcessTarget::Print => !self.state.safe_8bit_tiff_print_path,
+        };
+
+        if let ProcessTarget::Print = target {
+            if self.state.safe_8bit_tiff_print_path {
+                self.state.log.push("Using safe 8-bit TIFF print path (no ICC profile embedded)".into());
+            } else {
+                self.state.log.push("Using standard 16-bit → PDF print path".into());
+            }
+        }
 
         let target_clone = target.clone();
         let (tx, rx) = channel::<Result<(Vec<PathBuf>, ProcessTarget), String>>();
@@ -1583,6 +1603,7 @@ impl App {
                     engine: engine.clone(),
                     depth,
                     sharpen,
+                    embed_icc_profile: embed_icc,
                 };
                 if let Err(e) = processor::process_composite_page(opts) {
                     let _ = tx.send(Err(e.to_string()));

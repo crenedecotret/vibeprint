@@ -342,6 +342,7 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
             opts.target_dpi,
             &output_icc_bytes,
             &description,
+            opts.embed_icc_profile,
         )?;
     } else {
         save_rgb16_tiff_with_dpi(
@@ -447,6 +448,7 @@ pub struct CompositePageOptions {
     pub engine: ResampleEngine,
     pub depth: u8,
     pub sharpen: u8,
+    pub embed_icc_profile: bool,
 }
 
 pub fn process(opts: ProcessOptions) -> Result<()> {
@@ -634,6 +636,7 @@ pub fn process(opts: ProcessOptions) -> Result<()> {
             opts.target_dpi,
             &output_icc_bytes,
             &description,
+            true, // CLI always embeds ICC profile
         )?;
         println!("VibePrint: Saved 8-bit TIFF to {}", opts.output.display());
     } else {
@@ -1225,6 +1228,7 @@ fn save_rgb8_tiff_with_dpi(
     dpi: f64,
     output_icc_bytes: &[u8],
     description: &str,
+    embed_icc_profile: bool,
 ) -> Result<()> {
     use tiff::encoder::{colortype, Compression, DeflateLevel, TiffEncoder};
     use tiff::tags::Tag;
@@ -1250,7 +1254,9 @@ fn save_rgb8_tiff_with_dpi(
         .encoder()
         .write_tag(Tag::YResolution, tiff::encoder::Rational { n, d });
     let _ = image.encoder().write_tag(Tag::ResolutionUnit, 2u16);
-    let _ = image.encoder().write_tag(Tag::IccProfile, output_icc_bytes);
+    if embed_icc_profile {
+        let _ = image.encoder().write_tag(Tag::IccProfile, output_icc_bytes);
+    }
     let _ = image
         .encoder()
         .write_tag(Tag::from_u16_exhaustive(40961), 65535u16);

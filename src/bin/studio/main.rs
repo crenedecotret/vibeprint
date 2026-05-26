@@ -93,6 +93,7 @@ impl eframe::App for App {
                 .map(|(k, _)| k.clone()),
             monitor_icc_override: self.state.monitor_icc_override.clone(),
             use_metric: Some(self.state.use_metric),
+            safe_8bit_tiff_print_path: Some(self.state.safe_8bit_tiff_print_path),
         });
     }
 

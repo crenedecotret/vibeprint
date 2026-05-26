@@ -81,6 +81,7 @@ fn unset_output_icc_can_default_to_wide_profile() -> Result<()> {
         engine: vibeprint::processor::ResampleEngine::Mks,
         depth: 16,
         sharpen: 0,
+        embed_icc_profile: true,
     })?;
 
     let embedded = read_tiff_embedded_icc(&output_path)?;
@@ -786,6 +787,7 @@ fn composite_page_smoke_test() -> Result<()> {
         engine: vibeprint::processor::ResampleEngine::Mks,
         depth: 8,
         sharpen: 0,
+        embed_icc_profile: true,
     })?;
 
     let (bit_depth, dpi) = read_tiff_bit_depth_and_dpi(&output_path)?;
@@ -1233,6 +1235,7 @@ fn four_by_six_print_geometry_is_preserved() -> Result<()> {
             engine: vibeprint::processor::ResampleEngine::Mks,
             depth: 16,
             sharpen: 5,
+            embed_icc_profile: true,
         })
         .with_context(|| format!("composite 4×6 page failed at {} dpi", target_dpi))?;
 

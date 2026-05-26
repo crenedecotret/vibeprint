@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::channel;
 
 use crate::icc::{apply_preview_transform, extract_file_date, extract_file_size};
-use crate::processing::submit_print_jobs_sync;
+use crate::processing::{submit_print_jobs_direct_tiff, submit_print_jobs_sync};
 use crate::types::{CustomSizeMode, IccProfileEntry, IccProfileFilter, IccProfileSource};
 use crate::App;
 
@@ -336,18 +336,33 @@ impl App {
                         let props_media_idx = self.state.props_media_idx;
                         let props_slot_idx = self.state.props_slot_idx;
                         let extra_option_indices = self.state.extra_option_indices.clone();
+                        let use_safe_8bit = self.state.safe_8bit_tiff_print_path;
                         std::thread::spawn(move || {
-                            let result = submit_print_jobs_sync(
-                                &temp_paths_clone,
-                                caps,
-                                printer_idx,
-                                &printers,
-                                selected_page_size_idx,
-                                props_media_idx,
-                                props_slot_idx,
-                                &extra_option_indices,
-                                &log_tx,
-                            );
+                            let result = if use_safe_8bit {
+                                submit_print_jobs_direct_tiff(
+                                    &temp_paths_clone,
+                                    caps,
+                                    printer_idx,
+                                    &printers,
+                                    selected_page_size_idx,
+                                    props_media_idx,
+                                    props_slot_idx,
+                                    &extra_option_indices,
+                                    &log_tx,
+                                )
+                            } else {
+                                submit_print_jobs_sync(
+                                    &temp_paths_clone,
+                                    caps,
+                                    printer_idx,
+                                    &printers,
+                                    selected_page_size_idx,
+                                    props_media_idx,
+                                    props_slot_idx,
+                                    &extra_option_indices,
+                                    &log_tx,
+                                )
+                            };
                             let _ = tx.send(result);
                         });
                         self.state.pending_print_paths.clear();
@@ -473,6 +488,7 @@ impl App {
                                 .map(|(k, _)| k.clone()),
                             monitor_icc_override: self.state.monitor_icc_override.clone(),
                             use_metric: Some(self.state.use_metric),
+                            safe_8bit_tiff_print_path: Some(self.state.safe_8bit_tiff_print_path),
                         });
                     }
                 });
@@ -1756,6 +1772,10 @@ if apply_btn.clicked() {
                         crate::app::format_border_edit(
                             self.state.user_border.bottom, self.state.use_metric);
                     self.state.border_width_edit_string.clear();
+                }
+
+                if ui.checkbox(&mut self.state.safe_8bit_tiff_print_path, "Use safe 8 bit tiff print path").changed() {
+                    ctx.request_repaint();
                 }
 
                 ui.add_space(8.0);

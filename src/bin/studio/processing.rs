@@ -170,6 +170,99 @@ pub(crate) fn submit_print_jobs_sync(
     Ok(())
 }
 
+/// Direct TIFF print job submission for safe 8-bit path (no PS/PDF conversion)
+pub(crate) fn submit_print_jobs_direct_tiff(
+    temp_paths: &[PathBuf],
+    caps: Option<PrinterCaps>,
+    printer_idx: usize,
+    printers: &[PrinterInfo],
+    selected_page_size_idx: usize,
+    props_media_idx: usize,
+    props_slot_idx: usize,
+    extra_option_indices: &HashMap<String, usize>,
+    log_tx: &Sender<String>,
+) -> Result<(), String> {
+    if temp_paths.is_empty() {
+        return Err("No pages to print".into());
+    }
+    let caps = caps.ok_or("No printer selected")?;
+    let printer = printers.get(printer_idx).ok_or("No printer selected")?;
+
+    // Build the lpr -o option list from user selections (same as standard path)
+    let mut lpr_opts: Vec<String> = Vec::new();
+
+    // Prevent CUPS auto-scaling — our TIFF is already sized to imageable area
+    lpr_opts.push("-o print-scaling=none".to_string());
+
+    // Paper size: use the PWG media name (e.g. "na_letter_8.5x11in")
+    if let Some(ps) = caps.page_sizes.get(selected_page_size_idx) {
+        lpr_opts.push(format!("-o media={}", ps.name));
+    }
+
+    // Media type: use the IPP keyword (e.g. "photographic-glossy")
+    if let Some((key, _)) = caps.media_types.get(props_media_idx) {
+        lpr_opts.push(format!("-o media-type={}", key));
+    }
+
+    // Input slot: use the IPP keyword (e.g. "auto", "cd")
+    if let Some((key, _)) = caps.input_slots.get(props_slot_idx) {
+        lpr_opts.push(format!("-o media-source={}", key));
+    }
+
+    // Extra options (color mode, duplex, quality, etc.)
+    for opt in &caps.extra_options {
+        if let Some(&idx) = extra_option_indices.get(&opt.key) {
+            if let Some((choice_key, _)) = opt.choices.get(idx) {
+                lpr_opts.push(format!("-o {}={}", opt.key, choice_key));
+            }
+        }
+    }
+
+    let opts_str = lpr_opts.join(" ");
+    let printer_q = shell_quote(&printer.name);
+
+    // Submit each TIFF directly to lpr (no PS/PDF conversion)
+    for (i, temp_path) in temp_paths.iter().enumerate() {
+        let temp_path_q = shell_quote(&temp_path.display().to_string());
+
+        let lpr_cmd = format!("lpr -P {} {} {}", printer_q, opts_str, temp_path_q);
+
+        let log_msg = format!(
+            "Safe 8-bit TIFF: Sending page {} of {} directly to lpr (no PDF conversion)",
+            i + 1,
+            temp_paths.len()
+        );
+        let _ = log_tx.send(log_msg);
+
+        let lpr_result = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&lpr_cmd)
+            .output()
+            .map_err(|e| format!("Failed to run lpr: {}", e))?;
+
+        if !lpr_result.status.success() {
+            let stderr = String::from_utf8_lossy(&lpr_result.stderr);
+            return Err(format!(
+                "lpr failed (page {} of {}): {}",
+                i + 1,
+                temp_paths.len(),
+                stderr
+            ));
+        }
+
+        let success_msg = format!("Safe 8-bit TIFF: Page {} submitted successfully", i + 1);
+        let _ = log_tx.send(success_msg);
+    }
+
+    let _ = log_tx.send(format!(
+        "Safe 8-bit TIFF: All {} page(s) submitted to {}",
+        temp_paths.len(),
+        printer.name
+    ));
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::calc_print_offset;
