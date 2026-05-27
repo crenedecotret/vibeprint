@@ -459,6 +459,9 @@ pub(crate) struct AppState {
 
     // ── About modal ──
     pub show_about: bool,
+
+    // ── Custom border color modal ──
+    pub custom_border_color_temp: [u8; 3],
 }
 
 impl AppState {
@@ -609,6 +612,7 @@ impl AppState {
             use_metric: saved_use_metric,
             safe_8bit_tiff_print_path: saved_safe_8bit,
             show_about: false,
+            custom_border_color_temp: [0, 0, 0],
             icc_picker_context: IccPickerContext::Output,
         }
     }

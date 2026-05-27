@@ -134,6 +134,22 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
     )?;
     let working_profile = load_prophoto_working_profile()?;
 
+    // Pre-create a transform from sRGB 16-bit to working (linear ProPhoto) 16-bit
+    // for converting user-picked border colors into the working space.
+    // We widen 8-bit sRGB values to 16-bit before passing them through this transform.
+    let srgb16_to_prophoto = {
+        let srgb = lcms2::Profile::new_srgb();
+        lcms2::Transform::new_flags(
+            &srgb,
+            lcms2::PixelFormat::RGB_16,
+            &working_profile,
+            lcms2::PixelFormat::RGB_16,
+            lcms2::Intent::RelativeColorimetric,
+            lcms2::Flags::NO_CACHE,
+        )
+        .ok()
+    };
+
     let intent_name = match opts.intent {
         lcms2::Intent::Perceptual => "Perceptual",
         lcms2::Intent::RelativeColorimetric => "Relative Colorimetric",
@@ -307,6 +323,21 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
 
         // Draw border if enabled - only in the gap around the image
         if p.border_type != crate::layout_engine::BorderType::None && p.border_width_px > 0 {
+            // Convert the sRGB border color into the working space (linear ProPhoto)
+            let border_rgb16 = if let Some(ref t) = srgb16_to_prophoto {
+                // Widen 8-bit sRGB to 16-bit by scaling (257 = 65535/255).
+                // Use [u16; 3] as the pixel type to match PixelFormat::RGB_16 (6 bytes/pixel).
+                let src16 = [[
+                    (p.border_color[0] as u16) * 257,
+                    (p.border_color[1] as u16) * 257,
+                    (p.border_color[2] as u16) * 257,
+                ]];
+                let mut dst16 = [[0u16, 0u16, 0u16]];
+                t.transform_pixels(&src16[..], &mut dst16[..]);
+                dst16[0]
+            } else {
+                [0u16, 0u16, 0u16]
+            };
             // For Inner: draw border in gap between smaller image and outer edge
             // For Outer: draw border in gap between image and expanded outer edge
             draw_border_in_gap_rgb16(
@@ -320,6 +351,7 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
                 p.dest_w_px,
                 p.dest_h_px, // box size
                 p.border_width_px,
+                border_rgb16,
             );
         }
 
@@ -433,6 +465,8 @@ pub struct PagePlacement {
     // Border settings (border_width_px is the total border width in pixels)
     pub border_type: crate::layout_engine::BorderType,
     pub border_width_px: u32,
+    // Border color in sRGB (used when border_width_px > 0)
+    pub border_color: [u8; 3],
 }
 
 pub struct CompositePageOptions {
@@ -1486,7 +1520,7 @@ fn composite_rgb16(page: &mut Rgb16Image, img: &Rgb16Image, x: u32, y: u32) {
     }
 }
 
-/// Draw a black border in the gap between the image and its containing box.
+/// Draw a colored border in the gap between the image and its containing box.
 /// For Inner borders: fills the gap between the smaller centered image and the original box edge.
 /// For Outer borders: fills the gap between the image and the expanded outer box edge.
 fn draw_border_in_gap_rgb16(
@@ -1500,6 +1534,7 @@ fn draw_border_in_gap_rgb16(
     box_w: u32,
     box_h: u32,
     border_width_px: u32,
+    border_rgb16: [u16; 3],
 ) {
     let page_w = page.width();
     let page_h = page.height();
@@ -1529,9 +1564,9 @@ fn draw_border_in_gap_rgb16(
                 continue;
             }
             let di = ((py * page_w + px) * 3) as usize;
-            dst[di] = 0;
-            dst[di + 1] = 0;
-            dst[di + 2] = 0;
+            dst[di] = border_rgb16[0];
+            dst[di + 1] = border_rgb16[1];
+            dst[di + 2] = border_rgb16[2];
         }
     }
 
@@ -1547,9 +1582,9 @@ fn draw_border_in_gap_rgb16(
                 continue;
             }
             let di = ((py * page_w + px) * 3) as usize;
-            dst[di] = 0;
-            dst[di + 1] = 0;
-            dst[di + 2] = 0;
+            dst[di] = border_rgb16[0];
+            dst[di + 1] = border_rgb16[1];
+            dst[di + 2] = border_rgb16[2];
         }
     }
 
@@ -1567,9 +1602,9 @@ fn draw_border_in_gap_rgb16(
                 continue;
             }
             let di = ((py * page_w + px) * 3) as usize;
-            dst[di] = 0;
-            dst[di + 1] = 0;
-            dst[di + 2] = 0;
+            dst[di] = border_rgb16[0];
+            dst[di + 1] = border_rgb16[1];
+            dst[di + 2] = border_rgb16[2];
         }
     }
 
@@ -1585,9 +1620,9 @@ fn draw_border_in_gap_rgb16(
                 continue;
             }
             let di = ((py * page_w + px) * 3) as usize;
-            dst[di] = 0;
-            dst[di + 1] = 0;
-            dst[di + 2] = 0;
+            dst[di] = border_rgb16[0];
+            dst[di + 1] = border_rgb16[1];
+            dst[di + 2] = border_rgb16[2];
         }
     }
 }

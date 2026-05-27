@@ -76,6 +76,7 @@ pub struct QueuedImage {
     pub crop_inverted: bool,
     pub border_type: BorderType,
     pub border_width_pt: f32,
+    pub border_color: [u8; 3],
     pub force_original_orientation: bool,
 }
 
@@ -154,20 +155,19 @@ pub fn layout_queue(
                 0.0
             };
 
-            // Use same orientation logic as normal flow (cursor at 0,0 on fresh page)
             let (box_w_px, box_h_px, rotate) = choose_orientation_for_flow_with_state(
                 item.src_size_px,
                 w_in + border_expansion_in * 2.0,
                 h_in + border_expansion_in * 2.0,
                 dpi,
-                0, // cursor_x - fresh page start
-                0, // cursor_y - fresh page start
-                0, // row_h - fresh page start
+                0,
+                0,
+                0,
                 page_w_px,
                 page_h_px,
                 spacing_px,
+                item.force_original_orientation,
             );
-            let rotate = rotate && !item.force_original_orientation;
             // When force_original_orientation + crop_inverted, the inverted crop
             // changes the effective aspect ratio, so swap cell dimensions.
             let (box_w_px, box_h_px) = if item.force_original_orientation && item.crop_inverted {
@@ -227,8 +227,8 @@ pub fn layout_queue(
                 page_w_px,
                 page_h_px,
                 spacing_px,
+                item.force_original_orientation,
             );
-            let rotate = rotate && !item.force_original_orientation;
             // When force_original_orientation + crop_inverted, the inverted crop
             // changes the effective aspect ratio, so swap cell dimensions.
             let (box_w_px, box_h_px) = if item.force_original_orientation && item.crop_inverted {
@@ -274,49 +274,6 @@ pub fn layout_queue(
             0.0
         };
 
-        // When force_original_orientation is set, isolate to its own page (no rotation,
-        // no flow packing) — same page-break logic as center_to_page but top-left aligned.
-        if item.force_original_orientation {
-            if cursor_x > 0 || cursor_y > 0 || row_h > 0 {
-                page = page.saturating_add(1);
-            }
-            let (box_w_px, box_h_px, _) = choose_orientation_for_flow_with_state(
-                item.src_size_px,
-                w_in + border_expansion_in * 2.0,
-                h_in + border_expansion_in * 2.0,
-                dpi,
-                0,
-                0,
-                0,
-                page_w_px,
-                page_h_px,
-                spacing_px,
-            );
-            // When crop_inverted, the inverted crop changes the effective aspect
-            // ratio, so swap cell dimensions to match.
-            let (box_w_px, box_h_px) = if item.crop_inverted {
-                (box_h_px, box_w_px)
-            } else {
-                (box_w_px, box_h_px)
-            };
-            placements.insert(
-                item.id,
-                Placement {
-                    page,
-                    x_px: 0,
-                    y_px: 0,
-                    w_px: box_w_px,
-                    h_px: box_h_px,
-                    rotation_deg: 0.0,
-                },
-            );
-            page = page.saturating_add(1);
-            cursor_x = 0;
-            cursor_y = 0;
-            row_h = 0;
-            continue;
-        }
-
         let (box_w_px, box_h_px, rotate) = choose_orientation_for_flow_with_state(
             item.src_size_px,
             w_in + border_expansion_in * 2.0,
@@ -328,7 +285,13 @@ pub fn layout_queue(
             page_w_px,
             page_h_px,
             spacing_px,
+            item.force_original_orientation,
         );
+        let (box_w_px, box_h_px) = if item.force_original_orientation && item.crop_inverted {
+            (box_h_px, box_w_px)
+        } else {
+            (box_w_px, box_h_px)
+        };
         // box_w_px / box_h_px already include the border expansion
 
         if cursor_x > 0 && cursor_x.saturating_add(box_w_px) > page_w_px {
@@ -416,12 +379,30 @@ fn choose_orientation_for_flow_with_state(
     page_w_px: u32,
     page_h_px: u32,
     spacing_px: u32,
+    force_original_orientation: bool,
 ) -> (u32, u32, bool) {
     let to_px = |inches: f32| (inches * dpi as f32).round().max(1.0) as u32;
 
     let Some((sw, sh)) = src_size_px else {
         return (to_px(w_in), to_px(h_in), false);
     };
+
+    if force_original_orientation {
+        let box_w = to_px(w_in);
+        let box_h = to_px(h_in);
+        let (box_w, box_h) = if box_w > page_w_px || box_h > page_h_px {
+            let pw = page_w_px.max(1) as f32;
+            let ph = page_h_px.max(1) as f32;
+            let scale = (pw / box_w as f32).min(ph / box_h as f32).min(1.0);
+            (
+                (box_w as f32 * scale).round().max(1.0) as u32,
+                (box_h as f32 * scale).round().max(1.0) as u32,
+            )
+        } else {
+            (box_w, box_h)
+        };
+        return (box_w, box_h, false);
+    }
 
     let sw = sw.max(1) as f32;
     let sh = sh.max(1) as f32;
@@ -595,6 +576,7 @@ mod tests {
             crop_inverted: false,
             border_type: BorderType::None,
             border_width_pt: 0.0,
+            border_color: [0, 0, 0],
             force_original_orientation: false,
         }
     }
@@ -628,6 +610,7 @@ mod tests {
             crop_inverted: false,
             border_type: BorderType::None,
             border_width_pt: 0.0,
+            border_color: [0, 0, 0],
             force_original_orientation: false,
         }
     }
@@ -661,6 +644,7 @@ mod tests {
             crop_inverted: false,
             border_type: BorderType::None,
             border_width_pt: 0.0,
+            border_color: [0, 0, 0],
             force_original_orientation: false,
         }
     }

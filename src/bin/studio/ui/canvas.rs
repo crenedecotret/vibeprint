@@ -149,12 +149,12 @@ impl App {
                     .unwrap_or(display_rect)
             };
 
-            // For outer border: draw full placement rect as black first, then image on top
+            // For outer border: draw full placement rect as border color first, then image on top
             // This avoids seam artifacts between border strips
             if item.border_type == vibeprint::layout_engine::BorderType::Outer
                 && item.border_width_pt > 0.0
             {
-                draw_solid_rect(&painter, r, Color32::BLACK);
+                draw_solid_rect(&painter, r, Color32::from_rgb(item.border_color[0], item.border_color[1], item.border_color[2]));
             }
 
             if let Some(tex) = self.state.preview_textures.get(&item.filepath) {
@@ -254,13 +254,13 @@ impl App {
             {
                 match item.border_type {
                     vibeprint::layout_engine::BorderType::Inner => {
-                        // Draw black border in gap between display_rect (shrunk) and r (full)
+                        // Draw border in gap between display_rect (shrunk) and r (full)
                         // Top strip
                         if display_rect.min.y > r.min.y {
                             draw_solid_rect(
                                 &painter,
                                 Rect::from_min_max(r.min, Pos2::new(r.max.x, display_rect.min.y)),
-                                Color32::BLACK,
+                                Color32::from_rgb(item.border_color[0], item.border_color[1], item.border_color[2]),
                             );
                         }
                         // Bottom strip
@@ -268,7 +268,7 @@ impl App {
                             draw_solid_rect(
                                 &painter,
                                 Rect::from_min_max(Pos2::new(r.min.x, display_rect.max.y), r.max),
-                                Color32::BLACK,
+                                Color32::from_rgb(item.border_color[0], item.border_color[1], item.border_color[2]),
                             );
                         }
                         // Left strip
@@ -279,7 +279,7 @@ impl App {
                                     Pos2::new(r.min.x, display_rect.min.y),
                                     Pos2::new(display_rect.min.x, display_rect.max.y),
                                 ),
-                                Color32::BLACK,
+                                Color32::from_rgb(item.border_color[0], item.border_color[1], item.border_color[2]),
                             );
                         }
                         // Right strip
@@ -290,7 +290,7 @@ impl App {
                                     Pos2::new(display_rect.max.x, display_rect.min.y),
                                     Pos2::new(r.max.x, display_rect.max.y),
                                 ),
-                                Color32::BLACK,
+                                Color32::from_rgb(item.border_color[0], item.border_color[1], item.border_color[2]),
                             );
                         }
                     }

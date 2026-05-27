@@ -6,6 +6,190 @@ use crate::types::{
 use crate::utils::check_size_fit;
 use crate::App;
 
+// ── RGB ↔ HSL helpers ───────────────────────────────────────────────────────
+
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let r = r as f32 / 255.0;
+    let g = g as f32 / 255.0;
+    let b = b as f32 / 255.0;
+
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+
+    if max == min {
+        return (0.0, 0.0, l * 100.0);
+    }
+
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+
+    let h = if max == r {
+        ((g - b) / d + (if g < b { 6.0 } else { 0.0 })) / 6.0
+    } else if max == g {
+        ((b - r) / d + 2.0) / 6.0
+    } else {
+        ((r - g) / d + 4.0) / 6.0
+    };
+
+    (h * 360.0, s * 100.0, l * 100.0)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
+    let h = (h / 360.0).rem_euclid(1.0);
+    let s = (s / 100.0).clamp(0.0, 1.0);
+    let l = (l / 100.0).clamp(0.0, 1.0);
+
+    let (r, g, b) = if s == 0.0 {
+        (l, l, l)
+    } else {
+        let q = if l < 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - l * s
+        };
+        let p = 2.0 * l - q;
+        (
+            hue_to_rgb(p, q, h + 1.0 / 3.0),
+            hue_to_rgb(p, q, h),
+            hue_to_rgb(p, q, h - 1.0 / 3.0),
+        )
+    };
+
+    [
+        (r * 255.0).round().clamp(0.0, 255.0) as u8,
+        (g * 255.0).round().clamp(0.0, 255.0) as u8,
+        (b * 255.0).round().clamp(0.0, 255.0) as u8,
+    ]
+}
+
+fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
+    t = t.rem_euclid(1.0);
+    if t < 1.0 / 6.0 {
+        return p + (q - p) * 6.0 * t;
+    }
+    if t < 1.0 / 2.0 {
+        return q;
+    }
+    if t < 2.0 / 3.0 {
+        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    }
+    p
+}
+
+// ── Custom color picker (no U8/RGB row, just gradient + hue strip) ──────────
+
+fn contrast_color(color: impl Into<egui::Rgba>) -> Color32 {
+    if color.into().intensity() < 0.5 {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    }
+}
+
+fn custom_color_picker(ui: &mut egui::Ui, srgba: &mut Color32) -> bool {
+    let mut hsva = egui::ecolor::Hsva::from(*srgba);
+    let mut changed = false;
+
+    let picker_width = ui.available_width();
+
+    // Saturation/Value square
+    let desired_size = egui::vec2(picker_width, picker_width * 0.65);
+    let (rect, response) = ui.allocate_at_least(desired_size, egui::Sense::click_and_drag());
+    if let Some(mpos) = response.interact_pointer_pos() {
+        hsva.s = egui::remap_clamp(mpos.x, rect.left()..=rect.right(), 0.0..=1.0);
+        hsva.v = egui::remap_clamp(mpos.y, rect.bottom()..=rect.top(), 0.0..=1.0);
+        changed = true;
+    }
+
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        let mut mesh = egui::epaint::Mesh::default();
+        const N: u32 = 6 * 6;
+        for xi in 0..=N {
+            for yi in 0..=N {
+                let xt = xi as f32 / (N as f32);
+                let yt = yi as f32 / (N as f32);
+                let color: Color32 = egui::ecolor::Hsva::new(hsva.h, xt, yt, 1.0).into();
+                let x = egui::lerp(rect.left()..=rect.right(), xt);
+                let y = egui::lerp(rect.bottom()..=rect.top(), yt);
+                mesh.colored_vertex(egui::pos2(x, y), color);
+                if xi < N && yi < N {
+                    let x_offset = 1;
+                    let y_offset = N + 1;
+                    let tl = yi * y_offset + xi;
+                    mesh.add_triangle(tl, tl + x_offset, tl + y_offset);
+                    mesh.add_triangle(tl + x_offset, tl + y_offset, tl + y_offset + x_offset);
+                }
+            }
+        }
+        ui.painter().add(egui::epaint::Shape::mesh(mesh));
+        ui.painter().rect_stroke(rect, 0.0, visuals.bg_stroke);
+
+        let x = egui::lerp(rect.left()..=rect.right(), hsva.s);
+        let y = egui::lerp(rect.bottom()..=rect.top(), hsva.v);
+        let picked_color: Color32 = hsva.into();
+        ui.painter().add(egui::epaint::CircleShape {
+            center: egui::pos2(x, y),
+            radius: rect.width() / 48.0,
+            fill: picked_color,
+            stroke: egui::Stroke::new(visuals.fg_stroke.width, contrast_color(picked_color)),
+        });
+    }
+
+    ui.add_space(8.0);
+
+    // Hue strip
+    let hue_desired = egui::vec2(picker_width, ui.spacing().interact_size.y);
+    let (hue_rect, hue_response) =
+        ui.allocate_at_least(hue_desired, egui::Sense::click_and_drag());
+    if let Some(mpos) = hue_response.interact_pointer_pos() {
+        hsva.h =
+            egui::remap_clamp(mpos.x, hue_rect.left()..=hue_rect.right(), 0.0..=1.0);
+        changed = true;
+    }
+
+    if ui.is_rect_visible(hue_rect) {
+        let visuals = ui.style().interact(&hue_response);
+        let mut mesh = egui::epaint::Mesh::default();
+        const N: u32 = 6 * 6;
+        for i in 0..=N {
+            let t = i as f32 / (N as f32);
+            let color: Color32 = egui::ecolor::Hsva::new(t, 1.0, 1.0, 1.0).into();
+            let x = egui::lerp(hue_rect.left()..=hue_rect.right(), t);
+            mesh.colored_vertex(egui::pos2(x, hue_rect.top()), color);
+            mesh.colored_vertex(egui::pos2(x, hue_rect.bottom()), color);
+            if i < N {
+                mesh.add_triangle(2 * i + 0, 2 * i + 1, 2 * i + 2);
+                mesh.add_triangle(2 * i + 1, 2 * i + 2, 2 * i + 3);
+            }
+        }
+        ui.painter().add(egui::epaint::Shape::mesh(mesh));
+        ui.painter().rect_stroke(hue_rect, 0.0, visuals.bg_stroke);
+
+        let x = egui::lerp(hue_rect.left()..=hue_rect.right(), hsva.h);
+        let r = hue_rect.height() / 4.0;
+        let picked_color: Color32 = egui::ecolor::Hsva::new(hsva.h, 1.0, 1.0, 1.0).into();
+        ui.painter().add(egui::epaint::Shape::convex_polygon(
+            vec![
+                egui::pos2(x, hue_rect.center().y),
+                egui::pos2(x + r, hue_rect.bottom()),
+                egui::pos2(x - r, hue_rect.bottom()),
+            ],
+            picked_color,
+            egui::Stroke::new(visuals.fg_stroke.width, contrast_color(picked_color)),
+        ));
+    }
+
+    *srgba = Color32::from(hsva);
+    ui.add_space(6.0);
+    changed
+}
+
 impl App {
     pub(crate) fn draw_right(&mut self, ui: &mut egui::Ui) {
         // ── Tab bar ───────────────────────────────────────────────────────────
@@ -1434,6 +1618,11 @@ let auto_uv = if sw != 0 && sh != 0 {
                     .map(|q| q.border_width_pt)
                     .unwrap_or(default_border_pt);
 
+                let mut border_color = self
+                    .selected_queue()
+                    .map(|q| q.border_color)
+                    .unwrap_or([0, 0, 0]);
+
                 // Auto-switch from Outer to Inner if fit_to_page is enabled
                 if is_fit_to_page && border_type == vibeprint::layout_engine::BorderType::Outer {
                     border_type = vibeprint::layout_engine::BorderType::Inner;
@@ -1564,6 +1753,323 @@ let current_pt = border_width_pt.min(max_border_pt);
                                 .size(10.0),
                         );
                     });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Color:").size(12.0));
+
+                        // Single swatch showing current border color
+                        let size = egui::vec2(28.0, 20.0);
+                        let (rect, swatch_response) =
+                            ui.allocate_exact_size(size, egui::Sense::click());
+                        let color32 =
+                            Color32::from_rgb(border_color[0], border_color[1], border_color[2]);
+                        ui.painter().rect_filled(rect, 3.0, color32);
+                        ui.painter().rect_stroke(
+                            rect,
+                            3.0,
+                            egui::Stroke::new(1.0, Color32::from_gray(120)),
+                        );
+
+                        // Popup with full inline color picker
+                        let popup_id = ui.make_persistent_id("border_color_popup");
+                        if swatch_response.clicked() {
+                            if ui.memory(|mem| mem.is_popup_open(popup_id)) {
+                                // Click the swatch again while popup is open → close it
+                                ui.memory_mut(|mem| mem.close_popup());
+                            } else {
+                                self.state.custom_border_color_temp = border_color;
+                                ui.memory_mut(|mem| mem.open_popup(popup_id));
+                            }
+                        }
+
+                        let mut temp_color = self.state.custom_border_color_temp;
+                        let mut apply = false;
+                        let mut close = false;
+
+                        egui::popup::popup_below_widget(
+                            ui,
+                            popup_id,
+                            &swatch_response,
+                            egui::popup::PopupCloseBehavior::IgnoreClicks,
+                            |ui| {
+                                // 8 swatches * 16px + 7 gaps * ~8px spacing ≈ 184px
+                                ui.add_space(8.0);
+
+                                let mut current_rgb = temp_color;
+                                let mut picker_color32 =
+                                    Color32::from_rgb(current_rgb[0], current_rgb[1], current_rgb[2]);
+
+                                const PRESETS: &[[u8; 3]] = &[
+                                    // Row 1: reds, oranges
+                                    [255, 0, 0],
+                                    [188, 143, 143],
+                                    [255, 99, 71],
+                                    [255, 69, 0],
+                                    [160, 82, 45],
+                                    [210, 105, 30],
+                                    [244, 164, 96],
+                                    [255, 218, 185],
+                                    [205, 133, 63],
+                                    [255, 228, 196],
+                                    // Row 2: yellows, oranges
+                                    [255, 140, 0],
+                                    [222, 184, 135],
+                                    [255, 222, 173],
+                                    [255, 228, 181],
+                                    [255, 165, 0],
+                                    [255, 215, 0],
+                                    [255, 255, 0],
+                                    [245, 245, 220],
+                                    [107, 142, 35],
+                                    [154, 205, 50],
+                                    // Row 3: greens
+                                    [173, 255, 47],
+                                    [124, 252, 0],
+                                    [0, 255, 0],
+                                    [50, 205, 50],
+                                    [0, 128, 0],
+                                    [34, 139, 34],
+                                    [0, 255, 127],
+                                    [64, 224, 208],
+                                    [32, 178, 170],
+                                    [0, 255, 255],
+                                    // Row 4: cyans, blues
+                                    [47, 79, 79],
+                                    [0, 206, 209],
+                                    [70, 130, 180],
+                                    [30, 144, 255],
+                                    [100, 149, 237],
+                                    [65, 105, 225],
+                                    [0, 0, 255],
+                                    [25, 25, 112],
+                                    [147, 112, 219],
+                                    [138, 43, 226],
+                                    // Row 5: purples, magentas, pinks
+                                    [75, 0, 130],
+                                    [186, 85, 211],
+                                    [255, 0, 255],
+                                    [221, 160, 221],
+                                    [128, 0, 128],
+                                    [218, 112, 214],
+                                    [199, 21, 133],
+                                    [255, 20, 147],
+                                    [255, 105, 180],
+                                    [219, 112, 147],
+                                    // Row 6: pinks, grayscale
+                                    [255, 192, 203],
+                                    [0, 0, 0],
+                                    [64, 64, 64],
+                                    [105, 105, 105],
+                                    [128, 128, 128],
+                                    [169, 169, 169],
+                                    [192, 192, 192],
+                                    [211, 211, 211],
+                                    [220, 220, 220],
+                                    [255, 255, 255],
+                                ];
+
+                                let preset_swatch =
+                                    |ui: &mut egui::Ui, color: [u8; 3], selected: bool| {
+                                        let size = egui::vec2(16.0, 16.0);
+                                        let (rect, response) =
+                                            ui.allocate_exact_size(size, egui::Sense::click());
+                                        let c32 = Color32::from_rgb(color[0], color[1], color[2]);
+                                        if selected {
+                                            ui.painter().rect_filled(rect, 2.0, Color32::WHITE);
+                                            ui.painter()
+                                                .rect_filled(rect.shrink(2.0), 1.0, c32);
+                                        } else {
+                                            ui.painter().rect_filled(rect, 2.0, c32);
+                                            ui.painter().rect_stroke(
+                                                rect,
+                                                2.0,
+                                                egui::Stroke::new(1.0, Color32::from_gray(80)),
+                                            );
+                                        }
+                                        response
+                                    };
+
+                                // ── Presets ──
+                                ui.vertical(|ui| {
+                                    for row in PRESETS.chunks(10) {
+                                        ui.horizontal(|ui| {
+                                            for &c in row {
+                                                if preset_swatch(ui, c, current_rgb == c)
+                                                    .clicked()
+                                                {
+                                                    current_rgb = c;
+                                                    picker_color32 =
+                                                        Color32::from_rgb(c[0], c[1], c[2]);
+                                                    apply = true;
+                                                    close = true;
+                                                }
+                                            }
+                                        });
+                                    }
+                                });
+
+                                ui.add_space(12.0);
+
+                                // ── Color picker (matches preset width) ──
+                                let picker_changed =
+                                    custom_color_picker(ui, &mut picker_color32);
+                                if picker_changed {
+                                    current_rgb = [
+                                        picker_color32.r(),
+                                        picker_color32.g(),
+                                        picker_color32.b(),
+                                    ];
+                                }
+
+                                ui.add_space(10.0);
+
+                                // ── Numeric inputs ──
+                                let (h, s, l) = rgb_to_hsl(
+                                    current_rgb[0],
+                                    current_rgb[1],
+                                    current_rgb[2],
+                                );
+                                let mut h_i = h.round() as i32;
+                                let mut s_i = s.round() as i32;
+                                let mut l_i = l.round() as i32;
+                                let mut r_i = current_rgb[0] as i32;
+                                let mut g_i = current_rgb[1] as i32;
+                                let mut b_i = current_rgb[2] as i32;
+
+                                let hsl_before = (h_i, s_i, l_i);
+                                let rgb_before = (r_i, g_i, b_i);
+
+                                ui.horizontal(|ui| {
+                                    // HSL column
+                                    ui.vertical(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.add_sized(
+                                                egui::vec2(14.0, 0.0),
+                                                egui::Label::new("H:"),
+                                            );
+                                            ui.add(
+                                                egui::DragValue::new(&mut h_i)
+                                                    .speed(1.0)
+                                                    .range(0..=360),
+                                            );
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.add_sized(
+                                                egui::vec2(14.0, 0.0),
+                                                egui::Label::new("S:"),
+                                            );
+                                            ui.add(
+                                                egui::DragValue::new(&mut s_i)
+                                                    .speed(1.0)
+                                                    .range(0..=100),
+                                            );
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.add_sized(
+                                                egui::vec2(14.0, 0.0),
+                                                egui::Label::new("L:"),
+                                            );
+                                            ui.add(
+                                                egui::DragValue::new(&mut l_i)
+                                                    .speed(1.0)
+                                                    .range(0..=100),
+                                            );
+                                        });
+                                    });
+
+                                    // RGB column
+                                    ui.vertical(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.add_sized(
+                                                egui::vec2(14.0, 0.0),
+                                                egui::Label::new("R:"),
+                                            );
+                                            ui.add(
+                                                egui::DragValue::new(&mut r_i)
+                                                    .speed(1.0)
+                                                    .range(0..=255),
+                                            );
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.add_sized(
+                                                egui::vec2(14.0, 0.0),
+                                                egui::Label::new("G:"),
+                                            );
+                                            ui.add(
+                                                egui::DragValue::new(&mut g_i)
+                                                    .speed(1.0)
+                                                    .range(0..=255),
+                                            );
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.add_sized(
+                                                egui::vec2(14.0, 0.0),
+                                                egui::Label::new("B:"),
+                                            );
+                                            ui.add(
+                                                egui::DragValue::new(&mut b_i)
+                                                    .speed(1.0)
+                                                    .range(0..=255),
+                                            );
+                                        });
+                                    });
+
+                                    // Color preview square
+                                    ui.add_space(28.0);
+                                    ui.vertical(|ui| {
+                                        ui.add_space(16.0);
+                                        let preview_size = egui::vec2(36.0, 36.0);
+                                        let (preview_rect, _) = ui.allocate_exact_size(
+                                            preview_size,
+                                            egui::Sense::hover(),
+                                        );
+                                        let preview_color =
+                                            Color32::from_rgb(current_rgb[0], current_rgb[1], current_rgb[2]);
+                                        ui.painter().rect_filled(preview_rect, 3.0, preview_color);
+                                        ui.painter().rect_stroke(
+                                            preview_rect,
+                                            3.0,
+                                            egui::Stroke::new(1.0, Color32::from_gray(120)),
+                                        );
+                                        ui.add_space(12.0);
+                                    });
+                                });
+
+                                if (h_i, s_i, l_i) != hsl_before {
+                                    current_rgb =
+                                        hsl_to_rgb(h_i as f32, s_i as f32, l_i as f32);
+                                }
+                                if (r_i, g_i, b_i) != rgb_before {
+                                    current_rgb = [r_i as u8, g_i as u8, b_i as u8];
+                                }
+
+                                temp_color = current_rgb;
+
+                                ui.add_space(12.0);
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.button("OK").clicked() {
+                                            apply = true;
+                                            close = true;
+                                        }
+                                        if ui.button("Cancel").clicked() {
+                                            close = true;
+                                        }
+                                    },
+                                );
+
+                                if close {
+                                    ui.memory_mut(|mem| mem.close_popup());
+                                }
+                            },
+                        );
+
+                        self.state.custom_border_color_temp = temp_color;
+                        if apply {
+                            border_color = temp_color;
+                        }
+                    });
                 }
 
                 // Apply changes if they differ
@@ -1572,6 +2078,8 @@ let current_pt = border_width_pt.min(max_border_pt);
                     let type_changed = old_border_type != Some(border_type);
                     let width_changed =
                         self.selected_queue().map(|q| q.border_width_pt) != Some(border_width_pt);
+                    let color_changed =
+                        self.selected_queue().map(|q| q.border_color) != Some(border_color);
 
                     // If enabling border for first time (None -> Inner/Outer), use small default
                     let border_enabled = old_border_type
@@ -1585,6 +2093,7 @@ let current_pt = border_width_pt.min(max_border_pt);
                     // so UV recalculation uses the correct border size
                     if border_enabled {
                         border_width_pt = if use_metric { 2.835 } else { 1.0 };
+                        border_color = [0, 0, 0];
                     }
 
                     let fit_to_page = self.selected_queue().map(|q| q.fit_to_page).unwrap_or(false);
@@ -1597,7 +2106,7 @@ let current_pt = border_width_pt.min(max_border_pt);
                     let crop_inverted = self.selected_queue().map(|q| q.crop_inverted).unwrap_or(false);
                     let force_original_orientation = self.selected_queue().map(|q| q.force_original_orientation).unwrap_or(false);
 
-                    if type_changed || width_changed {
+                    if type_changed || width_changed || color_changed {
                         // Compute oriented dimensions and rotation to determine
                         // visible area aspect in the same coordinate space as crop UVs
                         let (sw, sh) = src_size_px;
@@ -1693,6 +2202,7 @@ let current_pt = border_width_pt.min(max_border_pt);
 
                             item.border_type = border_type;
                             item.border_width_pt = border_width_pt.min(max_border_pt); // Clamp to max for this cell size
+                            item.border_color = border_color;
                                                                                        // Trigger relayout for outer border (affects cell size)
                             if border_type == vibeprint::layout_engine::BorderType::Outer
                                 || (old_border_type

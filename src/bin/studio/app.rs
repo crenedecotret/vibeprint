@@ -807,16 +807,17 @@ impl App {
                  crop_v1: None,
                  crop_inverted: false,
                  border_type: vibeprint::layout_engine::BorderType::None,
-                border_width_pt: 4.0,
-                force_original_orientation: false,
-            });
-        self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
-        self.state.selected = Some(path.clone());
-        self.state.selected_source_image = Some(src.clone());
-        self.state.selected_embedded_icc = self.state.staged_embedded_icc.clone();
-        self.state.canvas_img_size = Some(size);
-        self.state.full_images.insert(path.clone(), src.clone());
-        self.state
+                 border_width_pt: 4.0,
+                 border_color: [0, 0, 0],
+                 force_original_orientation: false,
+             });
+         self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
+         self.state.selected = Some(path.clone());
+         self.state.selected_source_image = Some(src.clone());
+         self.state.selected_embedded_icc = self.state.staged_embedded_icc.clone();
+         self.state.canvas_img_size = Some(size);
+         self.state.full_images.insert(path.clone(), src.clone());
+         self.state
             .embedded_icc_by_path
             .insert(path, self.state.staged_embedded_icc.clone());
 
@@ -872,12 +873,13 @@ impl App {
              crop_v1: None,
              crop_inverted: false,
              border_type: vibeprint::layout_engine::BorderType::None,
-            border_width_pt: 4.0,
-            force_original_orientation: false,
-        });
-        self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
-        self.state.selected = Some(path.clone());
-        self.state.selected_source_image = Some(src.clone());
+             border_width_pt: 4.0,
+             border_color: [0, 0, 0],
+             force_original_orientation: false,
+         });
+         self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
+         self.state.selected = Some(path.clone());
+         self.state.selected_source_image = Some(src.clone());
         self.state.selected_embedded_icc = self.state.staged_embedded_icc.clone();
         self.state.canvas_img_size = Some(size);
         self.state.full_images.insert(path.clone(), src.clone());
@@ -1514,6 +1516,7 @@ impl App {
                 crop_v1,
                 border_type: q.border_type,
                 border_width_px,
+                border_color: q.border_color,
             });
         }
 
