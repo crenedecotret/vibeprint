@@ -921,7 +921,7 @@ if let Some(item) = self.selected_queue_mut() {
                                         };
                                         let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
                                         let will_rotate = if item.force_original_orientation {
-                                            item.crop_inverted
+                                            false
                                         } else {
                                             will_rotate
                                         };
@@ -942,7 +942,7 @@ if let Some(item) = self.selected_queue_mut() {
                                             && item.border_width_pt > 0.0
                                         {
                                             let border_in = item.border_width_pt / 72.0;
-                                            let (expand_w, expand_h) = if item.crop_inverted {
+                                            let (expand_w, expand_h) = if item.crop_inverted && !item.force_original_orientation {
                                                 (calc_h, calc_w)
                                             } else {
                                                 (calc_w, calc_h)
@@ -951,7 +951,7 @@ if let Some(item) = self.selected_queue_mut() {
                                                 expand_w + border_in * 2.0,
                                                 expand_h + border_in * 2.0,
                                             );
-                                            if item.crop_inverted {
+                                            if item.crop_inverted && !item.force_original_orientation {
                                                 (expanded_h, expanded_w)
                                             } else {
                                                 (expanded_w, expanded_h)
@@ -961,7 +961,7 @@ if let Some(item) = self.selected_queue_mut() {
                                             && item.border_width_pt > 0.0
                                         {
                                             let border_in = item.border_width_pt / 72.0;
-                                            let (shrink_w, shrink_h) = if item.crop_inverted {
+                                            let (shrink_w, shrink_h) = if item.crop_inverted && !item.force_original_orientation {
                                                 (calc_h, calc_w)
                                             } else {
                                                 (calc_w, calc_h)
@@ -970,7 +970,7 @@ if let Some(item) = self.selected_queue_mut() {
                                                 (shrink_w - border_in * 2.0).max(0.1),
                                                 (shrink_h - border_in * 2.0).max(0.1),
                                             );
-                                            if item.crop_inverted {
+                                            if item.crop_inverted && !item.force_original_orientation {
                                                 (shrunk_h, shrunk_w)
                                             } else {
                                                 (shrunk_w, shrunk_h)
@@ -981,7 +981,9 @@ if let Some(item) = self.selected_queue_mut() {
 
                                         // Calculate auto-crop UVs
                                         // When inverted, flip the rotation decision to match processor logic
-                                        let will_rotate_for_uv = if item.crop_inverted {
+                                        let will_rotate_for_uv = if item.force_original_orientation {
+                                            false
+                                        } else if item.crop_inverted {
                                             !will_rotate
                                         } else {
                                             will_rotate
@@ -1070,7 +1072,7 @@ if let Some(item) = self.selected_queue_mut() {
                             };
                             let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
                             let will_rotate = if force_original_orientation {
-                                crop_inverted
+                                false
                             } else {
                                 will_rotate
                             };
@@ -1092,7 +1094,7 @@ if let Some(item) = self.selected_queue_mut() {
                                 && border_width_pt > 0.0
                             {
                                 let border_in = border_width_pt / 72.0;
-                                let (expand_w, expand_h) = if crop_inverted {
+                                let (expand_w, expand_h) = if crop_inverted && !force_original_orientation {
                                     (calc_h, calc_w)
                                 } else {
                                     (calc_w, calc_h)
@@ -1101,7 +1103,7 @@ if let Some(item) = self.selected_queue_mut() {
                                     expand_w + border_in * 2.0,
                                     expand_h + border_in * 2.0,
                                 );
-                                if crop_inverted {
+                                if crop_inverted && !force_original_orientation {
                                     (expanded_h, expanded_w)
                                 } else {
                                     (expanded_w, expanded_h)
@@ -1111,7 +1113,7 @@ if let Some(item) = self.selected_queue_mut() {
                                 && border_width_pt > 0.0
                             {
                                 let border_in = border_width_pt / 72.0;
-                                let (shrink_w, shrink_h) = if crop_inverted {
+                                let (shrink_w, shrink_h) = if crop_inverted && !force_original_orientation {
                                     (calc_h, calc_w)
                                 } else {
                                     (calc_w, calc_h)
@@ -1120,7 +1122,7 @@ if let Some(item) = self.selected_queue_mut() {
                                     (shrink_w - border_in * 2.0).max(0.1),
                                     (shrink_h - border_in * 2.0).max(0.1),
                                 );
-                                if crop_inverted {
+                                if crop_inverted && !force_original_orientation {
                                     (shrunk_h, shrunk_w)
                                 } else {
                                     (shrunk_w, shrunk_h)
@@ -1131,7 +1133,13 @@ if let Some(item) = self.selected_queue_mut() {
 
 let auto_uv = if sw != 0 && sh != 0 {
                                 // When inverted, flip the rotation decision to match processor logic.
-                                let will_rotate_for_uv = if crop_inverted { !will_rotate } else { will_rotate };
+                                let will_rotate_for_uv = if force_original_orientation {
+                                    false
+                                } else if crop_inverted {
+                                    !will_rotate
+                                } else {
+                                    will_rotate
+                                };
                                 let uv = crate::utils::calc_crop_uv(
                                     final_w,
                                     final_h,
@@ -1611,11 +1619,17 @@ let current_pt = border_width_pt.min(max_border_pt);
                         };
                         let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
                         let will_rotate = if force_original_orientation {
-                            crop_inverted
+                            false
                         } else {
                             will_rotate
                         };
-                        let effective_will_rotate = if crop_inverted { !will_rotate } else { will_rotate };
+                        let effective_will_rotate = if force_original_orientation {
+                            false
+                        } else if crop_inverted {
+                            !will_rotate
+                        } else {
+                            will_rotate
+                        };
                         let (full_w, full_h) = if effective_will_rotate {
                             (oriented_h, oriented_w)
                         } else {

@@ -828,7 +828,7 @@ impl App {
                 };
                 let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
                 let will_rotate = if q_force_original_orientation {
-                    self.state.crop_editor_inverted
+                    false
                 } else {
                     will_rotate
                 };
@@ -848,7 +848,7 @@ impl App {
                     && q_border_width_pt > 0.0
                 {
                     let border_in = q_border_width_pt / 72.0;
-                    let (expand_w, expand_h) = if self.state.crop_editor_inverted {
+                    let (expand_w, expand_h) = if self.state.crop_editor_inverted && !q_force_original_orientation {
                         (target_h, target_w)
                     } else {
                         (target_w, target_h)
@@ -857,7 +857,7 @@ impl App {
                         expand_w + border_in * 2.0,
                         expand_h + border_in * 2.0,
                     );
-                    if self.state.crop_editor_inverted {
+                    if self.state.crop_editor_inverted && !q_force_original_orientation {
                         (expanded_h, expanded_w)
                     } else {
                         (expanded_w, expanded_h)
@@ -867,7 +867,7 @@ impl App {
                     && q_border_width_pt > 0.0
                 {
                     let border_in = q_border_width_pt / 72.0;
-                    let (shrink_w, shrink_h) = if self.state.crop_editor_inverted {
+                    let (shrink_w, shrink_h) = if self.state.crop_editor_inverted && !q_force_original_orientation {
                         (target_h, target_w)
                     } else {
                         (target_w, target_h)
@@ -876,7 +876,7 @@ impl App {
                         (shrink_w - border_in * 2.0).max(0.1),
                         (shrink_h - border_in * 2.0).max(0.1),
                     );
-                    if self.state.crop_editor_inverted {
+                    if self.state.crop_editor_inverted && !q_force_original_orientation {
                         (shrunk_h, shrunk_w)
                     } else {
                         (shrunk_w, shrunk_h)
@@ -994,7 +994,9 @@ impl App {
                     if cb.changed() {
                         // Reset crop to auto-calculated for the new orientation.
                         // When inverted, flip the rotation decision to match processor logic.
-                        let will_rotate_for_uv = if self.state.crop_editor_inverted {
+                        let will_rotate_for_uv = if q_force_original_orientation {
+                            false
+                        } else if self.state.crop_editor_inverted {
                             !will_rotate
                         } else {
                             will_rotate
@@ -1280,7 +1282,9 @@ impl App {
                     self.state.crop_editor_inverted = !self.state.crop_editor_inverted;
                     // Reset crop to auto-calculated for the new orientation.
                     // When inverted, flip the rotation decision to compute opposite aspect.
-                    let will_rotate_for_uv = if self.state.crop_editor_inverted {
+                    let will_rotate_for_uv = if q_force_original_orientation {
+                        false
+                    } else if self.state.crop_editor_inverted {
                         !will_rotate
                     } else {
                         will_rotate
@@ -1398,7 +1402,9 @@ if apply_btn.clicked() {
                             // Reset to auto-calculated centered crop
                             // Use final_w/final_h which accounts for crop_editor_inverted.
                             // When inverted, flip the rotation decision to match processor logic.
-                            let will_rotate_for_uv = if self.state.crop_editor_inverted {
+                            let will_rotate_for_uv = if q_force_original_orientation {
+                                false
+                            } else if self.state.crop_editor_inverted {
                                 !will_rotate
                             } else {
                                 will_rotate

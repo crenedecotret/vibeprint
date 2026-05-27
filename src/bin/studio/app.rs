@@ -626,7 +626,7 @@ impl App {
         // IMPORTANT: When crop_inverted, swap dimensions BEFORE adjustment
         let (w_in, h_in) = if qi.border_type == vibeprint::layout_engine::BorderType::Outer {
             let border_in = qi.border_width_pt / 72.0; // Convert pt to inches
-            let (expand_w, expand_h) = if qi.crop_inverted {
+            let (expand_w, expand_h) = if qi.crop_inverted && !qi.force_original_orientation {
                 (h_in, w_in) // Swap before expansion
             } else {
                 (w_in, h_in)
@@ -635,14 +635,14 @@ impl App {
                 expand_w + border_in * 2.0,
                 expand_h + border_in * 2.0,
             );
-            if qi.crop_inverted {
+            if qi.crop_inverted && !qi.force_original_orientation {
                 (expanded_h, expanded_w) // Swap back
             } else {
                 (expanded_w, expanded_h)
             }
         } else if qi.border_type == vibeprint::layout_engine::BorderType::Inner && qi.border_width_pt > 0.0 {
             let border_in = qi.border_width_pt / 72.0; // Convert pt to inches
-            let (shrink_w, shrink_h) = if qi.crop_inverted {
+            let (shrink_w, shrink_h) = if qi.crop_inverted && !qi.force_original_orientation {
                 (h_in, w_in) // Swap before shrinking
             } else {
                 (w_in, h_in)
@@ -651,7 +651,7 @@ impl App {
                 (shrink_w - border_in * 2.0).max(0.1),
                 (shrink_h - border_in * 2.0).max(0.1),
             );
-            if qi.crop_inverted {
+            if qi.crop_inverted && !qi.force_original_orientation {
                 (shrunk_h, shrunk_w) // Swap back
             } else {
                 (shrunk_w, shrunk_h)
@@ -1054,12 +1054,12 @@ impl App {
                 (new_size.0, new_size.1)
             };
             // For inverted crops, swap the aspect ratios for comparison
-            let old_visible_aspect = if item.crop_inverted {
+            let old_visible_aspect = if item.crop_inverted && !item.force_original_orientation {
                 old_visible_h / old_visible_w
             } else {
                 old_visible_w / old_visible_h
             };
-            let new_visible_aspect = if item.crop_inverted {
+            let new_visible_aspect = if item.crop_inverted && !item.force_original_orientation {
                 new_visible_h / new_visible_w
             } else {
                 new_visible_w / new_visible_h
@@ -1131,7 +1131,7 @@ impl App {
                         sw_f / sh_f
                     };
                     // For inverted crops, swap the box aspect to match
-                    let box_aspect = if item.crop_inverted {
+                    let box_aspect = if item.crop_inverted && !item.force_original_orientation {
                         new_visible_h / new_visible_w
                     } else {
                         new_visible_w / new_visible_h
@@ -1456,9 +1456,10 @@ impl App {
                 // because UVs were calculated for swapped dimensions
                 let will_rotate =
                     vibeprint::layout_engine::should_rotate_for_full_page(q.src_size_px, w, h);
-                let will_rotate = if q.crop_inverted { !will_rotate } else { will_rotate };
                 let will_rotate = if q.force_original_orientation {
-                    q.crop_inverted
+                    false
+                } else if q.crop_inverted {
+                    !will_rotate
                 } else {
                     will_rotate
                 };
@@ -1485,9 +1486,10 @@ impl App {
             // so flip the rotation decision to compensate
             let will_rotate =
                 vibeprint::layout_engine::should_rotate_for_full_page(q.src_size_px, w, h);
-            let will_rotate = if q.crop_inverted { !will_rotate } else { will_rotate };
             let will_rotate = if q.force_original_orientation {
-                q.crop_inverted
+                false
+            } else if q.crop_inverted {
+                !will_rotate
             } else {
                 will_rotate
             };

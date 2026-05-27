@@ -175,7 +175,7 @@ impl App {
                     );
                     let should = if item.crop_inverted { !should } else { should };
                     if item.force_original_orientation {
-                        item.crop_inverted
+                        false
                     } else {
                         should
                     }

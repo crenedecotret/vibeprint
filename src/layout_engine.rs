@@ -168,6 +168,13 @@ pub fn layout_queue(
                 spacing_px,
             );
             let rotate = rotate && !item.force_original_orientation;
+            // When force_original_orientation + crop_inverted, the inverted crop
+            // changes the effective aspect ratio, so swap cell dimensions.
+            let (box_w_px, box_h_px) = if item.force_original_orientation && item.crop_inverted {
+                (box_h_px, box_w_px)
+            } else {
+                (box_w_px, box_h_px)
+            };
             // box_w_px / box_h_px already include the border expansion
 
             // Calculate center position based on actual box size (including outer border expansion)
@@ -222,6 +229,13 @@ pub fn layout_queue(
                 spacing_px,
             );
             let rotate = rotate && !item.force_original_orientation;
+            // When force_original_orientation + crop_inverted, the inverted crop
+            // changes the effective aspect ratio, so swap cell dimensions.
+            let (box_w_px, box_h_px) = if item.force_original_orientation && item.crop_inverted {
+                (box_h_px, box_w_px)
+            } else {
+                (box_w_px, box_h_px)
+            };
 
             // Convert stored point position to pixels, clamp within page
             let x_px = ((item.freehand_x_pt * dpi as f32 / 72.0).round().max(0.0) as u32)
@@ -278,6 +292,13 @@ pub fn layout_queue(
                 page_h_px,
                 spacing_px,
             );
+            // When crop_inverted, the inverted crop changes the effective aspect
+            // ratio, so swap cell dimensions to match.
+            let (box_w_px, box_h_px) = if item.crop_inverted {
+                (box_h_px, box_w_px)
+            } else {
+                (box_w_px, box_h_px)
+            };
             placements.insert(
                 item.id,
                 Placement {
