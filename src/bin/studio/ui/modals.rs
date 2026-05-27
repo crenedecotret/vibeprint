@@ -983,7 +983,13 @@ impl App {
                     let cb = ui.checkbox(&mut self.state.crop_editor_inverted, "Inverted Crop");
 
                     // Display the actual cell dimensions (don't swap for inverted)
-                    ui.label(format!("({:.1}\u{00d7}{:.1} cell)", target_w, target_h));
+                    if self.state.use_metric {
+                        let mm_w = vibeprint::layout_engine::inches_to_mm(target_w);
+                        let mm_h = vibeprint::layout_engine::inches_to_mm(target_h);
+                        ui.label(format!("({:.1}\u{00d7}{:.1} mm cell)", mm_w, mm_h));
+                    } else {
+                        ui.label(format!("({:.1}\u{00d7}{:.1} in cell)", target_w, target_h));
+                    }
 
                     if cb.changed() {
                         // Reset crop to auto-calculated for the new orientation.
