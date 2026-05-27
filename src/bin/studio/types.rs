@@ -317,6 +317,8 @@ pub(crate) struct AppState {
     pub preview_icc_images: HashMap<PathBuf, ColorImage>,
     /// Hash of ICC settings that produced the cached preview_icc_images.
     pub preview_icc_settings_hash: u64,
+    /// Cached ICC-transformed border colors for soft-proof preview.
+    pub preview_border_colors: HashMap<[u8; 3], egui::Color32>,
     pub preview_dirty: bool,
     pub preview_cache_page: Option<usize>,
     pub queue: Vec<QueuedImage>,
@@ -510,6 +512,7 @@ impl AppState {
             preview_textures: HashMap::new(),
             preview_icc_images: HashMap::new(),
             preview_icc_settings_hash: 0,
+            preview_border_colors: HashMap::new(),
             preview_dirty: true,
             preview_cache_page: None,
             queue: Vec::new(),

@@ -12,7 +12,9 @@ use vibeprint::{
     processor::{self},
 };
 
-use crate::icc::{apply_preview_transform, extract_file_date, extract_file_size};
+use crate::icc::{
+    apply_preview_transform, extract_file_date, extract_file_size, transform_preview_border_color,
+};
 use crate::types::{
     AppState, Borders, Engine, IccProfileEntry, IccProfileFilter, IccProfileSource, Intent,
     LoadKind, MAX_PREVIEW_PX, ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX,
@@ -371,6 +373,7 @@ impl App {
             self.state.preview_icc_images.clear();
             self.state.preview_icc_settings_hash = icc_hash;
             self.state.preview_textures.clear();
+            self.state.preview_border_colors.clear();
         }
 
         let mut seen = HashSet::new();
@@ -493,6 +496,34 @@ impl App {
         } else {
             base.clone()
         }
+    }
+
+    /// Return the border color as it should appear in the canvas preview.
+    ///
+    /// When softproof is disabled, returns the raw sRGB color directly.
+    /// When softproof is enabled, transforms the sRGB color through the
+    /// output→monitor display leg so it reflects how the border will print.
+    /// Results are cached per unique color per ICC-settings epoch.
+    pub(crate) fn preview_border_color(&mut self, rgb: [u8; 3]) -> Color32 {
+        if !self.state.softproof_enabled {
+            return Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+        }
+        if let Some(&cached) = self.state.preview_border_colors.get(&rgb) {
+            return cached;
+        }
+        let Some(ref monitor_profile) = self.state.monitor_icc_profile else {
+            return Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+        };
+        let transformed = transform_preview_border_color(
+            monitor_profile,
+            self.state.output_icc.as_ref().map(|e| &e.path),
+            self.state.intent.to_lcms(),
+            self.state.bpc,
+            rgb,
+        );
+        let color = Color32::from_rgb(transformed[0], transformed[1], transformed[2]);
+        self.state.preview_border_colors.insert(rgb, color);
+        color
     }
 
     /// Hash of ICC settings that determine the preview transform.

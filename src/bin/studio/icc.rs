@@ -257,3 +257,74 @@ pub(crate) fn apply_preview_transform(
     to_monitor.transform_in_place(pixels);
     Some(())
 }
+
+/// Transform a single sRGB border color for preview display.
+///
+/// When softproof is off, returns the raw sRGB value.
+/// When softproof is on, transforms through sRGB → output profile → monitor profile,
+/// matching the display leg of the image softproof pipeline.
+pub(crate) fn transform_preview_border_color(
+    monitor_profile_data: &[u8],
+    output_icc_path: Option<&PathBuf>,
+    intent: lcms2::Intent,
+    bpc: bool,
+    rgb: [u8; 3],
+) -> [u8; 3] {
+    use lcms2::{Flags, PixelFormat, Profile, Transform};
+
+    let monitor_profile = match Profile::new_icc(monitor_profile_data) {
+        Ok(p) => p,
+        Err(_) => return rgb,
+    };
+
+    let output_profile = if let Some(path) = output_icc_path {
+        match std::fs::read(path).ok().and_then(|b| Profile::new_icc(&b).ok()) {
+            Some(p) => p,
+            None => return rgb,
+        }
+    } else {
+        Profile::new_srgb()
+    };
+
+    let srgb = Profile::new_srgb();
+
+    let sim_flags = if bpc {
+        Flags::BLACKPOINT_COMPENSATION | Flags::NO_CACHE
+    } else {
+        Flags::NO_CACHE
+    };
+
+    // sRGB → output (user intent + BPC)
+    let to_output = match Transform::new_flags(
+        &srgb,
+        PixelFormat::RGB_8,
+        &output_profile,
+        PixelFormat::RGB_8,
+        intent,
+        sim_flags,
+    ) {
+        Ok(t) => t,
+        Err(_) => return rgb,
+    };
+
+    let mut tmp = [0u8; 3];
+    to_output.transform_pixels(&rgb, &mut tmp);
+
+    // output → monitor (Relative Colorimetric, no BPC — same as image display leg)
+    let to_monitor = match Transform::new_flags(
+        &output_profile,
+        PixelFormat::RGB_8,
+        &monitor_profile,
+        PixelFormat::RGB_8,
+        lcms2::Intent::RelativeColorimetric,
+        Flags::NO_CACHE,
+    ) {
+        Ok(t) => t,
+        Err(_) => return rgb,
+    };
+
+    let mut result = [0u8; 3];
+    to_monitor.transform_pixels(&tmp, &mut result);
+
+    result
+}

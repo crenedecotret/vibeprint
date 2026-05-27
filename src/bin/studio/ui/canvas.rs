@@ -88,12 +88,17 @@ impl App {
         let sx = ia_rect.width() / ia_w_px.max(1) as f32;
         let sy = ia_rect.height() / ia_h_px.max(1) as f32;
 
-        for item in self
+        // Clone page items so we can call &mut self helpers inside the loop
+        let page_items: Vec<_> = self
             .state
             .queue
             .iter()
             .filter(|q| q.page == self.state.current_page)
-        {
+            .cloned()
+            .collect();
+
+        for item in &page_items {
+            let border_color = self.preview_border_color(item.border_color);
             let (w_px, h_px) = self.queued_box_px(item);
             let r = Rect::from_min_size(
                 Pos2::new(
@@ -154,7 +159,7 @@ impl App {
             if item.border_type == vibeprint::layout_engine::BorderType::Outer
                 && item.border_width_pt > 0.0
             {
-                draw_solid_rect(&painter, r, Color32::from_rgb(item.border_color[0], item.border_color[1], item.border_color[2]));
+                draw_solid_rect(&painter, r, border_color);
             }
 
             if let Some(tex) = self.state.preview_textures.get(&item.filepath) {
@@ -260,7 +265,7 @@ impl App {
                             draw_solid_rect(
                                 &painter,
                                 Rect::from_min_max(r.min, Pos2::new(r.max.x, display_rect.min.y)),
-                                Color32::from_rgb(item.border_color[0], item.border_color[1], item.border_color[2]),
+                                border_color,
                             );
                         }
                         // Bottom strip
@@ -268,7 +273,7 @@ impl App {
                             draw_solid_rect(
                                 &painter,
                                 Rect::from_min_max(Pos2::new(r.min.x, display_rect.max.y), r.max),
-                                Color32::from_rgb(item.border_color[0], item.border_color[1], item.border_color[2]),
+                                border_color,
                             );
                         }
                         // Left strip
@@ -279,7 +284,7 @@ impl App {
                                     Pos2::new(r.min.x, display_rect.min.y),
                                     Pos2::new(display_rect.min.x, display_rect.max.y),
                                 ),
-                                Color32::from_rgb(item.border_color[0], item.border_color[1], item.border_color[2]),
+                                border_color,
                             );
                         }
                         // Right strip
@@ -290,7 +295,7 @@ impl App {
                                     Pos2::new(display_rect.max.x, display_rect.min.y),
                                     Pos2::new(r.max.x, display_rect.max.y),
                                 ),
-                                Color32::from_rgb(item.border_color[0], item.border_color[1], item.border_color[2]),
+                                border_color,
                             );
                         }
                     }
