@@ -1089,6 +1089,32 @@ impl App {
                 // Draw crop window outline with thicker border
                 painter.rect_stroke(crop_rect, 0.0, egui::Stroke::new(3.0, Color32::WHITE));
 
+                // Rule of thirds grid lines
+                let thirds_color = Color32::from_rgba_premultiplied(255, 255, 255, 50);
+                let thirds_stroke = egui::Stroke::new(1.0, thirds_color);
+                // Vertical lines
+                let v1 = crop_rect.min.x + crop_w / 3.0;
+                let v2 = crop_rect.min.x + 2.0 * crop_w / 3.0;
+                painter.line_segment(
+                    [Pos2::new(v1, crop_rect.min.y), Pos2::new(v1, crop_rect.max.y)],
+                    thirds_stroke,
+                );
+                painter.line_segment(
+                    [Pos2::new(v2, crop_rect.min.y), Pos2::new(v2, crop_rect.max.y)],
+                    thirds_stroke,
+                );
+                // Horizontal lines
+                let h1 = crop_rect.min.y + crop_h / 3.0;
+                let h2 = crop_rect.min.y + 2.0 * crop_h / 3.0;
+                painter.line_segment(
+                    [Pos2::new(crop_rect.min.x, h1), Pos2::new(crop_rect.max.x, h1)],
+                    thirds_stroke,
+                );
+                painter.line_segment(
+                    [Pos2::new(crop_rect.min.x, h2), Pos2::new(crop_rect.max.x, h2)],
+                    thirds_stroke,
+                );
+
                 // Draw corner resize handle (bottom-right) - larger and more visible
                 let handle_size = 16.0;
                 let handle_rect = Rect::from_min_size(

@@ -5,12 +5,13 @@ ICC-aware print layout engine (Rust). Two binaries: `vibeprint` (CLI) and `studi
 ## Build
 
 ```bash
-cargo build --release --no-default-features  # CLI-only, no X11 deps
-cargo build --release                       # Build both binaries (default features = monitor-icc) ALWAYS BUILD THIS LAST
+cargo build --release --no-default-features  # CLI-only, no X11 deps (test/verify only)
+cargo build --release                       # Build both binaries (default features = monitor-icc)
 ```
 
 - `monitor-icc` feature (default) pulls in `x11` and `libc` crates.
 - No rustfmt/clippy/Makefile config — uses Rust defaults.
+- **When building for the user** (not for compiler verification), always build with `cargo build --release` (default features). Never use `--no-default-features` for user-facing builds.
 
 ## Run CLI
 
