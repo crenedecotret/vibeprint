@@ -1,5 +1,5 @@
-use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use crate::types::CutMarks;
+use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
 /// Draw a filled rectangle with rounded coordinates to prevent sub-pixel gaps
 fn draw_solid_rect(painter: &egui::Painter, rect: Rect, color: Color32) {
@@ -10,6 +10,16 @@ fn draw_solid_rect(painter: &egui::Painter, rect: Rect, color: Color32) {
     let max_y = rect.max.y.round();
     let rounded_rect = Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y));
     painter.rect_filled(rounded_rect, 0.0, color);
+}
+
+fn draw_clipped_solid_rect(painter: &egui::Painter, rect: Rect, clip: Rect, color: Color32) {
+    let clipped = Rect::from_min_max(
+        Pos2::new(rect.min.x.max(clip.min.x), rect.min.y.max(clip.min.y)),
+        Pos2::new(rect.max.x.min(clip.max.x), rect.max.y.min(clip.max.y)),
+    );
+    if clipped.min.x < clipped.max.x && clipped.min.y < clipped.max.y {
+        painter.rect_filled(clipped, 0.0, color);
+    }
 }
 
 use crate::types::RULER_PX;
@@ -30,10 +40,10 @@ impl App {
         // Calculate user-adjusted imageable area in points
         let ub = &self.state.user_border;
         let (ia_l, ia_b, ia_r, ia_t) = (
-            ub.left * 72.0,             // left
-            ub.bottom * 72.0,           // bottom
+            ub.left * 72.0,               // left
+            ub.bottom * 72.0,             // bottom
             paper_w_pt - ub.right * 72.0, // right
-            paper_h_pt - ub.top * 72.0, // top
+            paper_h_pt - ub.top * 72.0,   // top
         );
 
         let (resp, _) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
@@ -119,56 +129,111 @@ impl App {
                 // Top-left
                 painter.rect_filled(
                     Rect::from_min_max(Pos2::new(r.min.x - lx, r.min.y - wy), r.min),
-                    0.0, black,
+                    0.0,
+                    black,
                 );
                 painter.rect_filled(
                     Rect::from_min_max(Pos2::new(r.min.x - wy, r.min.y - lx), r.min),
-                    0.0, black,
+                    0.0,
+                    black,
                 );
                 // Top-right
                 painter.rect_filled(
                     Rect::from_min_max(
-                        Pos2::new(r.max.x,      r.min.y - wy),
+                        Pos2::new(r.max.x, r.min.y - wy),
                         Pos2::new(r.max.x + lx, r.min.y),
                     ),
-                    0.0, black,
+                    0.0,
+                    black,
                 );
                 painter.rect_filled(
                     Rect::from_min_max(
-                        Pos2::new(r.max.x,      r.min.y - lx),
+                        Pos2::new(r.max.x, r.min.y - lx),
                         Pos2::new(r.max.x + wy, r.min.y),
                     ),
-                    0.0, black,
+                    0.0,
+                    black,
                 );
                 // Bottom-left
                 painter.rect_filled(
                     Rect::from_min_max(
                         Pos2::new(r.min.x - lx, r.max.y),
-                        Pos2::new(r.min.x,      r.max.y + wy),
+                        Pos2::new(r.min.x, r.max.y + wy),
                     ),
-                    0.0, black,
+                    0.0,
+                    black,
                 );
                 painter.rect_filled(
                     Rect::from_min_max(
                         Pos2::new(r.min.x - wy, r.max.y),
-                        Pos2::new(r.min.x,      r.max.y + lx),
+                        Pos2::new(r.min.x, r.max.y + lx),
                     ),
-                    0.0, black,
+                    0.0,
+                    black,
                 );
                 // Bottom-right
                 painter.rect_filled(
-                    Rect::from_min_max(
-                        r.max,
-                        Pos2::new(r.max.x + lx, r.max.y + wy),
-                    ),
-                    0.0, black,
+                    Rect::from_min_max(r.max, Pos2::new(r.max.x + lx, r.max.y + wy)),
+                    0.0,
+                    black,
                 );
                 painter.rect_filled(
-                    Rect::from_min_max(
-                        r.max,
-                        Pos2::new(r.max.x + wy, r.max.y + lx),
+                    Rect::from_min_max(r.max, Pos2::new(r.max.x + wy, r.max.y + lx)),
+                    0.0,
+                    black,
+                );
+            }
+        } else if self.state.cut_marks == CutMarks::GuideLines {
+            let dpi = self.state.target_dpi as f32;
+            let width_x = (0.5_f32 / 72.0 * dpi * sx).max(1.0);
+            let width_y = (0.5_f32 / 72.0 * dpi * sy).max(1.0);
+            let black = Color32::BLACK;
+
+            for item in &page_items {
+                let (w_px, h_px) = self.queued_box_px(item);
+                let r = Rect::from_min_size(
+                    Pos2::new(
+                        ia_rect.min.x + item.position.x as f32 * sx,
+                        ia_rect.min.y + item.position.y as f32 * sy,
                     ),
-                    0.0, black,
+                    Vec2::new(w_px as f32 * sx, h_px as f32 * sy),
+                );
+
+                draw_clipped_solid_rect(
+                    &painter,
+                    Rect::from_min_max(
+                        Pos2::new(ia_rect.min.x, r.min.y - width_y),
+                        Pos2::new(ia_rect.max.x, r.min.y),
+                    ),
+                    ia_rect,
+                    black,
+                );
+                draw_clipped_solid_rect(
+                    &painter,
+                    Rect::from_min_max(
+                        Pos2::new(ia_rect.min.x, r.max.y),
+                        Pos2::new(ia_rect.max.x, r.max.y + width_y),
+                    ),
+                    ia_rect,
+                    black,
+                );
+                draw_clipped_solid_rect(
+                    &painter,
+                    Rect::from_min_max(
+                        Pos2::new(r.min.x - width_x, ia_rect.min.y),
+                        Pos2::new(r.min.x, ia_rect.max.y),
+                    ),
+                    ia_rect,
+                    black,
+                );
+                draw_clipped_solid_rect(
+                    &painter,
+                    Rect::from_min_max(
+                        Pos2::new(r.max.x, ia_rect.min.y),
+                        Pos2::new(r.max.x + width_x, ia_rect.max.y),
+                    ),
+                    ia_rect,
+                    black,
                 );
             }
         }
@@ -423,23 +488,17 @@ impl App {
                             let dpt_y = dpy * 72.0 / dpi;
                             let mut new_x_pt = start_pt.0 + dpt_x;
                             let mut new_y_pt = start_pt.1 + dpt_y;
-                            if let Some(item) =
-                                self.state.queue.iter_mut().find(|q| q.id == id)
-                            {
+                            if let Some(item) = self.state.queue.iter_mut().find(|q| q.id == id) {
                                 let bw = item.placed_w_px.max(1);
                                 let bh = item.placed_h_px.max(1);
-                                let max_x_pt =
-                                    iw.saturating_sub(bw) as f32 * 72.0 / dpi;
-                                let max_y_pt =
-                                    ih.saturating_sub(bh) as f32 * 72.0 / dpi;
+                                let max_x_pt = iw.saturating_sub(bw) as f32 * 72.0 / dpi;
+                                let max_y_pt = ih.saturating_sub(bh) as f32 * 72.0 / dpi;
                                 new_x_pt = new_x_pt.clamp(0.0, max_x_pt);
                                 new_y_pt = new_y_pt.clamp(0.0, max_y_pt);
                                 item.freehand_x_pt = new_x_pt;
                                 item.freehand_y_pt = new_y_pt;
-                                item.position.x =
-                                    (new_x_pt * dpi / 72.0).round().max(0.0) as u32;
-                                item.position.y =
-                                    (new_y_pt * dpi / 72.0).round().max(0.0) as u32;
+                                item.position.x = (new_x_pt * dpi / 72.0).round().max(0.0) as u32;
+                                item.position.y = (new_y_pt * dpi / 72.0).round().max(0.0) as u32;
                             }
                         }
                     }

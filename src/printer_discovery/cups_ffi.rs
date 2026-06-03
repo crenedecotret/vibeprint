@@ -139,17 +139,23 @@ extern "C" {
 
 /// Read the name field of a cups_dest_t pointer.
 pub fn get_dest_name(dest: *const cups_dest_t) -> Option<String> {
-    if dest.is_null() { return None; }
+    if dest.is_null() {
+        return None;
+    }
     unsafe {
         let d = &*(dest as *const CupsDest);
-        if d.name.is_null() { return None; }
+        if d.name.is_null() {
+            return None;
+        }
         CStr::from_ptr(d.name).to_str().ok().map(|s| s.to_string())
     }
 }
 
 /// Read the is_default field of a cups_dest_t pointer.
 pub fn is_dest_default(dest: *const cups_dest_t) -> bool {
-    if dest.is_null() { return false; }
+    if dest.is_null() {
+        return false;
+    }
     unsafe {
         let d = &*(dest as *const CupsDest);
         d.is_default != 0
@@ -159,7 +165,9 @@ pub fn is_dest_default(dest: *const cups_dest_t) -> bool {
 /// Index into a cups_dest_t array via the concrete CupsDest struct
 /// so pointer arithmetic uses the correct element stride (not ZST stride).
 pub fn get_dest_at(dests: *mut cups_dest_t, index: i32) -> *mut cups_dest_t {
-    if dests.is_null() || index < 0 { return ptr::null_mut(); }
+    if dests.is_null() || index < 0 {
+        return ptr::null_mut();
+    }
     unsafe {
         let base = dests as *mut CupsDest;
         base.add(index as usize) as *mut cups_dest_t
@@ -168,7 +176,8 @@ pub fn get_dest_at(dests: *mut cups_dest_t, index: i32) -> *mut cups_dest_t {
 
 /// Read a C string from a char array (null-terminated).
 pub unsafe fn cstr_from_array(arr: &[c_char]) -> String {
-    let bytes: Vec<u8> = arr.iter()
+    let bytes: Vec<u8> = arr
+        .iter()
         .take_while(|&&c| c != 0)
         .map(|&c| c as u8)
         .collect();
@@ -177,39 +186,54 @@ pub unsafe fn cstr_from_array(arr: &[c_char]) -> String {
 
 /// Collect all keyword string values from an IPP attribute.
 pub unsafe fn ipp_attr_strings(attr: *mut ipp_attribute_t) -> Vec<String> {
-    if attr.is_null() { return Vec::new(); }
+    if attr.is_null() {
+        return Vec::new();
+    }
     let n = ippGetCount(attr);
-    (0..n).filter_map(|i| {
-        let s = ippGetString(attr, i, ptr::null_mut());
-        if s.is_null() { return None; }
-        CStr::from_ptr(s).to_str().ok().map(|s| s.to_string())
-    }).collect()
+    (0..n)
+        .filter_map(|i| {
+            let s = ippGetString(attr, i, ptr::null_mut());
+            if s.is_null() {
+                return None;
+            }
+            CStr::from_ptr(s).to_str().ok().map(|s| s.to_string())
+        })
+        .collect()
 }
 
 /// Collect all enum integer values from an IPP attribute, returned as decimal strings.
 /// IPP print-quality is an enum: 3=draft, 4=normal, 5=high.
 pub unsafe fn ipp_attr_enums(attr: *mut ipp_attribute_t) -> Vec<String> {
-    if attr.is_null() { return Vec::new(); }
+    if attr.is_null() {
+        return Vec::new();
+    }
     let tag = ippGetValueTag(attr);
-    if tag != IPP_TAG_ENUM && tag != IPP_TAG_INTEGER { return Vec::new(); }
+    if tag != IPP_TAG_ENUM && tag != IPP_TAG_INTEGER {
+        return Vec::new();
+    }
     let n = ippGetCount(attr);
     (0..n).map(|i| ippGetInteger(attr, i).to_string()).collect()
 }
 
 /// Collect all resolution values from an IPP attribute, returning DPI as u32.
 pub unsafe fn ipp_attr_resolutions(attr: *mut ipp_attribute_t) -> Vec<u32> {
-    if attr.is_null() { return Vec::new(); }
+    if attr.is_null() {
+        return Vec::new();
+    }
     let n = ippGetCount(attr);
-    (0..n).filter_map(|i| {
-        let mut yres: c_int = 0;
-        let mut units: c_int = 0;
-        let xres = ippGetResolution(attr, i, &mut yres, &mut units);
-        if units == IPP_RES_PER_INCH {
-            Some(xres as u32)
-        } else if units == 4 { // IPP_RES_PER_CM
-            Some((xres as f32 * 2.54) as u32)
-        } else {
-            None
-        }
-    }).collect()
+    (0..n)
+        .filter_map(|i| {
+            let mut yres: c_int = 0;
+            let mut units: c_int = 0;
+            let xres = ippGetResolution(attr, i, &mut yres, &mut units);
+            if units == IPP_RES_PER_INCH {
+                Some(xres as u32)
+            } else if units == 4 {
+                // IPP_RES_PER_CM
+                Some((xres as f32 * 2.54) as u32)
+            } else {
+                None
+            }
+        })
+        .collect()
 }

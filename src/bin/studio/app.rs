@@ -16,9 +16,9 @@ use crate::icc::{
     apply_preview_transform, extract_file_date, extract_file_size, transform_preview_border_color,
 };
 use crate::types::{
-    AppState, Borders, CutMarks, Engine, IccProfileEntry, IccProfileFilter, IccProfileSource, Intent,
-    LoadKind, MAX_PREVIEW_PX, ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX,
-    print_sizes, QUEUE_SPACING_IN, THUMB_PX,
+    print_sizes, AppState, Borders, CutMarks, Engine, IccProfileEntry, IccProfileFilter,
+    IccProfileSource, Intent, LoadKind, ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX,
+    MAX_PREVIEW_PX, QUEUE_SPACING_IN, THUMB_PX,
 };
 use crate::utils::{extract_embedded_icc_from_bytes, is_image, load_thumb};
 
@@ -162,15 +162,12 @@ impl App {
                     if let Ok(bytes) = std::fs::read(&path) {
                         Some(bytes)
                     } else {
-                        deferred_logs.push(format!(
-                            "⚠ Failed to read monitor ICC: {}",
-                            path.display()
-                        ));
+                        deferred_logs
+                            .push(format!("⚠ Failed to read monitor ICC: {}", path.display()));
                         monitor_icc::get_monitor_profile()
                     }
                 } else {
-                    deferred_logs
-                        .push(format!("⚠ Monitor ICC not found: {}", path.display()));
+                    deferred_logs.push(format!("⚠ Monitor ICC not found: {}", path.display()));
                     monitor_icc::get_monitor_profile()
                 }
             }
@@ -178,9 +175,12 @@ impl App {
         };
 
         let pending_user_border = {
-            if let (Some(l), Some(r), Some(t), Some(b)) =
-                (s.user_border_l, s.user_border_r, s.user_border_t, s.user_border_b)
-            {
+            if let (Some(l), Some(r), Some(t), Some(b)) = (
+                s.user_border_l,
+                s.user_border_r,
+                s.user_border_t,
+                s.user_border_b,
+            ) {
                 Some(Borders {
                     left: l,
                     right: r,
@@ -227,7 +227,11 @@ impl App {
         state.pending_input_slot_key = s.input_slot_key;
         state.monitor_icc_override = s.monitor_icc_override.clone();
         state.pref_override_checked = s.monitor_icc_override.is_some();
-        state.cut_marks = s.cut_marks.as_deref().map(CutMarks::from_label).unwrap_or(CutMarks::None);
+        state.cut_marks = s
+            .cut_marks
+            .as_deref()
+            .map(CutMarks::from_label)
+            .unwrap_or(CutMarks::None);
         state.log.extend(deferred_logs);
 
         if state.monitor_icc_profile.is_none() {
@@ -412,7 +416,9 @@ impl App {
                     continue;
                 };
                 let ci = self.build_preview_image(&path, &base);
-                self.state.preview_icc_images.insert(path.clone(), ci.clone());
+                self.state
+                    .preview_icc_images
+                    .insert(path.clone(), ci.clone());
                 ci
             };
 
@@ -663,16 +669,15 @@ impl App {
             } else {
                 (w_in, h_in)
             };
-            let (expanded_w, expanded_h) = (
-                expand_w + border_in * 2.0,
-                expand_h + border_in * 2.0,
-            );
+            let (expanded_w, expanded_h) = (expand_w + border_in * 2.0, expand_h + border_in * 2.0);
             if qi.crop_inverted && !qi.force_original_orientation {
                 (expanded_h, expanded_w) // Swap back
             } else {
                 (expanded_w, expanded_h)
             }
-        } else if qi.border_type == vibeprint::layout_engine::BorderType::Inner && qi.border_width_pt > 0.0 {
+        } else if qi.border_type == vibeprint::layout_engine::BorderType::Inner
+            && qi.border_width_pt > 0.0
+        {
             let border_in = qi.border_width_pt / 72.0; // Convert pt to inches
             let (shrink_w, shrink_h) = if qi.crop_inverted && !qi.force_original_orientation {
                 (h_in, w_in) // Swap before shrinking
@@ -756,21 +761,34 @@ impl App {
 
     pub(crate) fn relayout_queue(&mut self) {
         let (page_w_px, page_h_px) = self.imageable_size_px();
+        let dpi_f64 = self.state.target_dpi as f64;
 
         // When cut marks are enabled, reserve space for the mark legs so no
         // mark leg crosses into the user-defined border.  Both the layout area
         // and every resulting position are adjusted by this inset.
-        let cropmark_inset_px: u32 = if self.state.cut_marks == CutMarks::Crop {
-            let dpi = self.state.target_dpi as f64;
-            // CROPMARK_LEN_PT = 9.0 (same constant as processor.rs)
-            ((9.0_f64 / 72.0) * dpi).round().max(1.0) as u32
-        } else {
-            0
+        let (inset_l, inset_r, inset_t, inset_b) = match self.state.cut_marks {
+            CutMarks::None => (0u32, 0u32, 0u32, 0u32),
+            CutMarks::Crop => {
+                let v = ((9.0_f64 / 72.0) * dpi_f64).round().max(1.0) as u32;
+                (v, v, v, v)
+            }
+            CutMarks::GuideLines => {
+                // Guide lines draw a half-point stroke just outside each
+                // placement edge.  Reserve the stroke width on all sides so
+                // the line always stays fully inside the user-imageable area
+                // and remains visible in both the canvas preview and the
+                // processor output.
+                let width_px =
+                    ((0.5_f64 / 72.0) * dpi_f64).round().max(1.0) as u32;
+                (width_px, width_px, width_px, width_px)
+            }
         };
 
-        // Reduce the layout canvas by the inset on all four sides.
-        let layout_w = page_w_px.saturating_sub(cropmark_inset_px * 2).max(1);
-        let layout_h = page_h_px.saturating_sub(cropmark_inset_px * 2).max(1);
+        // Reduce the layout canvas by the insets.
+        let layout_w =
+            page_w_px.saturating_sub(inset_l + inset_r).max(1);
+        let layout_h =
+            page_h_px.saturating_sub(inset_t + inset_b).max(1);
 
         let result = layout_engine::layout_queue(
             &self.state.queue,
@@ -783,8 +801,8 @@ impl App {
         for qi in &mut self.state.queue {
             if let Some(p) = result.placements.get(&qi.id) {
                 qi.position = Point {
-                    x: p.x_px.saturating_add(cropmark_inset_px),
-                    y: p.y_px.saturating_add(cropmark_inset_px),
+                    x: p.x_px.saturating_add(inset_l),
+                    y: p.y_px.saturating_add(inset_t),
                 };
                 qi.page = p.page;
                 qi.rotation = p.rotation_deg;
@@ -794,18 +812,26 @@ impl App {
         }
 
         // Override position for freehand items with their saved positions.
-        // Clamp within the reduced layout canvas (inset on all sides).
+        // Clamp within the reduced layout canvas (asymmetric insets).
         let dpi = self.state.target_dpi as f32;
         for qi in &mut self.state.queue {
             if qi.freehand_placement {
-                let x_px = (qi.freehand_x_pt * dpi / 72.0).round().max(0.0) as u32;
-                let y_px = (qi.freehand_y_pt * dpi / 72.0).round().max(0.0) as u32;
+                let x_px =
+                    (qi.freehand_x_pt * dpi / 72.0).round().max(0.0) as u32;
+                let y_px =
+                    (qi.freehand_y_pt * dpi / 72.0).round().max(0.0) as u32;
                 let box_w = qi.placed_w_px.max(1);
                 let box_h = qi.placed_h_px.max(1);
-                let max_x = page_w_px.saturating_sub(box_w).saturating_sub(cropmark_inset_px);
-                let max_y = page_h_px.saturating_sub(box_h).saturating_sub(cropmark_inset_px);
-                qi.position.x = x_px.clamp(cropmark_inset_px, max_x.max(cropmark_inset_px));
-                qi.position.y = y_px.clamp(cropmark_inset_px, max_y.max(cropmark_inset_px));
+                let max_x = page_w_px
+                    .saturating_sub(box_w)
+                    .saturating_sub(inset_r);
+                let max_y = page_h_px
+                    .saturating_sub(box_h)
+                    .saturating_sub(inset_b);
+                qi.position.x =
+                    x_px.clamp(inset_l, max_x.max(inset_l));
+                qi.position.y =
+                    y_px.clamp(inset_t, max_y.max(inset_t));
             }
         }
 
@@ -850,23 +876,23 @@ impl App {
                 placed_h_px: 0,
                 src_size_px: Some(src_size),
                 crop_enabled: false,
-                 crop_u0: None,
-                 crop_v0: None,
-                 crop_u1: None,
-                 crop_v1: None,
-                 crop_inverted: false,
-                 border_type: vibeprint::layout_engine::BorderType::None,
-                 border_width_pt: 4.0,
-                 border_color: [0, 0, 0],
-                 force_original_orientation: false,
-             });
-         self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
-         self.state.selected = Some(path.clone());
-         self.state.selected_source_image = Some(src.clone());
-         self.state.selected_embedded_icc = self.state.staged_embedded_icc.clone();
-         self.state.canvas_img_size = Some(size);
-         self.state.full_images.insert(path.clone(), src.clone());
-         self.state
+                crop_u0: None,
+                crop_v0: None,
+                crop_u1: None,
+                crop_v1: None,
+                crop_inverted: false,
+                border_type: vibeprint::layout_engine::BorderType::None,
+                border_width_pt: 4.0,
+                border_color: [0, 0, 0],
+                force_original_orientation: false,
+            });
+        self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
+        self.state.selected = Some(path.clone());
+        self.state.selected_source_image = Some(src.clone());
+        self.state.selected_embedded_icc = self.state.staged_embedded_icc.clone();
+        self.state.canvas_img_size = Some(size);
+        self.state.full_images.insert(path.clone(), src.clone());
+        self.state
             .embedded_icc_by_path
             .insert(path, self.state.staged_embedded_icc.clone());
 
@@ -896,43 +922,55 @@ impl App {
         let size = src.size;
         let src_size = (size[0] as u32, size[1] as u32);
         // Normalize to portrait notation (w <= h) matching PRINT_SIZES convention
-        let (nw, nh) = if w_in <= h_in { (w_in, h_in) } else { (h_in, w_in) };
-        let print_size = PrintSize { width: nw, height: nh, unit: Unit::Inches };
+        let (nw, nh) = if w_in <= h_in {
+            (w_in, h_in)
+        } else {
+            (h_in, w_in)
+        };
+        let print_size = PrintSize {
+            width: nw,
+            height: nh,
+            unit: Unit::Inches,
+        };
 
-        self.state.queue.push(vibeprint::layout_engine::QueuedImage {
-            id: uuid::Uuid::new_v4(),
-            filepath: path.clone(),
-            size: print_size,
-            fit_to_page: false,
-            center_to_page: false,
-            freehand_placement: false,
-            freehand_x_pt: 0.0,
-            freehand_y_pt: 0.0,
-            source_icc: None,
-            position: vibeprint::layout_engine::Point::default(),
-            page: 0,
-            rotation: 0.0,
-            placed_w_px: 0,
-            placed_h_px: 0,
-            src_size_px: Some(src_size),
-            crop_enabled: false,
-             crop_u0: None,
-             crop_v0: None,
-             crop_u1: None,
-             crop_v1: None,
-             crop_inverted: false,
-             border_type: vibeprint::layout_engine::BorderType::None,
-             border_width_pt: 4.0,
-             border_color: [0, 0, 0],
-             force_original_orientation: false,
-         });
-         self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
-         self.state.selected = Some(path.clone());
-         self.state.selected_source_image = Some(src.clone());
+        self.state
+            .queue
+            .push(vibeprint::layout_engine::QueuedImage {
+                id: uuid::Uuid::new_v4(),
+                filepath: path.clone(),
+                size: print_size,
+                fit_to_page: false,
+                center_to_page: false,
+                freehand_placement: false,
+                freehand_x_pt: 0.0,
+                freehand_y_pt: 0.0,
+                source_icc: None,
+                position: vibeprint::layout_engine::Point::default(),
+                page: 0,
+                rotation: 0.0,
+                placed_w_px: 0,
+                placed_h_px: 0,
+                src_size_px: Some(src_size),
+                crop_enabled: false,
+                crop_u0: None,
+                crop_v0: None,
+                crop_u1: None,
+                crop_v1: None,
+                crop_inverted: false,
+                border_type: vibeprint::layout_engine::BorderType::None,
+                border_width_pt: 4.0,
+                border_color: [0, 0, 0],
+                force_original_orientation: false,
+            });
+        self.state.selected_queue_id = self.state.queue.last().map(|q| q.id);
+        self.state.selected = Some(path.clone());
+        self.state.selected_source_image = Some(src.clone());
         self.state.selected_embedded_icc = self.state.staged_embedded_icc.clone();
         self.state.canvas_img_size = Some(size);
         self.state.full_images.insert(path.clone(), src.clone());
-        self.state.embedded_icc_by_path.insert(path, self.state.staged_embedded_icc.clone());
+        self.state
+            .embedded_icc_by_path
+            .insert(path, self.state.staged_embedded_icc.clone());
 
         self.state.staged = None;
         self.state.staged_embedded_icc = None;
@@ -952,13 +990,21 @@ impl App {
         use vibeprint::layout_engine::{PrintSize, Unit};
         let sel = self.state.selected_queue_id;
         // Normalize to portrait notation (w <= h) matching PRINT_SIZES convention
-        let (w_in, h_in) = if w_in <= h_in { (w_in, h_in) } else { (h_in, w_in) };
+        let (w_in, h_in) = if w_in <= h_in {
+            (w_in, h_in)
+        } else {
+            (h_in, w_in)
+        };
 
         if let Some(item) = self.selected_queue_mut() {
             let old_size = item.size.as_inches();
             let new_size = (w_in, h_in);
 
-            item.size = PrintSize { width: w_in, height: h_in, unit: Unit::Inches };
+            item.size = PrintSize {
+                width: w_in,
+                height: h_in,
+                unit: Unit::Inches,
+            };
             item.fit_to_page = false;
 
             // Clamp border_width_pt to 20% of new longest side
@@ -972,12 +1018,18 @@ impl App {
             let new_border_in = new_border_pt / 72.0;
             let is_inner = item.border_type == vibeprint::layout_engine::BorderType::Inner;
             let (old_vis_w, old_vis_h) = if is_inner && old_border_in > 0.0 {
-                ((old_size.0 - old_border_in * 2.0).max(0.1), (old_size.1 - old_border_in * 2.0).max(0.1))
+                (
+                    (old_size.0 - old_border_in * 2.0).max(0.1),
+                    (old_size.1 - old_border_in * 2.0).max(0.1),
+                )
             } else {
                 old_size
             };
             let (new_vis_w, new_vis_h) = if is_inner && new_border_in > 0.0 {
-                ((new_size.0 - new_border_in * 2.0).max(0.1), (new_size.1 - new_border_in * 2.0).max(0.1))
+                (
+                    (new_size.0 - new_border_in * 2.0).max(0.1),
+                    (new_size.1 - new_border_in * 2.0).max(0.1),
+                )
             } else {
                 new_size
             };
@@ -987,13 +1039,16 @@ impl App {
             if let (Some(u0), Some(v0), Some(u1), Some(v1)) =
                 (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1)
             {
-                let aspect_diff = (old_vis_aspect - new_vis_aspect).abs()
-                    / old_vis_aspect.max(new_vis_aspect);
+                let aspect_diff =
+                    (old_vis_aspect - new_vis_aspect).abs() / old_vis_aspect.max(new_vis_aspect);
                 if aspect_diff > 0.05 {
                     let (sw, sh) = item.src_size_px.unwrap_or((1, 1));
                     let src_landscape = (sw as f32) > (sh as f32);
-                    let (oriented_w, oriented_h) =
-                        if src_landscape { (h_in, w_in) } else { (w_in, h_in) };
+                    let (oriented_w, oriented_h) = if src_landscape {
+                        (h_in, w_in)
+                    } else {
+                        (w_in, h_in)
+                    };
 
                     let fitted_no_rot = {
                         let s = (oriented_w / sw as f32).min(oriented_h / sh as f32);
@@ -1012,7 +1067,10 @@ impl App {
 
                     let border_in = item.border_width_pt / 72.0;
                     let (vis_w, vis_h) = if is_inner && border_in > 0.0 {
-                        ((full_w - border_in * 2.0).max(0.1), (full_h - border_in * 2.0).max(0.1))
+                        (
+                            (full_w - border_in * 2.0).max(0.1),
+                            (full_h - border_in * 2.0).max(0.1),
+                        )
                     } else {
                         (full_w, full_h)
                     };
@@ -1023,7 +1081,11 @@ impl App {
 
                     let sw_f = sw as f32;
                     let sh_f = sh as f32;
-                    let src_aspect = if will_rotate { sh_f / sw_f } else { sw_f / sh_f };
+                    let src_aspect = if will_rotate {
+                        sh_f / sw_f
+                    } else {
+                        sw_f / sh_f
+                    };
                     let target_aspect = (vis_w / vis_h) / src_aspect;
 
                     let new_crop_w = (old_crop_area * target_aspect).sqrt();
@@ -1218,10 +1280,16 @@ impl App {
             return;
         }
         if let Some(caps) = self.state.all_caps.get(&name) {
-            self.state.props_media_idx = self.state.pending_media_type_key.as_deref()
+            self.state.props_media_idx = self
+                .state
+                .pending_media_type_key
+                .as_deref()
                 .and_then(|k| caps.media_types.iter().position(|(key, _)| key == k))
                 .unwrap_or(0);
-            self.state.props_slot_idx = self.state.pending_input_slot_key.as_deref()
+            self.state.props_slot_idx = self
+                .state
+                .pending_input_slot_key
+                .as_deref()
                 .and_then(|k| caps.input_slots.iter().position(|(key, _)| key == k))
                 .unwrap_or(0);
 
@@ -1247,7 +1315,9 @@ impl App {
             if let Some(saved) = self.state.pending_extra_option_indices.take() {
                 for (key, idx) in saved {
                     if self.state.extra_option_indices.contains_key(&key) {
-                        let max = caps.extra_options.iter()
+                        let max = caps
+                            .extra_options
+                            .iter()
                             .find(|o| o.key == key)
                             .map(|o| o.choices.len().saturating_sub(1))
                             .unwrap_or(0);
@@ -1388,9 +1458,14 @@ impl App {
                     let ready_count = self.state.all_caps.len();
                     let total_count = self.state.printers.len();
                     if ready_count == total_count {
-                        self.state.log.push(format!("✓ {} printer(s) ready", ready_count));
+                        self.state
+                            .log
+                            .push(format!("✓ {} printer(s) ready", ready_count));
                     } else {
-                        self.state.log.push(format!("✓ {}/{} printer(s) ready", ready_count, total_count));
+                        self.state.log.push(format!(
+                            "✓ {}/{} printer(s) ready",
+                            ready_count, total_count
+                        ));
                     }
                 }
             }
@@ -1628,13 +1703,27 @@ impl App {
             ProcessTarget::Print => !self.state.safe_8bit_tiff_print_path,
         };
 
-        let draw_cut_marks_flag = self.state.cut_marks == CutMarks::Crop;
+        let cut_marks = match self.state.cut_marks {
+            CutMarks::None => processor::CutMarkMode::None,
+            CutMarks::Crop => processor::CutMarkMode::Crop,
+            CutMarks::GuideLines => processor::CutMarkMode::GuideLines,
+        };
+        let cut_mark_bounds_px = Some(processor::CutMarkBoundsPx {
+            left: offset_x,
+            top: offset_y,
+            right: offset_x.saturating_add(self.imageable_size_px().0),
+            bottom: offset_y.saturating_add(self.imageable_size_px().1),
+        });
 
         if let ProcessTarget::Print = target {
             if self.state.safe_8bit_tiff_print_path {
-                self.state.log.push("Using safe 8-bit TIFF print path (no ICC profile embedded)".into());
+                self.state
+                    .log
+                    .push("Using safe 8-bit TIFF print path (no ICC profile embedded)".into());
             } else {
-                self.state.log.push("Using standard 16-bit → PDF print path".into());
+                self.state
+                    .log
+                    .push("Using standard 16-bit → PDF print path".into());
             }
         }
 
@@ -1660,7 +1749,8 @@ impl App {
                     depth,
                     sharpen,
                     embed_icc_profile: embed_icc,
-                    draw_cut_marks: draw_cut_marks_flag,
+                    cut_marks,
+                    cut_mark_bounds_px,
                 };
                 if let Err(e) = processor::process_composite_page(opts) {
                     let _ = tx.send(Err(e.to_string()));
@@ -1745,7 +1835,7 @@ mod tests {
         let dpi = 720.0;
 
         let (w, h) = calc_imageable_size_in(8.5, 11.0, &user);
-        assert!((w - 7.5).abs() < 0.01, "w={}", w);   // 8.5 - 0.5 - 0.5
+        assert!((w - 7.5).abs() < 0.01, "w={}", w); // 8.5 - 0.5 - 0.5
         assert!((h - 10.0).abs() < 0.01, "h={}", h); // 11.0 - 0.5 - 0.5
 
         let (dx, dy) = calc_border_offset_px(&user, &reported, dpi);
@@ -1770,12 +1860,12 @@ mod tests {
         let dpi = 720.0;
 
         let (w, h) = calc_imageable_size_in(8.5, 11.0, &user);
-        assert!((w - 7.6).abs() < 0.01, "w={}", w);   // 8.5 - 0.3 - 0.6
+        assert!((w - 7.6).abs() < 0.01, "w={}", w); // 8.5 - 0.3 - 0.6
         assert!((h - 10.25).abs() < 0.01, "h={}", h); // 11.0 - 0.4 - 0.35
 
         let (dx, dy) = calc_border_offset_px(&user, &reported, dpi);
-        assert_eq!(dx, 72);  // (0.3 - 0.2) * 720
-        assert_eq!(dy, 72);  // (0.4 - 0.3) * 720
+        assert_eq!(dx, 72); // (0.3 - 0.2) * 720
+        assert_eq!(dy, 72); // (0.4 - 0.3) * 720
     }
 
     #[test]
@@ -1797,8 +1887,18 @@ mod tests {
         let (max_w, max_h) = calc_imageable_size_in(pw, ph, &reported);
         let expected_w = ia_w + (user.left - reported.left) + (user.right - reported.right);
         let expected_h = ia_h + (user.top - reported.top) + (user.bottom - reported.bottom);
-        assert!((expected_w - max_w).abs() < 0.001, "expected_w={} max_w={}", expected_w, max_w);
-        assert!((expected_h - max_h).abs() < 0.001, "expected_h={} max_h={}", expected_h, max_h);
+        assert!(
+            (expected_w - max_w).abs() < 0.001,
+            "expected_w={} max_w={}",
+            expected_w,
+            max_w
+        );
+        assert!(
+            (expected_h - max_h).abs() < 0.001,
+            "expected_h={} max_h={}",
+            expected_h,
+            max_h
+        );
     }
 
     #[test]
@@ -1829,8 +1929,7 @@ mod tests {
         let half_w = paper_w * 0.5;
 
         let left = 3.0f32.clamp(reported.left, (half_w - reported.right).max(reported.left));
-        let right =
-            3.0f32.clamp(reported.right, (half_w - left).max(reported.right));
+        let right = 3.0f32.clamp(reported.right, (half_w - left).max(reported.right));
         assert_eq!(left, 3.0);
         assert_eq!(right, 1.25);
         assert!(left + right <= half_w);
@@ -1848,8 +1947,7 @@ mod tests {
         let half_h = paper_h * 0.5;
 
         let top = 4.0f32.clamp(reported.top, (half_h - reported.bottom).max(reported.top));
-        let bottom =
-            2.0f32.clamp(reported.bottom, (half_h - top).max(reported.bottom));
+        let bottom = 2.0f32.clamp(reported.bottom, (half_h - top).max(reported.bottom));
         assert_eq!(top, 4.0);
         assert_eq!(bottom, 1.5);
         assert!(top + bottom <= half_h);

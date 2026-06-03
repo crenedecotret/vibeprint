@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 use crate::types::{
-    CutMarks, Engine, IccPickerContext, Intent, ProcState, RightTab, FIT_PAGE_IDX, print_sizes,
+    print_sizes, CutMarks, Engine, IccPickerContext, Intent, ProcState, RightTab, FIT_PAGE_IDX,
 };
 use crate::utils::check_size_fit;
 use crate::App;
@@ -145,11 +145,9 @@ fn custom_color_picker(ui: &mut egui::Ui, srgba: &mut Color32) -> bool {
 
     // Hue strip
     let hue_desired = egui::vec2(picker_width, ui.spacing().interact_size.y);
-    let (hue_rect, hue_response) =
-        ui.allocate_at_least(hue_desired, egui::Sense::click_and_drag());
+    let (hue_rect, hue_response) = ui.allocate_at_least(hue_desired, egui::Sense::click_and_drag());
     if let Some(mpos) = hue_response.interact_pointer_pos() {
-        hsva.h =
-            egui::remap_clamp(mpos.x, hue_rect.left()..=hue_rect.right(), 0.0..=1.0);
+        hsva.h = egui::remap_clamp(mpos.x, hue_rect.left()..=hue_rect.right(), 0.0..=1.0);
         changed = true;
     }
 
@@ -317,7 +315,11 @@ impl App {
                     .unwrap_or((8.5, 11.0));
 
                 ui.vertical(|ui| {
-                    let unit_label = if self.state.use_metric { "Border: (mm)" } else { "Border: (in)" };
+                    let unit_label = if self.state.use_metric {
+                        "Border: (mm)"
+                    } else {
+                        "Border: (in)"
+                    };
                     ui.label(unit_label);
                     // Row 1: Left + Right
                     ui.horizontal(|ui| {
@@ -348,11 +350,14 @@ impl App {
                                     if self.state.user_border.right + new_left > 0.5 * paper_w_in {
                                         let new_right = (0.5 * paper_w_in - new_left)
                                             .max(self.state.reported_border.right);
-                                        if (new_right - self.state.user_border.right).abs() > 0.0001 {
+                                        if (new_right - self.state.user_border.right).abs() > 0.0001
+                                        {
                                             self.state.user_border.right = new_right;
-                                            self.state.border_edit_r = crate::app::format_border_edit(
-                                                new_right, self.state.use_metric,
-                                            );
+                                            self.state.border_edit_r =
+                                                crate::app::format_border_edit(
+                                                    new_right,
+                                                    self.state.use_metric,
+                                                );
                                             self.state.log.push(format!(
                                                 "Right border reduced to {:.3}in (sum cap)",
                                                 new_right
@@ -361,17 +366,20 @@ impl App {
                                     }
                                     self.state.user_border.left = new_left;
                                     self.state.border_edit_l = crate::app::format_border_edit(
-                                        new_left, self.state.use_metric,
+                                        new_left,
+                                        self.state.use_metric,
                                     );
                                     self.relayout_queue();
                                 } else if (input_in - self.state.user_border.left).abs() > 0.0001 {
                                     self.state.border_edit_l = crate::app::format_border_edit(
-                                        self.state.user_border.left, self.state.use_metric,
+                                        self.state.user_border.left,
+                                        self.state.use_metric,
                                     );
                                 }
                             } else {
                                 self.state.border_edit_l = crate::app::format_border_edit(
-                                    self.state.user_border.left, self.state.use_metric,
+                                    self.state.user_border.left,
+                                    self.state.use_metric,
                                 );
                             }
                         }
@@ -407,9 +415,11 @@ impl App {
                                             .max(self.state.reported_border.left);
                                         if (new_left - self.state.user_border.left).abs() > 0.0001 {
                                             self.state.user_border.left = new_left;
-                                            self.state.border_edit_l = crate::app::format_border_edit(
-                                                new_left, self.state.use_metric,
-                                            );
+                                            self.state.border_edit_l =
+                                                crate::app::format_border_edit(
+                                                    new_left,
+                                                    self.state.use_metric,
+                                                );
                                             self.state.log.push(format!(
                                                 "Left border reduced to {:.3}in (sum cap)",
                                                 new_left
@@ -418,17 +428,20 @@ impl App {
                                     }
                                     self.state.user_border.right = new_right;
                                     self.state.border_edit_r = crate::app::format_border_edit(
-                                        new_right, self.state.use_metric,
+                                        new_right,
+                                        self.state.use_metric,
                                     );
                                     self.relayout_queue();
                                 } else if (input_in - self.state.user_border.right).abs() > 0.0001 {
                                     self.state.border_edit_r = crate::app::format_border_edit(
-                                        self.state.user_border.right, self.state.use_metric,
+                                        self.state.user_border.right,
+                                        self.state.use_metric,
                                     );
                                 }
                             } else {
                                 self.state.border_edit_r = crate::app::format_border_edit(
-                                    self.state.user_border.right, self.state.use_metric,
+                                    self.state.user_border.right,
+                                    self.state.use_metric,
                                 );
                             }
                         }
@@ -442,16 +455,20 @@ impl App {
                         {
                             self.state.user_border = self.state.reported_border;
                             self.state.border_edit_l = crate::app::format_border_edit(
-                                self.state.user_border.left, self.state.use_metric,
+                                self.state.user_border.left,
+                                self.state.use_metric,
                             );
                             self.state.border_edit_r = crate::app::format_border_edit(
-                                self.state.user_border.right, self.state.use_metric,
+                                self.state.user_border.right,
+                                self.state.use_metric,
                             );
                             self.state.border_edit_t = crate::app::format_border_edit(
-                                self.state.user_border.top, self.state.use_metric,
+                                self.state.user_border.top,
+                                self.state.use_metric,
                             );
                             self.state.border_edit_b = crate::app::format_border_edit(
-                                self.state.user_border.bottom, self.state.use_metric,
+                                self.state.user_border.bottom,
+                                self.state.use_metric,
                             );
                             self.relayout_queue();
                         }
@@ -460,7 +477,9 @@ impl App {
 
                         if ui
                             .small_button("L")
-                            .on_hover_text("Copy left border to all sides (capped by printer minimum)")
+                            .on_hover_text(
+                                "Copy left border to all sides (capped by printer minimum)",
+                            )
                             .clicked()
                         {
                             let left_val = self.state.user_border.left;
@@ -522,7 +541,8 @@ impl App {
                                             self.state.user_border.bottom = new_bottom;
                                             self.state.border_edit_b =
                                                 crate::app::format_border_edit(
-                                                    new_bottom, self.state.use_metric,
+                                                    new_bottom,
+                                                    self.state.use_metric,
                                                 );
                                             self.state.log.push(format!(
                                                 "Bottom border reduced to {:.3}in (sum cap)",
@@ -532,17 +552,20 @@ impl App {
                                     }
                                     self.state.user_border.top = new_top;
                                     self.state.border_edit_t = crate::app::format_border_edit(
-                                        new_top, self.state.use_metric,
+                                        new_top,
+                                        self.state.use_metric,
                                     );
                                     self.relayout_queue();
                                 } else if (input_in - self.state.user_border.top).abs() > 0.0001 {
                                     self.state.border_edit_t = crate::app::format_border_edit(
-                                        self.state.user_border.top, self.state.use_metric,
+                                        self.state.user_border.top,
+                                        self.state.use_metric,
                                     );
                                 }
                             } else {
                                 self.state.border_edit_t = crate::app::format_border_edit(
-                                    self.state.user_border.top, self.state.use_metric,
+                                    self.state.user_border.top,
+                                    self.state.use_metric,
                                 );
                             }
                         }
@@ -568,9 +591,8 @@ impl App {
                                 } else {
                                     v
                                 };
-                                let max_bottom =
-                                    (0.5 * paper_h_in - self.state.user_border.top)
-                                        .max(self.state.reported_border.bottom);
+                                let max_bottom = (0.5 * paper_h_in - self.state.user_border.top)
+                                    .max(self.state.reported_border.bottom);
                                 let new_bottom =
                                     input_in.clamp(self.state.reported_border.bottom, max_bottom);
                                 if (new_bottom - self.state.user_border.bottom).abs() > 0.0001 {
@@ -581,7 +603,8 @@ impl App {
                                             self.state.user_border.top = new_top;
                                             self.state.border_edit_t =
                                                 crate::app::format_border_edit(
-                                                    new_top, self.state.use_metric,
+                                                    new_top,
+                                                    self.state.use_metric,
                                                 );
                                             self.state.log.push(format!(
                                                 "Top border reduced to {:.3}in (sum cap)",
@@ -591,17 +614,21 @@ impl App {
                                     }
                                     self.state.user_border.bottom = new_bottom;
                                     self.state.border_edit_b = crate::app::format_border_edit(
-                                        new_bottom, self.state.use_metric,
+                                        new_bottom,
+                                        self.state.use_metric,
                                     );
                                     self.relayout_queue();
-                                } else if (input_in - self.state.user_border.bottom).abs() > 0.0001 {
+                                } else if (input_in - self.state.user_border.bottom).abs() > 0.0001
+                                {
                                     self.state.border_edit_b = crate::app::format_border_edit(
-                                        self.state.user_border.bottom, self.state.use_metric,
+                                        self.state.user_border.bottom,
+                                        self.state.use_metric,
                                     );
                                 }
                             } else {
                                 self.state.border_edit_b = crate::app::format_border_edit(
-                                    self.state.user_border.bottom, self.state.use_metric,
+                                    self.state.user_border.bottom,
+                                    self.state.use_metric,
                                 );
                             }
                         }
@@ -636,8 +663,7 @@ impl App {
                         self.state.user_border.left.max(new_reported.left);
                     self.state.user_border.right =
                         self.state.user_border.right.max(new_reported.right);
-                    self.state.user_border.top =
-                        self.state.user_border.top.max(new_reported.top);
+                    self.state.user_border.top = self.state.user_border.top.max(new_reported.top);
                     self.state.user_border.bottom =
                         self.state.user_border.bottom.max(new_reported.bottom);
                     // Re-clamp sum caps for new paper dimensions
@@ -656,18 +682,22 @@ impl App {
                         self.state.user_border.bottom = (0.5 * ph - self.state.user_border.top)
                             .max(self.state.reported_border.bottom);
                     }
-                    self.state.border_edit_l =
-                        crate::app::format_border_edit(
-                            self.state.user_border.left, self.state.use_metric);
-                    self.state.border_edit_r =
-                        crate::app::format_border_edit(
-                            self.state.user_border.right, self.state.use_metric);
-                    self.state.border_edit_t =
-                        crate::app::format_border_edit(
-                            self.state.user_border.top, self.state.use_metric);
-                    self.state.border_edit_b =
-                        crate::app::format_border_edit(
-                            self.state.user_border.bottom, self.state.use_metric);
+                    self.state.border_edit_l = crate::app::format_border_edit(
+                        self.state.user_border.left,
+                        self.state.use_metric,
+                    );
+                    self.state.border_edit_r = crate::app::format_border_edit(
+                        self.state.user_border.right,
+                        self.state.use_metric,
+                    );
+                    self.state.border_edit_t = crate::app::format_border_edit(
+                        self.state.user_border.top,
+                        self.state.use_metric,
+                    );
+                    self.state.border_edit_b = crate::app::format_border_edit(
+                        self.state.user_border.bottom,
+                        self.state.use_metric,
+                    );
                     self.relayout_queue();
                 }
 
@@ -712,6 +742,11 @@ impl App {
                                 &mut self.state.cut_marks,
                                 CutMarks::Crop,
                                 CutMarks::Crop.label(),
+                            );
+                            ui.selectable_value(
+                                &mut self.state.cut_marks,
+                                CutMarks::GuideLines,
+                                CutMarks::GuideLines.label(),
                             );
                         });
                 });
@@ -916,7 +951,10 @@ impl App {
 
         // ── Log (at the bottom) ───────────────────────────────────────────────
         ui.add_space(12.0);
-        ui.checkbox(&mut self.state.show_log, RichText::new("Show Log").strong().size(12.0));
+        ui.checkbox(
+            &mut self.state.show_log,
+            RichText::new("Show Log").strong().size(12.0),
+        );
         ui.separator();
         if self.state.show_log {
             egui::ScrollArea::vertical()
@@ -981,7 +1019,10 @@ impl App {
                 let (qw, qh) = qi.size.as_inches();
                 sizes.iter().enumerate().find_map(|(i, &(w, h, _))| {
                     let (sw, sh) = if self.state.use_metric {
-                        (vibeprint::layout_engine::mm_to_inches(w), vibeprint::layout_engine::mm_to_inches(h))
+                        (
+                            vibeprint::layout_engine::mm_to_inches(w),
+                            vibeprint::layout_engine::mm_to_inches(h),
+                        )
                     } else {
                         (w, h)
                     };
@@ -1001,7 +1042,10 @@ impl App {
             .show(ui, |ui| {
                 for (idx, &(w, h, label)) in sizes.iter().enumerate() {
                     let (w_in, h_in) = if self.state.use_metric {
-                        (vibeprint::layout_engine::mm_to_inches(w), vibeprint::layout_engine::mm_to_inches(h))
+                        (
+                            vibeprint::layout_engine::mm_to_inches(w),
+                            vibeprint::layout_engine::mm_to_inches(h),
+                        )
                     } else {
                         (w, h)
                     };
@@ -1048,33 +1092,40 @@ impl App {
 
                 // Custom Size option
                 let is_custom_selected = selected_size_idx.is_none()
-                    && self.selected_queue().map(|q| !q.fit_to_page).unwrap_or(false);
-                let custom_text = RichText::new("Custom Size")
-                    .size(13.0)
-                    .color(if is_custom_selected {
-                        Color32::from_rgb(60, 120, 200)
-                    } else {
-                        Color32::from_gray(210)
-                    });
-                if ui.selectable_label(false, custom_text).clicked() {
-                    let (w_str, h_str, long_str) =
-                        if let Some(qi) = self.selected_queue() {
-                            let (w, h) = qi.size.as_inches();
-                            let long = w.max(h);
-                            if self.state.use_metric {
-                                (
-                                    format!("{:.3}", vibeprint::layout_engine::inches_to_mm(w)),
-                                    format!("{:.3}", vibeprint::layout_engine::inches_to_mm(h)),
-                                    format!("{:.3}", vibeprint::layout_engine::inches_to_mm(long)),
-                                )
-                            } else {
-                                (format!("{:.3}", w), format!("{:.3}", h), format!("{:.3}", long))
-                            }
-                        } else if self.state.staged.is_some() {
-                            (String::new(), String::new(), String::new())
+                    && self
+                        .selected_queue()
+                        .map(|q| !q.fit_to_page)
+                        .unwrap_or(false);
+                let custom_text =
+                    RichText::new("Custom Size")
+                        .size(13.0)
+                        .color(if is_custom_selected {
+                            Color32::from_rgb(60, 120, 200)
                         } else {
-                            (String::new(), String::new(), String::new())
-                        };
+                            Color32::from_gray(210)
+                        });
+                if ui.selectable_label(false, custom_text).clicked() {
+                    let (w_str, h_str, long_str) = if let Some(qi) = self.selected_queue() {
+                        let (w, h) = qi.size.as_inches();
+                        let long = w.max(h);
+                        if self.state.use_metric {
+                            (
+                                format!("{:.3}", vibeprint::layout_engine::inches_to_mm(w)),
+                                format!("{:.3}", vibeprint::layout_engine::inches_to_mm(h)),
+                                format!("{:.3}", vibeprint::layout_engine::inches_to_mm(long)),
+                            )
+                        } else {
+                            (
+                                format!("{:.3}", w),
+                                format!("{:.3}", h),
+                                format!("{:.3}", long),
+                            )
+                        }
+                    } else if self.state.staged.is_some() {
+                        (String::new(), String::new(), String::new())
+                    } else {
+                        (String::new(), String::new(), String::new())
+                    };
                     self.state.custom_size_w_str = w_str;
                     self.state.custom_size_h_str = h_str;
                     self.state.custom_size_long_str = long_str;
@@ -1098,117 +1149,117 @@ impl App {
                     if crop_response.changed() {
                         // Get imageable size before mutable borrow
                         let (ia_w_in, ia_h_in) = self.imageable_size_in();
-if let Some(item) = self.selected_queue_mut() {
-                                    item.crop_enabled = crop_enabled;
-                                    if crop_enabled {
-                                        // Calculate and store auto-crop UVs for the target cell
-                                        let (w_in, h_in) = if item.fit_to_page {
-                                            (ia_w_in, ia_h_in)
-                                        } else {
-                                            item.size.as_inches()
-                                        };
+                        if let Some(item) = self.selected_queue_mut() {
+                            item.crop_enabled = crop_enabled;
+                            if crop_enabled {
+                                // Calculate and store auto-crop UVs for the target cell
+                                let (w_in, h_in) = if item.fit_to_page {
+                                    (ia_w_in, ia_h_in)
+                                } else {
+                                    item.size.as_inches()
+                                };
 
-                                        // Calculate oriented box and rotation
-                                        let (sw, sh) = item.src_size_px.unwrap_or((1, 1));
-                                        let src_landscape = (sw as f32) > (sh as f32);
-                                        let (oriented_w, oriented_h) = if src_landscape {
-                                            (h_in, w_in)
-                                        } else {
-                                            (w_in, h_in)
-                                        };
+                                // Calculate oriented box and rotation
+                                let (sw, sh) = item.src_size_px.unwrap_or((1, 1));
+                                let src_landscape = (sw as f32) > (sh as f32);
+                                let (oriented_w, oriented_h) = if src_landscape {
+                                    (h_in, w_in)
+                                } else {
+                                    (w_in, h_in)
+                                };
 
-                                        // Calculate if rotation is needed
-                                        let fitted_area_no_rotate = {
-                                            let s = (oriented_w / sw as f32).min(oriented_h / sh as f32);
-                                            (sw as f32 * s) * (sh as f32 * s)
-                                        };
-                                        let fitted_area_rotate = {
-                                            let s = (oriented_w / sh as f32).min(oriented_h / sw as f32);
-                                            (sh as f32 * s) * (sw as f32 * s)
-                                        };
-                                        let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
-                                        let will_rotate = if item.force_original_orientation {
-                                            false
-                                        } else {
-                                            will_rotate
-                                        };
+                                // Calculate if rotation is needed
+                                let fitted_area_no_rotate = {
+                                    let s = (oriented_w / sw as f32).min(oriented_h / sh as f32);
+                                    (sw as f32 * s) * (sh as f32 * s)
+                                };
+                                let fitted_area_rotate = {
+                                    let s = (oriented_w / sh as f32).min(oriented_h / sw as f32);
+                                    (sh as f32 * s) * (sw as f32 * s)
+                                };
+                                let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+                                let will_rotate = if item.force_original_orientation {
+                                    false
+                                } else {
+                                    will_rotate
+                                };
 
-                                        // For crop calculation, swap dimensions if rotation is needed
-                                        let (calc_w, calc_h) = if will_rotate {
-                                            (oriented_h, oriented_w)
-                                        } else {
-                                            (oriented_w, oriented_h)
-                                        };
+                                // For crop calculation, swap dimensions if rotation is needed
+                                let (calc_w, calc_h) = if will_rotate {
+                                    (oriented_h, oriented_w)
+                                } else {
+                                    (oriented_w, oriented_h)
+                                };
 
-                                        // Adjust cell dimensions for border type:
-                                        // - Outer: expand by 2×border (border adds outside the cell)
-                                        // - Inner: shrink by 2×border (border eats inside the cell)
-                                        // This ensures crop UVs match the visible area aspect ratio.
-                                        let (calc_w, calc_h) = if item.border_type
-                                            == vibeprint::layout_engine::BorderType::Outer
-                                            && item.border_width_pt > 0.0
-                                        {
-                                            let border_in = item.border_width_pt / 72.0;
-                                            let (expand_w, expand_h) = if item.crop_inverted && !item.force_original_orientation {
-                                                (calc_h, calc_w)
-                                            } else {
-                                                (calc_w, calc_h)
-                                            };
-                                            let (expanded_w, expanded_h) = (
-                                                expand_w + border_in * 2.0,
-                                                expand_h + border_in * 2.0,
-                                            );
-                                            if item.crop_inverted && !item.force_original_orientation {
-                                                (expanded_h, expanded_w)
-                                            } else {
-                                                (expanded_w, expanded_h)
-                                            }
-                                        } else if item.border_type
-                                            == vibeprint::layout_engine::BorderType::Inner
-                                            && item.border_width_pt > 0.0
-                                        {
-                                            let border_in = item.border_width_pt / 72.0;
-                                            let (shrink_w, shrink_h) = if item.crop_inverted && !item.force_original_orientation {
-                                                (calc_h, calc_w)
-                                            } else {
-                                                (calc_w, calc_h)
-                                            };
-                                            let (shrunk_w, shrunk_h) = (
-                                                (shrink_w - border_in * 2.0).max(0.1),
-                                                (shrink_h - border_in * 2.0).max(0.1),
-                                            );
-                                            if item.crop_inverted && !item.force_original_orientation {
-                                                (shrunk_h, shrunk_w)
-                                            } else {
-                                                (shrunk_w, shrunk_h)
-                                            }
+                                // Adjust cell dimensions for border type:
+                                // - Outer: expand by 2×border (border adds outside the cell)
+                                // - Inner: shrink by 2×border (border eats inside the cell)
+                                // This ensures crop UVs match the visible area aspect ratio.
+                                let (calc_w, calc_h) = if item.border_type
+                                    == vibeprint::layout_engine::BorderType::Outer
+                                    && item.border_width_pt > 0.0
+                                {
+                                    let border_in = item.border_width_pt / 72.0;
+                                    let (expand_w, expand_h) =
+                                        if item.crop_inverted && !item.force_original_orientation {
+                                            (calc_h, calc_w)
                                         } else {
                                             (calc_w, calc_h)
                                         };
-
-                                        // Calculate auto-crop UVs
-                                        // When inverted, flip the rotation decision to match processor logic
-                                        let will_rotate_for_uv = if item.force_original_orientation {
-                                            false
-                                        } else if item.crop_inverted {
-                                            !will_rotate
+                                    let (expanded_w, expanded_h) =
+                                        (expand_w + border_in * 2.0, expand_h + border_in * 2.0);
+                                    if item.crop_inverted && !item.force_original_orientation {
+                                        (expanded_h, expanded_w)
+                                    } else {
+                                        (expanded_w, expanded_h)
+                                    }
+                                } else if item.border_type
+                                    == vibeprint::layout_engine::BorderType::Inner
+                                    && item.border_width_pt > 0.0
+                                {
+                                    let border_in = item.border_width_pt / 72.0;
+                                    let (shrink_w, shrink_h) =
+                                        if item.crop_inverted && !item.force_original_orientation {
+                                            (calc_h, calc_w)
                                         } else {
-                                            will_rotate
+                                            (calc_w, calc_h)
                                         };
-                                        let (u0, v0, u1, v1) = crate::utils::calc_crop_uv(
-                                            calc_w,
-                                            calc_h,
-                                            sw,
-                                            sh,
-                                            will_rotate_for_uv,
-                                            true,
-                                            None,
-                                        );
-                                        item.crop_u0 = Some(u0);
-                                        item.crop_v0 = Some(v0);
-                                        item.crop_u1 = Some(u1);
-                                        item.crop_v1 = Some(v1);
-                                        item.crop_inverted = false;
+                                    let (shrunk_w, shrunk_h) = (
+                                        (shrink_w - border_in * 2.0).max(0.1),
+                                        (shrink_h - border_in * 2.0).max(0.1),
+                                    );
+                                    if item.crop_inverted && !item.force_original_orientation {
+                                        (shrunk_h, shrunk_w)
+                                    } else {
+                                        (shrunk_w, shrunk_h)
+                                    }
+                                } else {
+                                    (calc_w, calc_h)
+                                };
+
+                                // Calculate auto-crop UVs
+                                // When inverted, flip the rotation decision to match processor logic
+                                let will_rotate_for_uv = if item.force_original_orientation {
+                                    false
+                                } else if item.crop_inverted {
+                                    !will_rotate
+                                } else {
+                                    will_rotate
+                                };
+                                let (u0, v0, u1, v1) = crate::utils::calc_crop_uv(
+                                    calc_w,
+                                    calc_h,
+                                    sw,
+                                    sh,
+                                    will_rotate_for_uv,
+                                    true,
+                                    None,
+                                );
+                                item.crop_u0 = Some(u0);
+                                item.crop_v0 = Some(v0);
+                                item.crop_u1 = Some(u1);
+                                item.crop_v1 = Some(v1);
+                                item.crop_inverted = false;
                             } else {
                                 // When disabling crop, clear custom UVs to restore full image
                                 item.crop_u0 = None;
@@ -1257,7 +1308,7 @@ if let Some(item) = self.selected_queue_mut() {
                             let src_landscape = src_w > src_h;
                             let border_type = q.border_type;
                             let border_width_pt = q.border_width_pt;
-                            
+
                             // Now safe to modify state
                             self.state.crop_editor_inverted = crop_inverted;
 
@@ -1301,30 +1352,29 @@ if let Some(item) = self.selected_queue_mut() {
                                 && border_width_pt > 0.0
                             {
                                 let border_in = border_width_pt / 72.0;
-                                let (expand_w, expand_h) = if crop_inverted && !force_original_orientation {
-                                    (calc_h, calc_w)
-                                } else {
-                                    (calc_w, calc_h)
-                                };
-                                let (expanded_w, expanded_h) = (
-                                    expand_w + border_in * 2.0,
-                                    expand_h + border_in * 2.0,
-                                );
+                                let (expand_w, expand_h) =
+                                    if crop_inverted && !force_original_orientation {
+                                        (calc_h, calc_w)
+                                    } else {
+                                        (calc_w, calc_h)
+                                    };
+                                let (expanded_w, expanded_h) =
+                                    (expand_w + border_in * 2.0, expand_h + border_in * 2.0);
                                 if crop_inverted && !force_original_orientation {
                                     (expanded_h, expanded_w)
                                 } else {
                                     (expanded_w, expanded_h)
                                 }
-                            } else if border_type
-                                == vibeprint::layout_engine::BorderType::Inner
+                            } else if border_type == vibeprint::layout_engine::BorderType::Inner
                                 && border_width_pt > 0.0
                             {
                                 let border_in = border_width_pt / 72.0;
-                                let (shrink_w, shrink_h) = if crop_inverted && !force_original_orientation {
-                                    (calc_h, calc_w)
-                                } else {
-                                    (calc_w, calc_h)
-                                };
+                                let (shrink_w, shrink_h) =
+                                    if crop_inverted && !force_original_orientation {
+                                        (calc_h, calc_w)
+                                    } else {
+                                        (calc_w, calc_h)
+                                    };
                                 let (shrunk_w, shrunk_h) = (
                                     (shrink_w - border_in * 2.0).max(0.1),
                                     (shrink_h - border_in * 2.0).max(0.1),
@@ -1338,7 +1388,7 @@ if let Some(item) = self.selected_queue_mut() {
                                 (calc_w, calc_h)
                             };
 
-let auto_uv = if sw != 0 && sh != 0 {
+                            let auto_uv = if sw != 0 && sh != 0 {
                                 // When inverted, flip the rotation decision to match processor logic.
                                 let will_rotate_for_uv = if force_original_orientation {
                                     false
@@ -1386,10 +1436,7 @@ let auto_uv = if sw != 0 && sh != 0 {
                     .map(|q| q.fit_to_page)
                     .unwrap_or(false);
                 ui.add_enabled_ui(!center_disabled, |ui| {
-                    if ui
-                        .checkbox(&mut center_to_page, "Center to page")
-                        .changed()
-                    {
+                    if ui.checkbox(&mut center_to_page, "Center to page").changed() {
                         if let Some(item) = self.selected_queue_mut() {
                             item.center_to_page = center_to_page;
                             if center_to_page {
@@ -1428,12 +1475,18 @@ let auto_uv = if sw != 0 && sh != 0 {
                             q.placed_h_px.max(1),
                         );
                         // Apply crop_inverted flip: effective rotation = what the user sees
-                        let effective_will_rotate =
-                            if q.crop_inverted { !will_rotate } else { will_rotate };
+                        let effective_will_rotate = if q.crop_inverted {
+                            !will_rotate
+                        } else {
+                            will_rotate
+                        };
 
                         // Condition 1: already in original orientation (checkbox is no-op)
                         if !effective_will_rotate {
-                            return (true, "Image is already in its natural orientation".to_string());
+                            return (
+                                true,
+                                "Image is already in its natural orientation".to_string(),
+                            );
                         }
 
                         // Condition 2: image cannot fit without rotation at its print size
@@ -1442,7 +1495,7 @@ let auto_uv = if sw != 0 && sh != 0 {
                         } else {
                             q.size.as_inches()
                         };
-                        
+
                         // Determine source orientation and compute natural box dimensions
                         let (sw, sh) = q.src_size_px.unwrap();
                         let src_landscape = sw as f32 > sh as f32;
@@ -1453,22 +1506,24 @@ let auto_uv = if sw != 0 && sh != 0 {
                             // Portrait source: natural box is portrait (keep w×h)
                             (w_in, h_in)
                         };
-                        
-                        let border_expansion = if q.border_type
-                            == vibeprint::layout_engine::BorderType::Outer
-                        {
-                            q.border_width_pt / 72.0 * 2.0
-                        } else {
-                            0.0
-                        };
+
+                        let border_expansion =
+                            if q.border_type == vibeprint::layout_engine::BorderType::Outer {
+                                q.border_width_pt / 72.0 * 2.0
+                            } else {
+                                0.0
+                            };
                         let expanded_w = natural_w + border_expansion;
                         let expanded_h = natural_h + border_expansion;
                         let (ia_w, ia_h) = self.imageable_size_in();
-                        
+
                         // Check if natural box fits WITHOUT rotation (portrait orientation only)
                         let fits_without_rotation = expanded_w <= ia_w && expanded_h <= ia_h;
                         if !fits_without_rotation {
-                            return (true, "Image cannot fit without rotation at this print size".to_string());
+                            return (
+                                true,
+                                "Image cannot fit without rotation at this print size".to_string(),
+                            );
                         }
 
                         (false, String::new())
@@ -1510,15 +1565,13 @@ let auto_uv = if sw != 0 && sh != 0 {
                     .map(|q| q.fit_to_page)
                     .unwrap_or(false);
                 ui.add_enabled_ui(!freehand_disabled, |ui| {
-                    if ui
-                        .checkbox(&mut freehand, "Freehand placement")
-                        .changed()
-                    {
+                    if ui.checkbox(&mut freehand, "Freehand placement").changed() {
                         if freehand {
                             // Toggled ON: set flag, disable center, compute centered position
                             let dpi = self.state.target_dpi as f32;
                             let (iw, ih) = self.imageable_size_px();
-                            let (bw, bh) = self.selected_queue()
+                            let (bw, bh) = self
+                                .selected_queue()
                                 .map(|item| (item.placed_w_px.max(1), item.placed_h_px.max(1)))
                                 .unwrap_or((1, 1));
                             let cx = (iw.saturating_sub(bw).max(1)) / 2;
@@ -1546,8 +1599,13 @@ let auto_uv = if sw != 0 && sh != 0 {
                 // Show coordinate fields when freehand is active
                 let freehand_state = self.selected_queue().and_then(|item| {
                     if item.freehand_placement {
-                        Some((item.id, item.freehand_x_pt, item.freehand_y_pt,
-                            item.placed_w_px.max(1), item.placed_h_px.max(1)))
+                        Some((
+                            item.id,
+                            item.freehand_x_pt,
+                            item.freehand_y_pt,
+                            item.placed_w_px.max(1),
+                            item.placed_h_px.max(1),
+                        ))
                     } else {
                         None
                     }
@@ -1572,19 +1630,27 @@ let auto_uv = if sw != 0 && sh != 0 {
 
                     ui.horizontal(|ui| {
                         ui.label(format!("X ({label}):"));
-                        if ui.add(egui::DragValue::new(&mut display_x)
-                            .speed(0.05)
-                            .range(range_x.clone())
-                        ).changed() {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut display_x)
+                                    .speed(0.05)
+                                    .range(range_x.clone()),
+                            )
+                            .changed()
+                        {
                             update_x = Some(display_x);
                         }
                     });
                     ui.horizontal(|ui| {
                         ui.label(format!("Y ({label}):"));
-                        if ui.add(egui::DragValue::new(&mut display_y)
-                            .speed(0.05)
-                            .range(range_y.clone())
-                        ).changed() {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut display_y)
+                                    .speed(0.05)
+                                    .range(range_y.clone()),
+                            )
+                            .changed()
+                        {
                             update_y = Some(display_y);
                         }
                     });
@@ -1699,7 +1765,9 @@ let auto_uv = if sw != 0 && sh != 0 {
                     // For outer borders, also constrain by imageable area.
                     // Use orientation-safe axis pairing: smallest cell dim vs smallest page dim,
                     // largest cell dim vs largest page dim — safe regardless of rotation.
-                    if border_type == vibeprint::layout_engine::BorderType::Outer && !item.fit_to_page {
+                    if border_type == vibeprint::layout_engine::BorderType::Outer
+                        && !item.fit_to_page
+                    {
                         let (ia_w_in, ia_h_in) = self.imageable_size_in();
                         let min_cell = cell_w_in.min(cell_h_in);
                         let max_cell = cell_w_in.max(cell_h_in);
@@ -1719,20 +1787,29 @@ let auto_uv = if sw != 0 && sh != 0 {
                 if show_width {
                     ui.horizontal(|ui| {
                         ui.label("Width:");
-let current_pt = border_width_pt.min(max_border_pt);
+                        let current_pt = border_width_pt.min(max_border_pt);
                         if self.state.border_width_edit_focus {
                             if self.state.use_metric {
                                 if self.state.border_width_edit_string.is_empty() {
-                                    self.state.border_width_edit_string = format!("{}", (vibeprint::layout_engine::inches_to_mm(current_pt / 72.0)).round() as u32);
+                                    self.state.border_width_edit_string = format!(
+                                        "{}",
+                                        (vibeprint::layout_engine::inches_to_mm(current_pt / 72.0))
+                                            .round() as u32
+                                    );
                                 }
                             } else {
                                 if self.state.border_width_edit_string.is_empty() {
-                                    self.state.border_width_edit_string = format!("{:.3}", current_pt);
+                                    self.state.border_width_edit_string =
+                                        format!("{:.3}", current_pt);
                                 }
                             }
                         } else {
                             if self.state.use_metric {
-                                self.state.border_width_edit_string = format!("{}", (vibeprint::layout_engine::inches_to_mm(current_pt / 72.0)).round() as u32);
+                                self.state.border_width_edit_string = format!(
+                                    "{}",
+                                    (vibeprint::layout_engine::inches_to_mm(current_pt / 72.0))
+                                        .round() as u32
+                                );
                             } else {
                                 self.state.border_width_edit_string = format!("{:.3}", current_pt);
                             }
@@ -1745,36 +1822,48 @@ let current_pt = border_width_pt.min(max_border_pt);
                         self.state.border_width_edit_focus = resp.has_focus();
                         if resp.gained_focus() {
                             if self.state.use_metric {
-                                self.state.border_width_edit_string = format!("{}", (vibeprint::layout_engine::inches_to_mm(current_pt / 72.0)).round() as u32);
+                                self.state.border_width_edit_string = format!(
+                                    "{}",
+                                    (vibeprint::layout_engine::inches_to_mm(current_pt / 72.0))
+                                        .round() as u32
+                                );
                             } else {
                                 self.state.border_width_edit_string = format!("{:.3}", current_pt);
                             }
                         }
                         if resp.lost_focus() {
                             if self.state.use_metric {
-                                if let Ok(mm_val) = self.state.border_width_edit_string.parse::<u32>() {
-                                    let pt = vibeprint::layout_engine::mm_to_inches(mm_val as f32) * 72.0;
+                                if let Ok(mm_val) =
+                                    self.state.border_width_edit_string.parse::<u32>()
+                                {
+                                    let pt = vibeprint::layout_engine::mm_to_inches(mm_val as f32)
+                                        * 72.0;
                                     border_width_pt = pt.max(0.0).min(max_border_pt);
                                 }
-                                self.state.border_width_edit_string = format!("{}", (vibeprint::layout_engine::inches_to_mm(border_width_pt / 72.0)).round() as u32);
+                                self.state.border_width_edit_string = format!(
+                                    "{}",
+                                    (vibeprint::layout_engine::inches_to_mm(border_width_pt / 72.0))
+                                        .round() as u32
+                                );
                             } else {
                                 if let Ok(v) = self.state.border_width_edit_string.parse::<f32>() {
                                     border_width_pt = v.max(0.0).min(max_border_pt);
                                 }
-                                self.state.border_width_edit_string = format!("{:.3}", border_width_pt.min(max_border_pt));
+                                self.state.border_width_edit_string =
+                                    format!("{:.3}", border_width_pt.min(max_border_pt));
                             }
                         }
                         ui.label(if self.state.use_metric { "mm" } else { "pt" });
                         let max_label = if self.state.use_metric {
-                            format!("max {}", (vibeprint::layout_engine::inches_to_mm(max_border_pt / 72.0)).round() as u32)
+                            format!(
+                                "max {}",
+                                (vibeprint::layout_engine::inches_to_mm(max_border_pt / 72.0))
+                                    .round() as u32
+                            )
                         } else {
                             format!("max {:.3}", max_border_pt)
                         };
-                        ui.label(
-                            RichText::new(max_label)
-                                .weak()
-                                .size(10.0),
-                        );
+                        ui.label(RichText::new(max_label).weak().size(10.0));
                     });
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
@@ -1819,8 +1908,11 @@ let current_pt = border_width_pt.min(max_border_pt);
                                 ui.add_space(8.0);
 
                                 let mut current_rgb = temp_color;
-                                let mut picker_color32 =
-                                    Color32::from_rgb(current_rgb[0], current_rgb[1], current_rgb[2]);
+                                let mut picker_color32 = Color32::from_rgb(
+                                    current_rgb[0],
+                                    current_rgb[1],
+                                    current_rgb[2],
+                                );
 
                                 const PRESETS: &[[u8; 3]] = &[
                                     // Row 1: reds, oranges
@@ -1899,8 +1991,7 @@ let current_pt = border_width_pt.min(max_border_pt);
                                         let c32 = Color32::from_rgb(color[0], color[1], color[2]);
                                         if selected {
                                             ui.painter().rect_filled(rect, 2.0, Color32::WHITE);
-                                            ui.painter()
-                                                .rect_filled(rect.shrink(2.0), 1.0, c32);
+                                            ui.painter().rect_filled(rect.shrink(2.0), 1.0, c32);
                                         } else {
                                             ui.painter().rect_filled(rect, 2.0, c32);
                                             ui.painter().rect_stroke(
@@ -1917,8 +2008,7 @@ let current_pt = border_width_pt.min(max_border_pt);
                                     for row in PRESETS.chunks(10) {
                                         ui.horizontal(|ui| {
                                             for &c in row {
-                                                if preset_swatch(ui, c, current_rgb == c)
-                                                    .clicked()
+                                                if preset_swatch(ui, c, current_rgb == c).clicked()
                                                 {
                                                     current_rgb = c;
                                                     picker_color32 =
@@ -1934,8 +2024,7 @@ let current_pt = border_width_pt.min(max_border_pt);
                                 ui.add_space(12.0);
 
                                 // ── Color picker (matches preset width) ──
-                                let picker_changed =
-                                    custom_color_picker(ui, &mut picker_color32);
+                                let picker_changed = custom_color_picker(ui, &mut picker_color32);
                                 if picker_changed {
                                     current_rgb = [
                                         picker_color32.r(),
@@ -1947,11 +2036,8 @@ let current_pt = border_width_pt.min(max_border_pt);
                                 ui.add_space(10.0);
 
                                 // ── Numeric inputs ──
-                                let (h, s, l) = rgb_to_hsl(
-                                    current_rgb[0],
-                                    current_rgb[1],
-                                    current_rgb[2],
-                                );
+                                let (h, s, l) =
+                                    rgb_to_hsl(current_rgb[0], current_rgb[1], current_rgb[2]);
                                 let mut h_i = h.round() as i32;
                                 let mut s_i = s.round() as i32;
                                 let mut l_i = l.round() as i32;
@@ -2046,8 +2132,11 @@ let current_pt = border_width_pt.min(max_border_pt);
                                             preview_size,
                                             egui::Sense::hover(),
                                         );
-                                        let preview_color =
-                                            Color32::from_rgb(current_rgb[0], current_rgb[1], current_rgb[2]);
+                                        let preview_color = Color32::from_rgb(
+                                            current_rgb[0],
+                                            current_rgb[1],
+                                            current_rgb[2],
+                                        );
                                         ui.painter().rect_filled(preview_rect, 3.0, preview_color);
                                         ui.painter().rect_stroke(
                                             preview_rect,
@@ -2059,8 +2148,7 @@ let current_pt = border_width_pt.min(max_border_pt);
                                 });
 
                                 if (h_i, s_i, l_i) != hsl_before {
-                                    current_rgb =
-                                        hsl_to_rgb(h_i as f32, s_i as f32, l_i as f32);
+                                    current_rgb = hsl_to_rgb(h_i as f32, s_i as f32, l_i as f32);
                                 }
                                 if (r_i, g_i, b_i) != rgb_before {
                                     current_rgb = [r_i as u8, g_i as u8, b_i as u8];
@@ -2119,15 +2207,29 @@ let current_pt = border_width_pt.min(max_border_pt);
                         border_color = [0, 0, 0];
                     }
 
-                    let fit_to_page = self.selected_queue().map(|q| q.fit_to_page).unwrap_or(false);
+                    let fit_to_page = self
+                        .selected_queue()
+                        .map(|q| q.fit_to_page)
+                        .unwrap_or(false);
                     let (cell_w_in, cell_h_in) = if fit_to_page {
                         self.imageable_size_in()
                     } else {
-                        self.selected_queue().map(|q| q.size.as_inches()).unwrap_or((5.0, 7.0))
+                        self.selected_queue()
+                            .map(|q| q.size.as_inches())
+                            .unwrap_or((5.0, 7.0))
                     };
-                    let src_size_px = self.selected_queue().and_then(|q| q.src_size_px).unwrap_or((1, 1));
-                    let crop_inverted = self.selected_queue().map(|q| q.crop_inverted).unwrap_or(false);
-                    let force_original_orientation = self.selected_queue().map(|q| q.force_original_orientation).unwrap_or(false);
+                    let src_size_px = self
+                        .selected_queue()
+                        .and_then(|q| q.src_size_px)
+                        .unwrap_or((1, 1));
+                    let crop_inverted = self
+                        .selected_queue()
+                        .map(|q| q.crop_inverted)
+                        .unwrap_or(false);
+                    let force_original_orientation = self
+                        .selected_queue()
+                        .map(|q| q.force_original_orientation)
+                        .unwrap_or(false);
 
                     if type_changed || width_changed || color_changed {
                         // Compute oriented dimensions and rotation to determine
@@ -2178,20 +2280,17 @@ let current_pt = border_width_pt.min(max_border_pt);
                         // Compute old and new visible areas in oriented coordinate space
                         let new_border_in = border_width_pt.min(max_border_pt) / 72.0;
 
-                        let new_is_inner = border_type
-                            == vibeprint::layout_engine::BorderType::Inner;
-                        let new_is_outer = border_type
-                            == vibeprint::layout_engine::BorderType::Outer;
+                        let new_is_inner =
+                            border_type == vibeprint::layout_engine::BorderType::Inner;
+                        let new_is_outer =
+                            border_type == vibeprint::layout_engine::BorderType::Outer;
                         let (new_vis_w, new_vis_h) = if new_is_inner && new_border_in > 0.0 {
                             (
                                 (full_w - new_border_in * 2.0).max(0.1),
                                 (full_h - new_border_in * 2.0).max(0.1),
                             )
                         } else if new_is_outer && new_border_in > 0.0 {
-                            (
-                                full_w + new_border_in * 2.0,
-                                full_h + new_border_in * 2.0,
-                            )
+                            (full_w + new_border_in * 2.0, full_h + new_border_in * 2.0)
                         } else {
                             (full_w, full_h)
                         };
@@ -2199,7 +2298,10 @@ let current_pt = border_width_pt.min(max_border_pt);
                         // Always recalculate crop when border type or width changes,
                         // since even small aspect changes affect cropped images.
                         let crop_adjustment = {
-                            let has_crop = self.selected_queue().map(|q| q.crop_enabled && q.crop_u0.is_some()).unwrap_or(false);
+                            let has_crop = self
+                                .selected_queue()
+                                .map(|q| q.crop_enabled && q.crop_u0.is_some())
+                                .unwrap_or(false);
                             if has_crop {
                                 let src_aspect = sw_f / sh_f;
                                 let box_aspect = new_vis_w / new_vis_h;
@@ -2233,7 +2335,7 @@ let current_pt = border_width_pt.min(max_border_pt);
                             item.border_type = border_type;
                             item.border_width_pt = border_width_pt.min(max_border_pt); // Clamp to max for this cell size
                             item.border_color = border_color;
-                                                                                       // Trigger relayout for outer border (affects cell size)
+                            // Trigger relayout for outer border (affects cell size)
                             if border_type == vibeprint::layout_engine::BorderType::Outer
                                 || (old_border_type
                                     == Some(vibeprint::layout_engine::BorderType::Outer))

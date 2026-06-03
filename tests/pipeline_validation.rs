@@ -69,8 +69,8 @@ fn unset_output_icc_can_default_to_wide_profile() -> Result<()> {
             crop_u1: 1.0,
             crop_v1: 1.0,
             border_type: vibeprint::layout_engine::BorderType::None,
-                border_width_px: 0,
-                border_color: [0, 0, 0],
+            border_width_px: 0,
+            border_color: [0, 0, 0],
         }],
         page_w_px: 160,
         page_h_px: 160,
@@ -83,7 +83,8 @@ fn unset_output_icc_can_default_to_wide_profile() -> Result<()> {
         depth: 16,
         sharpen: 0,
         embed_icc_profile: true,
-        draw_cut_marks: false,
+        cut_marks: vibeprint::processor::CutMarkMode::None,
+        cut_mark_bounds_px: None,
     })?;
 
     let embedded = read_tiff_embedded_icc(&output_path)?;
@@ -792,7 +793,8 @@ fn composite_page_smoke_test() -> Result<()> {
         depth: 8,
         sharpen: 0,
         embed_icc_profile: true,
-        draw_cut_marks: false,
+        cut_marks: vibeprint::processor::CutMarkMode::None,
+        cut_mark_bounds_px: None,
     })?;
 
     let (bit_depth, dpi) = read_tiff_bit_depth_and_dpi(&output_path)?;
@@ -1015,8 +1017,8 @@ fn print_pipeline_pdf_output_is_unmodified() -> Result<()> {
         }
 
         let file = File::create(&input_path)?;
-        let mut encoder = TiffEncoder::new(file)?
-            .with_compression(Compression::Deflate(DeflateLevel::Balanced));
+        let mut encoder =
+            TiffEncoder::new(file)?.with_compression(Compression::Deflate(DeflateLevel::Balanced));
         let mut image = encoder.new_image::<colortype::RGB16>(input_w, input_h)?;
 
         let (n, d) = dpi_to_rational(input_dpi);
@@ -1160,7 +1162,11 @@ fn print_pipeline_pdf_output_is_unmodified() -> Result<()> {
     let mut diff_count = 0usize;
 
     for (_i, (orig, extracted)) in processed_pixels.iter().zip(&pdf_image_pixels).enumerate() {
-        let diff = if orig > extracted { orig - extracted } else { extracted - orig };
+        let diff = if orig > extracted {
+            orig - extracted
+        } else {
+            extracted - orig
+        };
         if diff > max_diff {
             max_diff = diff;
         }
@@ -1212,7 +1218,9 @@ fn four_by_six_print_geometry_is_preserved() -> Result<()> {
         let page_w_px = (4.0 * target_dpi).round() as u32;
         let page_h_px = (6.0 * target_dpi).round() as u32;
 
-        let out_path = tmp.path().join(format!("page_4x6_{}.tif", target_dpi as u32));
+        let out_path = tmp
+            .path()
+            .join(format!("page_4x6_{}.tif", target_dpi as u32));
         vibeprint::processor::process_composite_page(vibeprint::processor::CompositePageOptions {
             output: out_path.clone(),
             placements: vec![vibeprint::processor::PagePlacement {
@@ -1242,7 +1250,8 @@ fn four_by_six_print_geometry_is_preserved() -> Result<()> {
             depth: 16,
             sharpen: 5,
             embed_icc_profile: true,
-            draw_cut_marks: false,
+            cut_marks: vibeprint::processor::CutMarkMode::None,
+            cut_mark_bounds_px: None,
         })
         .with_context(|| format!("composite 4×6 page failed at {} dpi", target_dpi))?;
 
@@ -1358,7 +1367,8 @@ fn cut_marks_render_in_gap_around_placements() -> Result<()> {
         depth: 16,
         sharpen: 0,
         embed_icc_profile: false,
-        draw_cut_marks: false,
+        cut_marks: vibeprint::processor::CutMarkMode::None,
+        cut_mark_bounds_px: None,
     })?;
 
     // ── Render WITH cut marks ────────────────────────────────────────────────
@@ -1392,7 +1402,8 @@ fn cut_marks_render_in_gap_around_placements() -> Result<()> {
         depth: 16,
         sharpen: 0,
         embed_icc_profile: false,
-        draw_cut_marks: true,
+        cut_marks: vibeprint::processor::CutMarkMode::Crop,
+        cut_mark_bounds_px: None,
     })?;
 
     // ── Read both outputs ────────────────────────────────────────────────────
@@ -1481,6 +1492,157 @@ fn cut_marks_render_in_gap_around_placements() -> Result<()> {
             (pixels_off[idx], pixels_off[idx + 1], pixels_off[idx + 2]),
             (pixels_on[idx], pixels_on[idx + 1], pixels_on[idx + 2]),
             "cut marks leaked into image interior at ({ix},{iy})"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn guide_lines_extend_to_user_bounds() -> Result<()> {
+    let tmp = tempdir().context("failed to create tempdir")?;
+    let input_path = tmp.path().join("guidelines_in.tif");
+    let page_w_px: u32 = 600;
+    let page_h_px: u32 = 800;
+    let bounds = vibeprint::processor::CutMarkBoundsPx {
+        left: 50,
+        top: 80,
+        right: 550,
+        bottom: 720,
+    };
+    let dest_x_px: u32 = 220;
+    let dest_y_px: u32 = 310;
+    let dest_w_px: u32 = 160;
+    let dest_h_px: u32 = 180;
+
+    write_gradient_rgb16_tiff(&input_path, 64, 64, 300.0)?;
+
+    let placement = vibeprint::processor::PagePlacement {
+        input: input_path.clone(),
+        input_icc: None,
+        dest_x_px,
+        dest_y_px,
+        dest_w_px,
+        dest_h_px,
+        rotate_cw: false,
+        crop_u0: 0.0,
+        crop_v0: 0.0,
+        crop_u1: 1.0,
+        crop_v1: 1.0,
+        border_type: vibeprint::layout_engine::BorderType::None,
+        border_width_px: 0,
+        border_color: [0, 0, 0],
+    };
+
+    let out_no_marks = tmp.path().join("guidelines_off.tif");
+    vibeprint::processor::process_composite_page(vibeprint::processor::CompositePageOptions {
+        output: out_no_marks.clone(),
+        placements: vec![placement.clone()],
+        page_w_px,
+        page_h_px,
+        output_icc: None,
+        default_wide_output_when_unset: false,
+        target_dpi: 300.0,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: false,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 16,
+        sharpen: 0,
+        embed_icc_profile: false,
+        cut_marks: vibeprint::processor::CutMarkMode::None,
+        cut_mark_bounds_px: None,
+    })?;
+
+    let out_with_marks = tmp.path().join("guidelines_on.tif");
+    vibeprint::processor::process_composite_page(vibeprint::processor::CompositePageOptions {
+        output: out_with_marks.clone(),
+        placements: vec![placement],
+        page_w_px,
+        page_h_px,
+        output_icc: None,
+        default_wide_output_when_unset: false,
+        target_dpi: 300.0,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: false,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 16,
+        sharpen: 0,
+        embed_icc_profile: false,
+        cut_marks: vibeprint::processor::CutMarkMode::GuideLines,
+        cut_mark_bounds_px: Some(bounds),
+    })?;
+
+    let read_all_pixels = |path: &std::path::Path| -> Result<Vec<u16>> {
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        let mut decoder = tiff::decoder::Decoder::new(std::io::BufReader::new(file))
+            .context("failed to create TIFF decoder")?;
+        let data = decoder.read_image().context("failed to read image")?;
+        match data {
+            tiff::decoder::DecodingResult::U16(v) => Ok(v),
+            _ => anyhow::bail!("expected u16 TIFF"),
+        }
+    };
+
+    let pixels_off = read_all_pixels(&out_no_marks)?;
+    let pixels_on = read_all_pixels(&out_with_marks)?;
+    assert_eq!(pixels_off.len(), pixels_on.len(), "output sizes must match");
+
+    let is_near_black =
+        |r: u16, g: u16, b: u16| -> bool { (r as u32 + g as u32 + b as u32) < 3000 };
+    let get_pixel = |pixels: &[u16], x: u32, y: u32| -> (u16, u16, u16) {
+        let idx = ((y * page_w_px + x) * 3) as usize;
+        (pixels[idx], pixels[idx + 1], pixels[idx + 2])
+    };
+
+    let x0 = dest_x_px;
+    let y0 = dest_y_px;
+    let x1 = dest_x_px + dest_w_px;
+    let y1 = dest_y_px + dest_h_px;
+
+    let guide_samples = [
+        (bounds.left + 5, y0 - 1, "top-left extension"),
+        (bounds.right - 5, y0 - 1, "top-right extension"),
+        (bounds.left + 5, y1, "bottom-left extension"),
+        (bounds.right - 5, y1, "bottom-right extension"),
+        (x0 - 1, bounds.top + 5, "left-top extension"),
+        (x0 - 1, bounds.bottom - 5, "left-bottom extension"),
+        (x1, bounds.top + 5, "right-top extension"),
+        (x1, bounds.bottom - 5, "right-bottom extension"),
+    ];
+
+    for (x, y, label) in guide_samples {
+        let (r, g, b) = get_pixel(&pixels_on, x, y);
+        assert!(
+            is_near_black(r, g, b),
+            "guide-line pixel at {label} ({x},{y}) is not near-black: r={r} g={g} b={b}"
+        );
+    }
+
+    let outside_samples = [
+        (bounds.left - 5, y0 - 1),
+        (bounds.right + 5, y0 - 1),
+        (x0 - 1, bounds.top - 5),
+        (x0 - 1, bounds.bottom + 5),
+    ];
+    for (x, y) in outside_samples {
+        assert_eq!(
+            get_pixel(&pixels_off, x, y),
+            get_pixel(&pixels_on, x, y),
+            "guide lines leaked outside user bounds at ({x},{y})"
+        );
+    }
+
+    let interior_samples = [
+        (dest_x_px + 10, dest_y_px + 10),
+        (dest_x_px + dest_w_px / 2, dest_y_px + dest_h_px / 2),
+        (dest_x_px + dest_w_px - 10, dest_y_px + dest_h_px - 10),
+    ];
+    for (x, y) in interior_samples {
+        assert_eq!(
+            get_pixel(&pixels_off, x, y),
+            get_pixel(&pixels_on, x, y),
+            "guide lines leaked into image interior at ({x},{y})"
         );
     }
 

@@ -67,7 +67,11 @@ pub(crate) fn submit_print_jobs_sync(
     let opts_str = lpr_opts.join(" ");
 
     for (i, temp_path) in temp_paths.iter().enumerate() {
-        let _ = log_tx.send(format!("Processing page {} of {}...", i + 1, temp_paths.len()));
+        let _ = log_tx.send(format!(
+            "Processing page {} of {}...",
+            i + 1,
+            temp_paths.len()
+        ));
 
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -100,9 +104,14 @@ pub(crate) fn submit_print_jobs_sync(
             if let Ok(file) = std::fs::File::open(temp_path) {
                 if let Ok(mut dec) = tiff::decoder::Decoder::new(file) {
                     if let Ok((px_w, px_h)) = dec.dimensions() {
-                        let res_unit = dec.get_tag_u32(tiff::tags::Tag::ResolutionUnit).unwrap_or(2);
-                        let xres = dec.get_tag_f32_vec(tiff::tags::Tag::XResolution)
-                            .ok().and_then(|v| v.into_iter().next()).unwrap_or(72.0);
+                        let res_unit = dec
+                            .get_tag_u32(tiff::tags::Tag::ResolutionUnit)
+                            .unwrap_or(2);
+                        let xres = dec
+                            .get_tag_f32_vec(tiff::tags::Tag::XResolution)
+                            .ok()
+                            .and_then(|v| v.into_iter().next())
+                            .unwrap_or(72.0);
                         let dpi = if res_unit == 3 { xres * 2.54 } else { xres };
                         if dpi > 0.0 {
                             w = px_w as f32 / dpi * 72.0;
@@ -144,7 +153,11 @@ pub(crate) fn submit_print_jobs_sync(
 
         if !gs_output.status.success() {
             let stderr = String::from_utf8_lossy(&gs_output.stderr);
-            return Err(format!("PDF conversion failed (page {}): {}", i + 1, stderr));
+            return Err(format!(
+                "PDF conversion failed (page {}): {}",
+                i + 1,
+                stderr
+            ));
         }
 
         let _ = log_tx.send(format!("Page {}: Sending to printer...", i + 1));

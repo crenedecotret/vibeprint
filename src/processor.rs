@@ -1,4 +1,8 @@
-use std::{fs::File, io::{BufReader, Cursor, Read, Seek}, path::Path};
+use std::{
+    fs::File,
+    io::{BufReader, Cursor, Read, Seek},
+    path::Path,
+};
 
 use anyhow::{bail, Context, Result};
 use image::{
@@ -182,7 +186,7 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
     let mut page: Rgb16Image = ImageBuffer::from_raw(opts.page_w_px, opts.page_h_px, page_data)
         .context("failed to allocate page buffer")?;
 
-    if opts.draw_cut_marks {
+    if opts.cut_marks != CutMarkMode::None {
         let working_black: [u16; 3] = if let Some(ref t) = srgb16_to_prophoto {
             let src16 = [[0u16, 0u16, 0u16]];
             let mut dst16 = [[0u16, 0u16, 0u16]];
@@ -191,7 +195,21 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
         } else {
             [0u16, 0u16, 0u16]
         };
-        draw_cut_marks_rgb16(&mut page, &opts.placements, opts.target_dpi, working_black);
+        match opts.cut_marks {
+            CutMarkMode::None => {}
+            CutMarkMode::Crop => {
+                draw_crop_marks_rgb16(&mut page, &opts.placements, opts.target_dpi, working_black);
+            }
+            CutMarkMode::GuideLines => {
+                draw_guide_lines_rgb16(
+                    &mut page,
+                    &opts.placements,
+                    opts.target_dpi,
+                    working_black,
+                    opts.cut_mark_bounds_px,
+                );
+            }
+        }
     }
 
     for p in &opts.placements {
@@ -495,7 +513,24 @@ pub struct CompositePageOptions {
     pub depth: u8,
     pub sharpen: u8,
     pub embed_icc_profile: bool,
-    pub draw_cut_marks: bool,
+    pub cut_marks: CutMarkMode,
+    pub cut_mark_bounds_px: Option<CutMarkBoundsPx>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CutMarkMode {
+    #[default]
+    None,
+    Crop,
+    GuideLines,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CutMarkBoundsPx {
+    pub left: u32,
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
 }
 
 pub fn process(opts: ProcessOptions) -> Result<()> {
@@ -884,53 +919,56 @@ fn resize_ewa_cubic(
     let mut output: Vec<u16> = vec![0u16; (dst_w * dst_h * 3) as usize];
     let row_len = dst_w as usize * 3;
 
-    output.par_chunks_mut(row_len).enumerate().for_each(|(oy, row)| {
-        for ox in 0..dst_w as usize {
-            let ix = (ox as f64 + 0.5) * scale_x - 0.5;
-            let iy = (oy as f64 + 0.5) * scale_y - 0.5;
+    output
+        .par_chunks_mut(row_len)
+        .enumerate()
+        .for_each(|(oy, row)| {
+            for ox in 0..dst_w as usize {
+                let ix = (ox as f64 + 0.5) * scale_x - 0.5;
+                let iy = (oy as f64 + 0.5) * scale_y - 0.5;
 
-            let x0 = (ix - radius_x).ceil() as i64;
-            let x1 = (ix + radius_x).floor() as i64;
-            let y0 = (iy - radius_y).ceil() as i64;
-            let y1 = (iy + radius_y).floor() as i64;
+                let x0 = (ix - radius_x).ceil() as i64;
+                let x1 = (ix + radius_x).floor() as i64;
+                let y0 = (iy - radius_y).ceil() as i64;
+                let y1 = (iy + radius_y).floor() as i64;
 
-            let mut sum_r = 0.0f64;
-            let mut sum_g = 0.0f64;
-            let mut sum_b = 0.0f64;
-            let mut sum_w = 0.0f64;
+                let mut sum_r = 0.0f64;
+                let mut sum_g = 0.0f64;
+                let mut sum_b = 0.0f64;
+                let mut sum_w = 0.0f64;
 
-            for sy in y0..=y1 {
-                let dy = (sy as f64 - iy) / radius_y;
-                let csy = sy.clamp(0, src_max_y) as usize;
-                let row_base = csy * src_stride;
-                for sx in x0..=x1 {
-                    let dx = (sx as f64 - ix) / radius_x;
-                    // EWA: circular support — skip samples outside the unit disc
-                    let r2 = dx * dx + dy * dy;
-                    if r2 >= 1.0 {
-                        continue;
+                for sy in y0..=y1 {
+                    let dy = (sy as f64 - iy) / radius_y;
+                    let csy = sy.clamp(0, src_max_y) as usize;
+                    let row_base = csy * src_stride;
+                    for sx in x0..=x1 {
+                        let dx = (sx as f64 - ix) / radius_x;
+                        // EWA: circular support — skip samples outside the unit disc
+                        let r2 = dx * dx + dy * dy;
+                        if r2 >= 1.0 {
+                            continue;
+                        }
+                        let w = kernel(r2.sqrt() * 2.0);
+                        if w == 0.0 {
+                            continue;
+                        }
+                        let csx = sx.clamp(0, src_max_x) as usize;
+                        let pi = row_base + csx * 3;
+                        sum_r += w * raw[pi] as f64;
+                        sum_g += w * raw[pi + 1] as f64;
+                        sum_b += w * raw[pi + 2] as f64;
+                        sum_w += w;
                     }
-                    let w = kernel(r2.sqrt() * 2.0);
-                    if w == 0.0 {
-                        continue;
-                    }
-                    let csx = sx.clamp(0, src_max_x) as usize;
-                    let pi = row_base + csx * 3;
-                    sum_r += w * raw[pi] as f64;
-                    sum_g += w * raw[pi + 1] as f64;
-                    sum_b += w * raw[pi + 2] as f64;
-                    sum_w += w;
+                }
+
+                let idx = ox * 3;
+                if sum_w > 1e-10 {
+                    row[idx] = (sum_r / sum_w).round().clamp(0.0, 65535.0) as u16;
+                    row[idx + 1] = (sum_g / sum_w).round().clamp(0.0, 65535.0) as u16;
+                    row[idx + 2] = (sum_b / sum_w).round().clamp(0.0, 65535.0) as u16;
                 }
             }
-
-            let idx = ox * 3;
-            if sum_w > 1e-10 {
-                row[idx] = (sum_r / sum_w).round().clamp(0.0, 65535.0) as u16;
-                row[idx + 1] = (sum_g / sum_w).round().clamp(0.0, 65535.0) as u16;
-                row[idx + 2] = (sum_b / sum_w).round().clamp(0.0, 65535.0) as u16;
-            }
-        }
-    });
+        });
 
     ImageBuffer::from_raw(dst_w, dst_h, output).expect("resize_ewa_cubic: buffer size mismatch")
 }
@@ -938,8 +976,8 @@ fn resize_ewa_cubic(
 fn load_image_with_dpi_and_embedded_icc(
     path: &Path,
 ) -> Result<(LoadedImage, Option<f64>, Option<Vec<u8>>)> {
-    let data = std::fs::read(path)
-        .with_context(|| format!("failed to read image: {}", path.display()))?;
+    let data =
+        std::fs::read(path).with_context(|| format!("failed to read image: {}", path.display()))?;
 
     let dyn_img = image::load_from_memory(&data)
         .with_context(|| format!("failed to decode image: {}", path.display()))?;
@@ -1147,7 +1185,9 @@ fn dynamic_to_rgb8_or_rgb16(img: DynamicImage) -> Result<LoadedImage> {
     })
 }
 
-fn read_tiff_dpi_and_embedded_icc_from_bytes(data: &[u8]) -> Result<(Option<f64>, Option<Vec<u8>>)> {
+fn read_tiff_dpi_and_embedded_icc_from_bytes(
+    data: &[u8],
+) -> Result<(Option<f64>, Option<Vec<u8>>)> {
     let cursor = Cursor::new(data);
     let mut decoder = tiff::decoder::Decoder::new(BufReader::new(cursor))
         .context("failed to create TIFF decoder from bytes")?;
@@ -1156,7 +1196,9 @@ fn read_tiff_dpi_and_embedded_icc_from_bytes(data: &[u8]) -> Result<(Option<f64>
     Ok((dpi, embedded_icc))
 }
 
-fn read_tiff_dpi_generic<R: Read + Seek>(decoder: &mut tiff::decoder::Decoder<BufReader<R>>) -> Option<f64> {
+fn read_tiff_dpi_generic<R: Read + Seek>(
+    decoder: &mut tiff::decoder::Decoder<BufReader<R>>,
+) -> Option<f64> {
     use tiff::decoder::ifd::Value;
     use tiff::tags::Tag;
 
@@ -1249,8 +1291,7 @@ fn transform_rgb16_icc(
     // input_raw length is verified divisible by 3 above.
     let input_pixels: &[Rgb16Pixel] =
         unsafe { std::slice::from_raw_parts(input_raw.as_ptr() as *const Rgb16Pixel, pixel_count) };
-    let mut output_pixels: Vec<Rgb16Pixel> =
-        vec![Rgb16Pixel { r: 0, g: 0, b: 0 }; pixel_count];
+    let mut output_pixels: Vec<Rgb16Pixel> = vec![Rgb16Pixel { r: 0, g: 0, b: 0 }; pixel_count];
     transform.transform_pixels(input_pixels, &mut output_pixels);
 
     // Reinterpret Vec<Rgb16Pixel> as Vec<u16> without copying
@@ -1417,33 +1458,41 @@ fn gaussian_blur_rgb16(img: &Rgb16Image, sigma: f64) -> Rgb16Image {
 
     // Horizontal pass — store as f32 to avoid double rounding
     let mut horiz = vec![0.0f32; w * h * 3];
-    horiz.par_chunks_mut(row_stride).enumerate().for_each(|(y, row)| {
-        for x in 0..w {
-            for c in 0..3usize {
-                let mut acc = 0.0f64;
-                for (ki, &kv) in kernel.iter().enumerate() {
-                    let sx = (x as i64 + ki as i64 - radius as i64).clamp(0, w as i64 - 1) as usize;
-                    acc += kv * raw[(y * w + sx) * 3 + c] as f64;
+    horiz
+        .par_chunks_mut(row_stride)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for x in 0..w {
+                for c in 0..3usize {
+                    let mut acc = 0.0f64;
+                    for (ki, &kv) in kernel.iter().enumerate() {
+                        let sx =
+                            (x as i64 + ki as i64 - radius as i64).clamp(0, w as i64 - 1) as usize;
+                        acc += kv * raw[(y * w + sx) * 3 + c] as f64;
+                    }
+                    row[x * 3 + c] = acc as f32;
                 }
-                row[x * 3 + c] = acc as f32;
             }
-        }
-    });
+        });
 
     // Vertical pass — output u16
     let mut result = vec![0u16; w * h * 3];
-    result.par_chunks_mut(row_stride).enumerate().for_each(|(y, row)| {
-        for x in 0..w {
-            for c in 0..3usize {
-                let mut acc = 0.0f64;
-                for (ki, &kv) in kernel.iter().enumerate() {
-                    let sy = (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
-                    acc += kv * horiz[(sy * w + x) * 3 + c] as f64;
+    result
+        .par_chunks_mut(row_stride)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for x in 0..w {
+                for c in 0..3usize {
+                    let mut acc = 0.0f64;
+                    for (ki, &kv) in kernel.iter().enumerate() {
+                        let sy =
+                            (y as i64 + ki as i64 - radius as i64).clamp(0, h as i64 - 1) as usize;
+                        acc += kv * horiz[(sy * w + x) * 3 + c] as f64;
+                    }
+                    row[x * 3 + c] = acc.round().clamp(0.0, 65535.0) as u16;
                 }
-                row[x * 3 + c] = acc.round().clamp(0.0, 65535.0) as u16;
             }
-        }
-    });
+        });
 
     ImageBuffer::from_raw(w as u32, h as u32, result).expect("gaussian_blur_rgb16: buffer mismatch")
 }
@@ -1647,7 +1696,7 @@ fn draw_border_in_gap_rgb16(
 /// Inside corner of each L touches the placement corner exactly; legs
 /// extend outward only. Marks live entirely outside the placement rect.
 /// Pixel writes are clamped to the page buffer bounds.
-fn draw_cut_marks_rgb16(
+fn draw_crop_marks_rgb16(
     page: &mut Rgb16Image,
     placements: &[PagePlacement],
     target_dpi: f64,
@@ -1655,19 +1704,12 @@ fn draw_cut_marks_rgb16(
 ) {
     let len_px = ((CROPMARK_LEN_PT / 72.0) * target_dpi).round().max(1.0) as i64;
     let width_px = ((CROPMARK_WIDTH_PT / 72.0) * target_dpi).round().max(1.0) as i64;
-    let page_w = page.width() as i64;
-    let page_h = page.height() as i64;
 
-    let fill = |page: &mut Rgb16Image, x0: i64, y0: i64, x1: i64, y1: i64| {
-        let x0c = x0.max(0) as u32;
-        let y0c = y0.max(0) as u32;
-        let x1c = x1.min(page_w) as u32;
-        let y1c = y1.min(page_h) as u32;
-        for y in y0c..y1c {
-            for x in x0c..x1c {
-                *page.get_pixel_mut(x, y) = image::Rgb(working_black);
-            }
-        }
+    let page_bounds = CutMarkBoundsPx {
+        left: 0,
+        top: 0,
+        right: page.width(),
+        bottom: page.height(),
     };
 
     for p in placements {
@@ -1677,16 +1719,164 @@ fn draw_cut_marks_rgb16(
         let y1 = y0 + p.dest_h_px as i64;
 
         // Top-left
-        fill(page, x0 - len_px,   y0 - width_px, x0,            y0);
-        fill(page, x0 - width_px, y0 - len_px,   x0,            y0);
+        fill_mark_rect_rgb16(
+            page,
+            x0 - len_px,
+            y0 - width_px,
+            x0,
+            y0,
+            page_bounds,
+            working_black,
+        );
+        fill_mark_rect_rgb16(
+            page,
+            x0 - width_px,
+            y0 - len_px,
+            x0,
+            y0,
+            page_bounds,
+            working_black,
+        );
         // Top-right
-        fill(page, x1,            y0 - width_px, x1 + len_px,   y0);
-        fill(page, x1,            y0 - len_px,   x1 + width_px, y0);
+        fill_mark_rect_rgb16(
+            page,
+            x1,
+            y0 - width_px,
+            x1 + len_px,
+            y0,
+            page_bounds,
+            working_black,
+        );
+        fill_mark_rect_rgb16(
+            page,
+            x1,
+            y0 - len_px,
+            x1 + width_px,
+            y0,
+            page_bounds,
+            working_black,
+        );
         // Bottom-left
-        fill(page, x0 - len_px,   y1,            x0,            y1 + width_px);
-        fill(page, x0 - width_px, y1,            x0,            y1 + len_px);
+        fill_mark_rect_rgb16(
+            page,
+            x0 - len_px,
+            y1,
+            x0,
+            y1 + width_px,
+            page_bounds,
+            working_black,
+        );
+        fill_mark_rect_rgb16(
+            page,
+            x0 - width_px,
+            y1,
+            x0,
+            y1 + len_px,
+            page_bounds,
+            working_black,
+        );
         // Bottom-right
-        fill(page, x1,            y1,            x1 + len_px,   y1 + width_px);
-        fill(page, x1,            y1,            x1 + width_px, y1 + len_px);
+        fill_mark_rect_rgb16(
+            page,
+            x1,
+            y1,
+            x1 + len_px,
+            y1 + width_px,
+            page_bounds,
+            working_black,
+        );
+        fill_mark_rect_rgb16(
+            page,
+            x1,
+            y1,
+            x1 + width_px,
+            y1 + len_px,
+            page_bounds,
+            working_black,
+        );
+    }
+}
+
+/// Draw full guide lines through each placement edge, clipped to the provided
+/// user-border bounds. Lines are stamped before placements, so image and border
+/// content hides portions that pass underneath a placement.
+fn draw_guide_lines_rgb16(
+    page: &mut Rgb16Image,
+    placements: &[PagePlacement],
+    target_dpi: f64,
+    working_black: [u16; 3],
+    cut_mark_bounds_px: Option<CutMarkBoundsPx>,
+) {
+    let width_px = ((CROPMARK_WIDTH_PT / 72.0) * target_dpi).round().max(1.0) as i64;
+    let bounds = cut_mark_bounds_px.unwrap_or(CutMarkBoundsPx {
+        left: 0,
+        top: 0,
+        right: page.width(),
+        bottom: page.height(),
+    });
+
+    let left = bounds.left as i64;
+    let top = bounds.top as i64;
+    let right = bounds.right as i64;
+    let bottom = bounds.bottom as i64;
+
+    let horiz_clip = CutMarkBoundsPx {
+        left: bounds.left,
+        top: 0,
+        right: bounds.right,
+        bottom: page.height(),
+    };
+    let vert_clip = CutMarkBoundsPx {
+        left: 0,
+        top: bounds.top,
+        right: page.width(),
+        bottom: bounds.bottom,
+    };
+
+    for p in placements {
+        let x0 = p.dest_x_px as i64;
+        let y0 = p.dest_y_px as i64;
+        let x1 = x0 + p.dest_w_px as i64;
+        let y1 = y0 + p.dest_h_px as i64;
+
+        fill_mark_rect_rgb16(
+            page, left, y0 - width_px, right, y0, horiz_clip, working_black,
+        );
+        fill_mark_rect_rgb16(
+            page, left, y1, right, y1 + width_px, horiz_clip, working_black,
+        );
+        fill_mark_rect_rgb16(
+            page, x0 - width_px, top, x0, bottom, vert_clip, working_black,
+        );
+        fill_mark_rect_rgb16(
+            page, x1, top, x1 + width_px, bottom, vert_clip, working_black,
+        );
+    }
+}
+
+fn fill_mark_rect_rgb16(
+    page: &mut Rgb16Image,
+    x0: i64,
+    y0: i64,
+    x1: i64,
+    y1: i64,
+    bounds: CutMarkBoundsPx,
+    working_black: [u16; 3],
+) {
+    let page_w = page.width() as i64;
+    let page_h = page.height() as i64;
+    let x0c = x0.max(0).max(bounds.left as i64);
+    let y0c = y0.max(0).max(bounds.top as i64);
+    let x1c = x1.min(page_w).min(bounds.right as i64);
+    let y1c = y1.min(page_h).min(bounds.bottom as i64);
+
+    if x0c >= x1c || y0c >= y1c {
+        return;
+    }
+
+    for y in y0c as u32..y1c as u32 {
+        for x in x0c as u32..x1c as u32 {
+            *page.get_pixel_mut(x, y) = image::Rgb(working_black);
+        }
     }
 }

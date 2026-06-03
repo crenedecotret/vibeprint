@@ -85,10 +85,16 @@ impl eframe::App for App {
             icc_filter: Some(icc_filter_str.into()),
             show_log: Some(self.state.show_log),
             extra_option_indices: Some(self.state.extra_option_indices.clone()),
-            media_type_key: self.state.caps.as_ref()
+            media_type_key: self
+                .state
+                .caps
+                .as_ref()
                 .and_then(|c| c.media_types.get(self.state.props_media_idx))
                 .map(|(k, _)| k.clone()),
-            input_slot_key: self.state.caps.as_ref()
+            input_slot_key: self
+                .state
+                .caps
+                .as_ref()
                 .and_then(|c| c.input_slots.get(self.state.props_slot_idx))
                 .map(|(k, _)| k.clone()),
             monitor_icc_override: self.state.monitor_icc_override.clone(),
@@ -123,16 +129,32 @@ impl eframe::App for App {
         if !ctx.wants_keyboard_input() {
             let shift = ctx.input(|i| i.modifiers.shift);
             let step_pt = if self.state.use_metric {
-                if shift { 5.0 / 25.4 * 72.0 } else { 1.0 / 25.4 * 72.0 }
+                if shift {
+                    5.0 / 25.4 * 72.0
+                } else {
+                    1.0 / 25.4 * 72.0
+                }
             } else {
-                if shift { 14.4 } else { 1.0 }
+                if shift {
+                    14.4
+                } else {
+                    1.0
+                }
             };
             if let Some(id) = self.state.selected_queue_id {
-                let is_freehand = self.state.queue.iter().any(|q| q.id == id && q.freehand_placement && !q.fit_to_page);
+                let is_freehand = self
+                    .state
+                    .queue
+                    .iter()
+                    .any(|q| q.id == id && q.freehand_placement && !q.fit_to_page);
                 if is_freehand {
                     let (iw, ih) = self.imageable_size_px();
                     let dpi = self.state.target_dpi as f32;
-                    let (bw, bh) = self.state.queue.iter().find(|q| q.id == id)
+                    let (bw, bh) = self
+                        .state
+                        .queue
+                        .iter()
+                        .find(|q| q.id == id)
                         .map(|q| (q.placed_w_px.max(1), q.placed_h_px.max(1)))
                         .unwrap_or((1, 1));
                     let max_x_pt = iw.saturating_sub(bw) as f32 * 72.0 / dpi;

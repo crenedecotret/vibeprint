@@ -121,6 +121,7 @@ pub(crate) enum CutMarks {
     #[default]
     None,
     Crop,
+    GuideLines,
 }
 
 impl CutMarks {
@@ -128,11 +129,13 @@ impl CutMarks {
         match self {
             CutMarks::None => "None",
             CutMarks::Crop => "Crop Marks",
+            CutMarks::GuideLines => "Guide Lines",
         }
     }
     pub fn from_label(s: &str) -> Self {
         match s {
             "Crop Marks" => CutMarks::Crop,
+            "Guide Lines" => CutMarks::GuideLines,
             _ => CutMarks::None,
         }
     }

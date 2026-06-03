@@ -18,9 +18,8 @@ use anyhow::{Context, Result};
 
 mod cups_ffi;
 use cups_ffi::{
-    cups_dest_t, cups_dinfo_t,
-    cupsGetDests, cupsFreeDests,
-    get_dest_name, is_dest_default, get_dest_at,
+    cupsFreeDests, cupsGetDests, cups_dest_t, cups_dinfo_t, get_dest_at, get_dest_name,
+    is_dest_default,
 };
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -103,7 +102,7 @@ pub fn list_printers() -> Result<Vec<PrinterInfo>> {
     if !printers.is_empty() {
         return Ok(printers);
     }
-    
+
     // Fallback to lpstat if CUPS API fails
     list_printers_lpstat()
 }
@@ -112,11 +111,11 @@ fn list_printers_cups() -> Vec<PrinterInfo> {
     unsafe {
         let mut dests: *mut cups_dest_t = ptr::null_mut();
         let num_dests = cupsGetDests(&mut dests);
-        
+
         if num_dests <= 0 || dests.is_null() {
             return Vec::new();
         }
-        
+
         let mut printers = Vec::new();
         for i in 0..num_dests {
             let dest = get_dest_at(dests, i);
@@ -125,7 +124,7 @@ fn list_printers_cups() -> Vec<PrinterInfo> {
                 printers.push(PrinterInfo { name, is_default });
             }
         }
-        
+
         cupsFreeDests(num_dests, dests);
         printers
     }
@@ -276,25 +275,26 @@ fn hundredths_mm_to_pt(v: i32) -> f32 {
 /// IPP media-type keyword → human label mapping.
 fn ipp_media_type_label(kw: &str) -> String {
     match kw {
-        "stationery"            => "Plain Paper",
-        "stationery-inkjet"     => "Inkjet Paper",
-        "photographic"          => "Photo Paper",
-        "photographic-glossy"   => "Glossy Photo Paper",
+        "stationery" => "Plain Paper",
+        "stationery-inkjet" => "Inkjet Paper",
+        "photographic" => "Photo Paper",
+        "photographic-glossy" => "Glossy Photo Paper",
         "photographic-semi-gloss" => "Semi-Gloss Photo Paper",
-        "photographic-matte"    => "Matte Photo Paper",
-        "photographic-film"     => "Film",
-        "transparency"          => "Transparency",
-        "envelope"              => "Envelope",
-        "envelope-plain"        => "Plain Envelope",
-        "disc"                  => "CD/DVD",
-        "labels"                => "Labels",
-        "cardstock"             => "Card Stock",
-        "postcard"              => "Postcard",
-        "glossy-film"           => "Glossy Film",
-        "back-film"             => "Back Light Film",
+        "photographic-matte" => "Matte Photo Paper",
+        "photographic-film" => "Film",
+        "transparency" => "Transparency",
+        "envelope" => "Envelope",
+        "envelope-plain" => "Plain Envelope",
+        "disc" => "CD/DVD",
+        "labels" => "Labels",
+        "cardstock" => "Card Stock",
+        "postcard" => "Postcard",
+        "glossy-film" => "Glossy Film",
+        "back-film" => "Back Light Film",
         _ => {
             // Convert kebab-case to Title Case as fallback
-            return kw.split('-')
+            return kw
+                .split('-')
                 .map(|w| {
                     let mut c = w.chars();
                     match c.next() {
@@ -305,28 +305,30 @@ fn ipp_media_type_label(kw: &str) -> String {
                 .collect::<Vec<_>>()
                 .join(" ");
         }
-    }.to_string()
+    }
+    .to_string()
 }
 
 /// IPP media-source keyword → human label mapping.
 fn ipp_media_source_label(kw: &str) -> String {
     match kw {
-        "auto"          => "Auto",
-        "main"          => "Main Tray",
-        "manual"        => "Manual Feed",
-        "alternate"     => "Alternate Tray",
-        "top"           => "Top Tray",
-        "bottom"        => "Bottom Tray",
+        "auto" => "Auto",
+        "main" => "Main Tray",
+        "manual" => "Manual Feed",
+        "alternate" => "Alternate Tray",
+        "top" => "Top Tray",
+        "bottom" => "Bottom Tray",
         "large-capacity" => "Large Capacity",
-        "envelope"      => "Envelope Feeder",
-        "cd"            => "CD/DVD Tray",
-        "velvet"        => "Roll (Velvet)",
-        "matte"         => "Roll (Matte)",
-        "main-roll"     => "Roll (Main)",
+        "envelope" => "Envelope Feeder",
+        "cd" => "CD/DVD Tray",
+        "velvet" => "Roll (Velvet)",
+        "matte" => "Roll (Matte)",
+        "main-roll" => "Roll (Main)",
         "alternate-roll" => "Roll (Alternate)",
-        "standard"      => "Standard",
+        "standard" => "Standard",
         _ => {
-            return kw.split('-')
+            return kw
+                .split('-')
                 .map(|w| {
                     let mut c = w.chars();
                     match c.next() {
@@ -337,7 +339,8 @@ fn ipp_media_source_label(kw: &str) -> String {
                 .collect::<Vec<_>>()
                 .join(" ");
         }
-    }.to_string()
+    }
+    .to_string()
 }
 
 /// PWG media name → short human label.
@@ -373,7 +376,12 @@ fn pwg_media_label(pwg: &str) -> String {
     let label = if let Some(pos) = s.rfind('_') {
         let after = &s[pos + 1..];
         // If it looks like a dimension (starts with digit), strip it
-        if after.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        if after
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+        {
             &s[..pos]
         } else {
             s
@@ -407,13 +415,16 @@ unsafe fn build_cups_caps(
     dest: *mut cups_dest_t,
     info: *mut cups_dinfo_t,
 ) -> PrinterCaps {
-    use cups_ffi::{CupsSize, cupsGetDestMediaCount, cupsGetDestMediaByIndex,
-        cupsFindDestSupported, CUPS_HTTP_DEFAULT, CUPS_MEDIA_FLAGS_DEFAULT,
-        cstr_from_array, ipp_attr_strings, ipp_attr_enums, ipp_attr_resolutions};
+    use cups_ffi::{
+        cstr_from_array, cupsFindDestSupported, cupsGetDestMediaByIndex, cupsGetDestMediaCount,
+        ipp_attr_enums, ipp_attr_resolutions, ipp_attr_strings, CupsSize, CUPS_HTTP_DEFAULT,
+        CUPS_MEDIA_FLAGS_DEFAULT,
+    };
     use std::ffi::CString;
 
     // ── Page sizes ────────────────────────────────────────────────────────────
-    let media_count = cupsGetDestMediaCount(CUPS_HTTP_DEFAULT, dest, info, CUPS_MEDIA_FLAGS_DEFAULT);
+    let media_count =
+        cupsGetDestMediaCount(CUPS_HTTP_DEFAULT, dest, info, CUPS_MEDIA_FLAGS_DEFAULT);
     let mut page_sizes: Vec<PageSize> = Vec::new();
 
     for i in 0..media_count {
@@ -426,12 +437,22 @@ unsafe fn build_cups_caps(
             right: 0,
             top: 0,
         };
-        if cupsGetDestMediaByIndex(CUPS_HTTP_DEFAULT, dest, info, i, CUPS_MEDIA_FLAGS_DEFAULT, &mut size) == 0 {
+        if cupsGetDestMediaByIndex(
+            CUPS_HTTP_DEFAULT,
+            dest,
+            info,
+            i,
+            CUPS_MEDIA_FLAGS_DEFAULT,
+            &mut size,
+        ) == 0
+        {
             continue;
         }
 
         let media_name = cstr_from_array(&size.media);
-        if media_name.is_empty() { continue; }
+        if media_name.is_empty() {
+            continue;
+        }
 
         // Convert 1/100mm → points
         let w_pt = hundredths_mm_to_pt(size.width);
@@ -466,7 +487,10 @@ unsafe fn build_cups_caps(
     let mt_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, mt_key.as_ptr());
     let media_types: Vec<(String, String)> = ipp_attr_strings(mt_attr)
         .into_iter()
-        .map(|kw| { let label = ipp_media_type_label(&kw); (kw, label) })
+        .map(|kw| {
+            let label = ipp_media_type_label(&kw);
+            (kw, label)
+        })
         .collect();
 
     // ── Input slots ───────────────────────────────────────────────────────────
@@ -474,7 +498,10 @@ unsafe fn build_cups_caps(
     let ms_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, ms_key.as_ptr());
     let input_slots: Vec<(String, String)> = ipp_attr_strings(ms_attr)
         .into_iter()
-        .map(|kw| { let label = ipp_media_source_label(&kw); (kw, label) })
+        .map(|kw| {
+            let label = ipp_media_source_label(&kw);
+            (kw, label)
+        })
         .collect();
 
     // ── Extra options (color mode, quality, etc.) ─────────────────────────────
@@ -487,7 +514,10 @@ unsafe fn build_cups_caps(
         extra_options.push(CupsOption {
             key: "print-color-mode".to_string(),
             label: "Color Mode".to_string(),
-            choices: color_vals.iter().map(|v| (v.clone(), title_case(v))).collect(),
+            choices: color_vals
+                .iter()
+                .map(|v| (v.clone(), title_case(v)))
+                .collect(),
             default_idx: color_vals.iter().position(|v| v == "color").unwrap_or(0),
         });
     }
@@ -496,15 +526,18 @@ unsafe fn build_cups_caps(
     let sides_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, sides_key.as_ptr());
     let sides_vals = ipp_attr_strings(sides_attr);
     if sides_vals.len() > 1 {
-        let sides_labels: Vec<(String, String)> = sides_vals.iter().map(|v| {
-            let label = match v.as_str() {
-                "one-sided"            => "One Sided",
-                "two-sided-long-edge"  => "Two Sided (Long Edge)",
-                "two-sided-short-edge" => "Two Sided (Short Edge)",
-                _ => v.as_str(),
-            };
-            (v.clone(), label.to_string())
-        }).collect();
+        let sides_labels: Vec<(String, String)> = sides_vals
+            .iter()
+            .map(|v| {
+                let label = match v.as_str() {
+                    "one-sided" => "One Sided",
+                    "two-sided-long-edge" => "Two Sided (Long Edge)",
+                    "two-sided-short-edge" => "Two Sided (Short Edge)",
+                    _ => v.as_str(),
+                };
+                (v.clone(), label.to_string())
+            })
+            .collect();
         extra_options.push(CupsOption {
             key: "sides".to_string(),
             label: "Duplex".to_string(),
@@ -519,19 +552,29 @@ unsafe fn build_cups_caps(
     // Try as keyword strings first (some drivers), then as enum integers
     let pq_vals = {
         let s = ipp_attr_strings(pq_attr);
-        if s.is_empty() { ipp_attr_enums(pq_attr) } else { s }
+        if s.is_empty() {
+            ipp_attr_enums(pq_attr)
+        } else {
+            s
+        }
     };
     if pq_vals.len() > 1 {
-        let pq_labels: Vec<(String, String)> = pq_vals.iter().map(|v| {
-            let label = match v.as_str() {
-                "3" | "draft"  => "Draft",
-                "4" | "normal" => "Normal",
-                "5" | "high"   => "High",
-                _ => v.as_str(),
-            };
-            (v.clone(), label.to_string())
-        }).collect();
-        let default_idx = pq_labels.iter().position(|(k, _)| k == "4" || k == "normal").unwrap_or(0);
+        let pq_labels: Vec<(String, String)> = pq_vals
+            .iter()
+            .map(|v| {
+                let label = match v.as_str() {
+                    "3" | "draft" => "Draft",
+                    "4" | "normal" => "Normal",
+                    "5" | "high" => "High",
+                    _ => v.as_str(),
+                };
+                (v.clone(), label.to_string())
+            })
+            .collect();
+        let default_idx = pq_labels
+            .iter()
+            .position(|(k, _)| k == "4" || k == "normal")
+            .unwrap_or(0);
         extra_options.push(CupsOption {
             key: "print-quality".to_string(),
             label: "Print Quality".to_string(),
@@ -545,22 +588,25 @@ unsafe fn build_cups_caps(
     let ob_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, ob_key.as_ptr());
     let ob_vals = ipp_attr_strings(ob_attr);
     if ob_vals.len() > 1 {
-        let ob_labels: Vec<(String, String)> = ob_vals.iter().map(|v| {
-            let label = match v.as_str() {
-                "auto"          => "Auto",
-                "top"           => "Top Bin",
-                "middle"        => "Middle Bin",
-                "bottom"        => "Bottom Bin",
-                "side"          => "Side Bin",
-                "left"          => "Left Bin",
-                "right"         => "Right Bin",
-                "face-up"       => "Face Up",
-                "face-down"     => "Face Down",
-                "large-capacity" => "Large Capacity",
-                _ => v.as_str(),
-            };
-            (v.clone(), label.to_string())
-        }).collect();
+        let ob_labels: Vec<(String, String)> = ob_vals
+            .iter()
+            .map(|v| {
+                let label = match v.as_str() {
+                    "auto" => "Auto",
+                    "top" => "Top Bin",
+                    "middle" => "Middle Bin",
+                    "bottom" => "Bottom Bin",
+                    "side" => "Side Bin",
+                    "left" => "Left Bin",
+                    "right" => "Right Bin",
+                    "face-up" => "Face Up",
+                    "face-down" => "Face Down",
+                    "large-capacity" => "Large Capacity",
+                    _ => v.as_str(),
+                };
+                (v.clone(), label.to_string())
+            })
+            .collect();
         extra_options.push(CupsOption {
             key: "output-bin".to_string(),
             label: "Output Bin".to_string(),
@@ -574,19 +620,25 @@ unsafe fn build_cups_caps(
     let ri_attr = cupsFindDestSupported(CUPS_HTTP_DEFAULT, dest, info, ri_key.as_ptr());
     let ri_vals = ipp_attr_strings(ri_attr);
     if ri_vals.len() > 1 {
-        let ri_labels: Vec<(String, String)> = ri_vals.iter().map(|v| {
-            let label = match v.as_str() {
-                "auto"             => "Auto",
-                "perceptual"       => "Perceptual",
-                "relative"         => "Relative Colorimetric",
-                "relative-bpc"     => "Relative Colorimetric (BPC)",
-                "saturation"       => "Saturation",
-                "absolute"         => "Absolute Colorimetric",
-                _ => v.as_str(),
-            };
-            (v.clone(), label.to_string())
-        }).collect();
-        let default_idx = ri_labels.iter().position(|(k, _)| k == "auto" || k == "perceptual").unwrap_or(0);
+        let ri_labels: Vec<(String, String)> = ri_vals
+            .iter()
+            .map(|v| {
+                let label = match v.as_str() {
+                    "auto" => "Auto",
+                    "perceptual" => "Perceptual",
+                    "relative" => "Relative Colorimetric",
+                    "relative-bpc" => "Relative Colorimetric (BPC)",
+                    "saturation" => "Saturation",
+                    "absolute" => "Absolute Colorimetric",
+                    _ => v.as_str(),
+                };
+                (v.clone(), label.to_string())
+            })
+            .collect();
+        let default_idx = ri_labels
+            .iter()
+            .position(|(k, _)| k == "auto" || k == "perceptual")
+            .unwrap_or(0);
         extra_options.push(CupsOption {
             key: "print-rendering-intent".to_string(),
             label: "Rendering Intent".to_string(),
@@ -596,7 +648,8 @@ unsafe fn build_cups_caps(
     }
 
     // ── Default printable area (first page size) ──────────────────────────────
-    let printable_area = page_sizes.first()
+    let printable_area = page_sizes
+        .first()
         .map(|p| p.imageable_area)
         .unwrap_or((12.0, 12.0, 600.0, 780.0));
 
@@ -644,8 +697,7 @@ fn minimal_default_caps(name: &str) -> PrinterCaps {
 /// Everywhere, because CUPS synthesises a PPD for those too.
 /// Returns the temp file path on success, `None` on any error.
 pub fn find_ppd_path(printer_name: &str) -> Option<PathBuf> {
-    fetch_ppd_from_cups(printer_name)
-        .or_else(|| find_ppd_on_disk(printer_name))
+    fetch_ppd_from_cups(printer_name).or_else(|| find_ppd_on_disk(printer_name))
 }
 
 /// Check all known on-disk PPD locations across distros.
@@ -656,7 +708,8 @@ fn find_ppd_on_disk(printer_name: &str) -> Option<PathBuf> {
         format!("/etc/cups/ppd/{}.ppd", printer_name),
         format!("/var/snap/cups/common/etc/cups/ppd/{}.ppd", printer_name),
     ];
-    candidates.into_iter()
+    candidates
+        .into_iter()
         .map(PathBuf::from)
         .find(|p| p.exists())
 }
@@ -674,7 +727,10 @@ fn fetch_ppd_from_cups(printer_name: &str) -> Option<PathBuf> {
         let host = if h.is_null() {
             "localhost".to_string()
         } else {
-            CStr::from_ptr(h).to_str().unwrap_or("localhost").to_string()
+            CStr::from_ptr(h)
+                .to_str()
+                .unwrap_or("localhost")
+                .to_string()
         };
         let port = ippPort();
         (host, port)
@@ -682,7 +738,11 @@ fn fetch_ppd_from_cups(printer_name: &str) -> Option<PathBuf> {
 
     // Unix socket paths start with '/' — CUPS HTTP API is still reachable
     // via localhost in that case.
-    let host = if host.starts_with('/') { "localhost".to_string() } else { host };
+    let host = if host.starts_with('/') {
+        "localhost".to_string()
+    } else {
+        host
+    };
     let url = format!("http://{}:{}/printers/{}.ppd", host, port, printer_name);
 
     // Use curl with a short connect+transfer timeout — same as a subprocess
@@ -691,8 +751,10 @@ fn fetch_ppd_from_cups(printer_name: &str) -> Option<PathBuf> {
         .args([
             "--silent",
             "--fail",
-            "--max-time", "5",       // 5 s total timeout
-            "--connect-timeout", "2", // 2 s connect timeout
+            "--max-time",
+            "5", // 5 s total timeout
+            "--connect-timeout",
+            "2", // 2 s connect timeout
             &url,
         ])
         .output()
@@ -974,7 +1036,7 @@ fn detect_default_printer() -> Option<String> {
 fn discovery_worker(tx: Sender<DiscoveryEvent>) {
     let start_time = Instant::now();
     let timeout = Duration::from_secs(10); // Max total discovery time
-    
+
     let printers = match list_printers() {
         Ok(p) if p.is_empty() => {
             let _ = tx.send(DiscoveryEvent::Warning(
@@ -990,26 +1052,27 @@ fn discovery_worker(tx: Sender<DiscoveryEvent>) {
     };
 
     let _ = tx.send(DiscoveryEvent::PrintersListed(printers.clone()));
-    
+
     // Track completion status
     let printer_count = printers.len();
     let mut completed_count = 0;
     let mut first_caps_ready = false;
-    
+
     // Query each printer with individual timeout
     for printer in &printers {
         // Check if we're over timeout
         if start_time.elapsed() > timeout {
-            let _ = tx.send(DiscoveryEvent::Warning(
-                format!("Discovery timeout: queried {}/{} printers", completed_count, printer_count)
-            ));
+            let _ = tx.send(DiscoveryEvent::Warning(format!(
+                "Discovery timeout: queried {}/{} printers",
+                completed_count, printer_count
+            )));
             break;
         }
-        
+
         // Query with timeout per printer
         let printer_name = printer.name.clone();
         let tx_clone = tx.clone();
-        
+
         match query_printer_caps_with_timeout(&printer_name, Duration::from_secs(5)) {
             Ok(Some(caps)) => {
                 let _ = tx_clone.send(DiscoveryEvent::CapsReady(caps));
@@ -1017,19 +1080,18 @@ fn discovery_worker(tx: Sender<DiscoveryEvent>) {
                     first_caps_ready = true;
                     // Signal that we have at least one printer ready - UI can proceed
                     let _ = tx_clone.send(DiscoveryEvent::Warning(
-                        "READY".to_string() // Special signal for app.rs
+                        "READY".to_string(), // Special signal for app.rs
                     ));
                 }
             }
             Ok(None) => {
-                let _ = tx_clone.send(DiscoveryEvent::Warning(
-                    format!("{}: timed out", printer_name)
-                ));
+                let _ = tx_clone.send(DiscoveryEvent::Warning(format!(
+                    "{}: timed out",
+                    printer_name
+                )));
             }
             Err(e) => {
-                let _ = tx_clone.send(DiscoveryEvent::Warning(
-                    format!("{}: {}", printer_name, e)
-                ));
+                let _ = tx_clone.send(DiscoveryEvent::Warning(format!("{}: {}", printer_name, e)));
             }
         }
         completed_count += 1;
@@ -1039,15 +1101,15 @@ fn discovery_worker(tx: Sender<DiscoveryEvent>) {
 /// Query printer caps with a timeout - uses thread to prevent blocking
 fn query_printer_caps_with_timeout(name: &str, timeout: Duration) -> Result<Option<PrinterCaps>> {
     use std::sync::mpsc::RecvTimeoutError;
-    
+
     let name = name.to_string();
     let (tx, rx) = channel::<Result<PrinterCaps>>();
-    
+
     thread::spawn(move || {
         let result = query_printer_caps(&name);
         let _ = tx.send(result);
     });
-    
+
     match rx.recv_timeout(timeout) {
         Ok(result) => result.map(Some),
         Err(RecvTimeoutError::Timeout) => Ok(None),
@@ -1670,7 +1732,10 @@ mod tests {
             caps.media_types,
             vec![
                 ("Plain".to_string(), "Plain Paper".to_string()),
-                ("GlossyPhoto".to_string(), "Premium Glossy Photo".to_string()),
+                (
+                    "GlossyPhoto".to_string(),
+                    "Premium Glossy Photo".to_string()
+                ),
                 ("Matte".to_string(), "Ultra Premium Matte".to_string()),
             ]
         );

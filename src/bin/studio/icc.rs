@@ -20,9 +20,7 @@ pub(crate) fn extract_file_date(path: &PathBuf) -> String {
 
 /// Extract file size in bytes
 pub(crate) fn extract_file_size(path: &PathBuf) -> u64 {
-    std::fs::metadata(path)
-        .map(|m| m.len())
-        .unwrap_or(0)
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 /// Scan ICC directories and send results through channel
@@ -278,7 +276,10 @@ pub(crate) fn transform_preview_border_color(
     };
 
     let output_profile = if let Some(path) = output_icc_path {
-        match std::fs::read(path).ok().and_then(|b| Profile::new_icc(&b).ok()) {
+        match std::fs::read(path)
+            .ok()
+            .and_then(|b| Profile::new_icc(&b).ok())
+        {
             Some(p) => p,
             None => return rgb,
         }

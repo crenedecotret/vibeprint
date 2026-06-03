@@ -29,8 +29,8 @@ fn safe_8bit_tiff_strips_icc_profile() {
             dest_h_px: 64,
             rotate_cw: false,
             border_type: vibeprint::layout_engine::BorderType::None,
-                border_width_px: 0,
-                border_color: [0, 0, 0],
+            border_width_px: 0,
+            border_color: [0, 0, 0],
         }],
         page_w_px: 64,
         page_h_px: 64,
@@ -43,7 +43,8 @@ fn safe_8bit_tiff_strips_icc_profile() {
         depth: 8,
         sharpen: 0,
         embed_icc_profile: false, // Safe 8-bit path: strip profile
-        draw_cut_marks: false,
+        cut_marks: processor::CutMarkMode::None,
+        cut_mark_bounds_px: None,
     };
 
     processor::process_composite_page(opts).expect("processing failed");
@@ -54,12 +55,10 @@ fn safe_8bit_tiff_strips_icc_profile() {
     // Read the TIFF and check for ICC profile absence
     let file = fs::File::open(out_path).expect("failed to open output TIFF");
     let mut decoder = tiff::decoder::Decoder::new(file).expect("failed to create TIFF decoder");
-    
+
     // Check that IccProfile tag is NOT present
-    let has_icc_profile = decoder
-        .get_tag_u8_vec(tiff::tags::Tag::IccProfile)
-        .is_ok();
-    
+    let has_icc_profile = decoder.get_tag_u8_vec(tiff::tags::Tag::IccProfile).is_ok();
+
     assert!(
         !has_icc_profile,
         "ICC profile should NOT be embedded when embed_icc_profile=false"
@@ -101,8 +100,8 @@ fn standard_export_embeds_icc_profile() {
             dest_h_px: 64,
             rotate_cw: false,
             border_type: vibeprint::layout_engine::BorderType::None,
-                border_width_px: 0,
-                border_color: [0, 0, 0],
+            border_width_px: 0,
+            border_color: [0, 0, 0],
         }],
         page_w_px: 64,
         page_h_px: 64,
@@ -115,7 +114,8 @@ fn standard_export_embeds_icc_profile() {
         depth: 8,
         sharpen: 0,
         embed_icc_profile: true, // Standard path: embed profile
-        draw_cut_marks: false,
+        cut_marks: processor::CutMarkMode::None,
+        cut_mark_bounds_px: None,
     };
 
     processor::process_composite_page(opts).expect("processing failed");
@@ -126,12 +126,12 @@ fn standard_export_embeds_icc_profile() {
     // Read the TIFF and check for ICC profile presence
     let file = fs::File::open(out_path).expect("failed to open output TIFF");
     let mut decoder = tiff::decoder::Decoder::new(file).expect("failed to create TIFF decoder");
-    
+
     // Check that IccProfile tag IS present
     let icc_profile_data = decoder
         .get_tag_u8_vec(tiff::tags::Tag::IccProfile)
         .expect("ICC profile should be embedded when embed_icc_profile=true");
-    
+
     assert!(
         !icc_profile_data.is_empty(),
         "ICC profile data should not be empty"
@@ -174,8 +174,8 @@ fn safe_8bit_applies_icc_transformation() {
             dest_h_px: 16,
             rotate_cw: false,
             border_type: vibeprint::layout_engine::BorderType::None,
-                border_width_px: 0,
-                border_color: [0, 0, 0],
+            border_width_px: 0,
+            border_color: [0, 0, 0],
         }],
         page_w_px: 16,
         page_h_px: 16,
@@ -188,7 +188,8 @@ fn safe_8bit_applies_icc_transformation() {
         depth: 8,
         sharpen: 0,
         embed_icc_profile: false,
-        draw_cut_marks: false,
+        cut_marks: processor::CutMarkMode::None,
+        cut_mark_bounds_px: None,
     };
 
     processor::process_composite_page(opts).expect("processing failed");

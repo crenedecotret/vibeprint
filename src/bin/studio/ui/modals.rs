@@ -52,7 +52,11 @@ impl App {
                                 )
                                 .show_ui(ui, |ui| {
                                     for (i, (_, label)) in caps.media_types.iter().enumerate() {
-                                        ui.selectable_value(&mut self.state.props_media_idx, i, label);
+                                        ui.selectable_value(
+                                            &mut self.state.props_media_idx,
+                                            i,
+                                            label,
+                                        );
                                     }
                                 });
                         }
@@ -97,7 +101,11 @@ impl App {
                                 )
                                 .show_ui(ui, |ui| {
                                     for (i, (_, label)) in caps.input_slots.iter().enumerate() {
-                                        ui.selectable_value(&mut self.state.props_slot_idx, i, label);
+                                        ui.selectable_value(
+                                            &mut self.state.props_slot_idx,
+                                            i,
+                                            label,
+                                        );
                                     }
                                 });
                             ui.end_row();
@@ -480,10 +488,16 @@ impl App {
                             icc_filter: Some(icc_filter_str.into()),
                             show_log: Some(self.state.show_log),
                             extra_option_indices: Some(self.state.extra_option_indices.clone()),
-                            media_type_key: self.state.caps.as_ref()
+                            media_type_key: self
+                                .state
+                                .caps
+                                .as_ref()
                                 .and_then(|c| c.media_types.get(self.state.props_media_idx))
                                 .map(|(k, _)| k.clone()),
-                            input_slot_key: self.state.caps.as_ref()
+                            input_slot_key: self
+                                .state
+                                .caps
+                                .as_ref()
                                 .and_then(|c| c.input_slots.get(self.state.props_slot_idx))
                                 .map(|(k, _)| k.clone()),
                             monitor_icc_override: self.state.monitor_icc_override.clone(),
@@ -645,9 +659,11 @@ impl App {
                                 self.state.monitor_icc_profile = Some(bytes);
                             }
                             Err(e) => {
-                                self.state
-                                    .log
-                                    .push(format!("Failed to read ICC {}: {}", path.display(), e));
+                                self.state.log.push(format!(
+                                    "Failed to read ICC {}: {}",
+                                    path.display(),
+                                    e
+                                ));
                             }
                         },
                     }
@@ -1454,9 +1470,14 @@ if apply_btn.clicked() {
         // Compute aspect ratio from staged or selected queue item
         let aspect: Option<f32> = if let Some(src) = self.state.staged_source_image.as_ref() {
             let [w, h] = src.size;
-            if h > 0 { Some(w as f32 / h as f32) } else { None }
+            if h > 0 {
+                Some(w as f32 / h as f32)
+            } else {
+                None
+            }
         } else if let Some(qi) = self.selected_queue() {
-            qi.src_size_px.map(|(w, h)| if h > 0 { w as f32 / h as f32 } else { 1.0 })
+            qi.src_size_px
+                .map(|(w, h)| if h > 0 { w as f32 / h as f32 } else { 1.0 })
         } else {
             None
         };
@@ -1469,13 +1490,31 @@ if apply_btn.clicked() {
                 }
             };
             if self.state.use_metric {
-                convert(&mut self.state.custom_size_w_str, vibeprint::layout_engine::inches_to_mm);
-                convert(&mut self.state.custom_size_h_str, vibeprint::layout_engine::inches_to_mm);
-                convert(&mut self.state.custom_size_long_str, vibeprint::layout_engine::inches_to_mm);
+                convert(
+                    &mut self.state.custom_size_w_str,
+                    vibeprint::layout_engine::inches_to_mm,
+                );
+                convert(
+                    &mut self.state.custom_size_h_str,
+                    vibeprint::layout_engine::inches_to_mm,
+                );
+                convert(
+                    &mut self.state.custom_size_long_str,
+                    vibeprint::layout_engine::inches_to_mm,
+                );
             } else {
-                convert(&mut self.state.custom_size_w_str, vibeprint::layout_engine::mm_to_inches);
-                convert(&mut self.state.custom_size_h_str, vibeprint::layout_engine::mm_to_inches);
-                convert(&mut self.state.custom_size_long_str, vibeprint::layout_engine::mm_to_inches);
+                convert(
+                    &mut self.state.custom_size_w_str,
+                    vibeprint::layout_engine::mm_to_inches,
+                );
+                convert(
+                    &mut self.state.custom_size_h_str,
+                    vibeprint::layout_engine::mm_to_inches,
+                );
+                convert(
+                    &mut self.state.custom_size_long_str,
+                    vibeprint::layout_engine::mm_to_inches,
+                );
             }
             self.state.custom_size_input_is_metric = self.state.use_metric;
         }
@@ -1557,18 +1596,32 @@ if apply_btn.clicked() {
                                 ui.horizontal(|ui| {
                                     ui.label("W");
                                     ui.add(
-                                        egui::TextEdit::singleline(&mut self.state.custom_size_w_str)
-                                            .desired_width(60.0),
+                                        egui::TextEdit::singleline(
+                                            &mut self.state.custom_size_w_str,
+                                        )
+                                        .desired_width(60.0),
                                     );
                                     ui.label("× H");
                                     ui.add(
-                                        egui::TextEdit::singleline(&mut self.state.custom_size_h_str)
-                                            .desired_width(60.0),
+                                        egui::TextEdit::singleline(
+                                            &mut self.state.custom_size_h_str,
+                                        )
+                                        .desired_width(60.0),
                                     );
                                     ui.label(if self.state.use_metric { "mm" } else { "in" });
                                 });
-                                parsed_w = self.state.custom_size_w_str.parse::<f32>().ok().map(to_inches);
-                                parsed_h = self.state.custom_size_h_str.parse::<f32>().ok().map(to_inches);
+                                parsed_w = self
+                                    .state
+                                    .custom_size_w_str
+                                    .parse::<f32>()
+                                    .ok()
+                                    .map(to_inches);
+                                parsed_h = self
+                                    .state
+                                    .custom_size_h_str
+                                    .parse::<f32>()
+                                    .ok()
+                                    .map(to_inches);
 
                                 // Reserve space for result line to maintain height
                                 ui.add_space(4.0);
@@ -1579,14 +1632,21 @@ if apply_btn.clicked() {
                                 ui.add_space(4.0);
                                 ui.horizontal(|ui| {
                                     ui.add(
-                                        egui::TextEdit::singleline(&mut self.state.custom_size_long_str)
-                                            .desired_width(60.0),
+                                        egui::TextEdit::singleline(
+                                            &mut self.state.custom_size_long_str,
+                                        )
+                                        .desired_width(60.0),
                                     );
-                                    ui.label(if self.state.use_metric { "mm (long side)" } else { "in (long side)" });
+                                    ui.label(if self.state.use_metric {
+                                        "mm (long side)"
+                                    } else {
+                                        "in (long side)"
+                                    });
                                 });
 
                                 if let Some(asp) = aspect {
-                                    if let Ok(long) = self.state.custom_size_long_str.parse::<f32>() {
+                                    if let Ok(long) = self.state.custom_size_long_str.parse::<f32>()
+                                    {
                                         let long_in = to_inches(long);
 
                                         let max_long_in = if asp >= 1.0 {
@@ -1602,11 +1662,14 @@ if apply_btn.clicked() {
                                         let clamped_long_in = long_in.min(max_long_in);
                                         if (clamped_long_in - long_in).abs() > 0.0001 {
                                             let display_val = if self.state.use_metric {
-                                                vibeprint::layout_engine::inches_to_mm(clamped_long_in)
+                                                vibeprint::layout_engine::inches_to_mm(
+                                                    clamped_long_in,
+                                                )
                                             } else {
                                                 clamped_long_in
                                             };
-                                            self.state.custom_size_long_str = format!("{:.3}", display_val);
+                                            self.state.custom_size_long_str =
+                                                format!("{:.3}", display_val);
                                         }
 
                                         let (w, h) = if asp >= 1.0 {
@@ -1618,15 +1681,15 @@ if apply_btn.clicked() {
                                         parsed_h = Some(h);
                                         ui.add_space(4.0);
                                         ui.label(
-                                            RichText::new(
-                                                if self.state.use_metric {
-                                                    format!("→  {:.3} mm × {:.3} mm",
-                                                        vibeprint::layout_engine::inches_to_mm(w),
-                                                        vibeprint::layout_engine::inches_to_mm(h))
-                                                } else {
-                                                    format!("→  {:.3}\" × {:.3}\"", w, h)
-                                                }
-                                            )
+                                            RichText::new(if self.state.use_metric {
+                                                format!(
+                                                    "→  {:.3} mm × {:.3} mm",
+                                                    vibeprint::layout_engine::inches_to_mm(w),
+                                                    vibeprint::layout_engine::inches_to_mm(h)
+                                                )
+                                            } else {
+                                                format!("→  {:.3}\" × {:.3}\"", w, h)
+                                            })
                                             .weak()
                                             .size(11.0),
                                         );
@@ -1657,7 +1720,8 @@ if apply_btn.clicked() {
                         };
                         let fits = match (parsed_w, parsed_h) {
                             (Some(w), Some(h)) => {
-                                let (fits, _) = crate::utils::check_size_fit(w, h, ia_w_in, ia_h_in);
+                                let (fits, _) =
+                                    crate::utils::check_size_fit(w, h, ia_w_in, ia_h_in);
                                 fits
                             }
                             _ => false,
@@ -1692,7 +1756,10 @@ if apply_btn.clicked() {
                             }
                             _ => false,
                         };
-                        if ui.add_enabled(size_ok && fits, egui::Button::new("OK")).clicked() {
+                        if ui
+                            .add_enabled(size_ok && fits, egui::Button::new("OK"))
+                            .clicked()
+                        {
                             if let (Some(w), Some(h)) = (parsed_w, parsed_h) {
                                 confirmed = Some((w, h));
                             }
@@ -1762,7 +1829,10 @@ if apply_btn.clicked() {
                 // Checkbox with browse button inline
                 ui.horizontal(|ui| {
                     let mut checked = self.state.pref_override_checked;
-                    if ui.checkbox(&mut checked, "Override auto-detected monitor ICC profile").changed() {
+                    if ui
+                        .checkbox(&mut checked, "Override auto-detected monitor ICC profile")
+                        .changed()
+                    {
                         self.state.pref_override_checked = checked;
                         if !checked {
                             self.state.monitor_icc_override = None;
@@ -1795,25 +1865,41 @@ if apply_btn.clicked() {
 
                 ui.add_space(4.0);
 
-                if ui.checkbox(&mut self.state.use_metric, "Use the metric measuring system").changed() {
+                if ui
+                    .checkbox(
+                        &mut self.state.use_metric,
+                        "Use the metric measuring system",
+                    )
+                    .changed()
+                {
                     ctx.request_repaint();
                     self.mark_preview_dirty();
-                    self.state.border_edit_l =
-                        crate::app::format_border_edit(
-                            self.state.user_border.left, self.state.use_metric);
-                    self.state.border_edit_r =
-                        crate::app::format_border_edit(
-                            self.state.user_border.right, self.state.use_metric);
-                    self.state.border_edit_t =
-                        crate::app::format_border_edit(
-                            self.state.user_border.top, self.state.use_metric);
-                    self.state.border_edit_b =
-                        crate::app::format_border_edit(
-                            self.state.user_border.bottom, self.state.use_metric);
+                    self.state.border_edit_l = crate::app::format_border_edit(
+                        self.state.user_border.left,
+                        self.state.use_metric,
+                    );
+                    self.state.border_edit_r = crate::app::format_border_edit(
+                        self.state.user_border.right,
+                        self.state.use_metric,
+                    );
+                    self.state.border_edit_t = crate::app::format_border_edit(
+                        self.state.user_border.top,
+                        self.state.use_metric,
+                    );
+                    self.state.border_edit_b = crate::app::format_border_edit(
+                        self.state.user_border.bottom,
+                        self.state.use_metric,
+                    );
                     self.state.border_width_edit_string.clear();
                 }
 
-                if ui.checkbox(&mut self.state.safe_8bit_tiff_print_path, "Use safe 8 bit tiff print path").changed() {
+                if ui
+                    .checkbox(
+                        &mut self.state.safe_8bit_tiff_print_path,
+                        "Use safe 8 bit tiff print path",
+                    )
+                    .changed()
+                {
                     ctx.request_repaint();
                 }
 
@@ -1848,15 +1934,24 @@ if apply_btn.clicked() {
                 ui.add_space(16.0);
 
                 // Icon - embedded in binary via include_bytes!
-                static ICON_BYTES: &[u8] = include_bytes!("../../../../assets/icons/vibeprint-studio.png");
+                static ICON_BYTES: &[u8] =
+                    include_bytes!("../../../../assets/icons/vibeprint-studio.png");
                 if let Ok(img) = image::load_from_memory(ICON_BYTES) {
                     let rgba = img.to_rgba8();
                     let (w, h) = rgba.dimensions();
-                    let color_image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                    let color_image =
+                        egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
                     ui.vertical_centered(|ui| {
                         let icon_size = 64.0;
-                        let texture = ui.ctx().load_texture("about_icon", color_image, egui::TextureOptions::LINEAR);
-                        ui.image(egui::load::SizedTexture::new(texture.id(), [icon_size, icon_size]));
+                        let texture = ui.ctx().load_texture(
+                            "about_icon",
+                            color_image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        ui.image(egui::load::SizedTexture::new(
+                            texture.id(),
+                            [icon_size, icon_size],
+                        ));
                     });
                     ui.add_space(8.0);
                 }

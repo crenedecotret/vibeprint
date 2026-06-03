@@ -599,10 +599,7 @@ pub(crate) fn draw_tree_node(
         tree_cache.insert(path.clone(), children);
     }
 
-    let has_children = tree_cache
-        .get(path)
-        .map(|c| !c.is_empty())
-        .unwrap_or(false);
+    let has_children = tree_cache.get(path).map(|c| !c.is_empty()).unwrap_or(false);
 
     // Default: home (depth==0) starts expanded; everything else collapsed
     let is_expanded = *expanded.get(path).unwrap_or(&(depth == 0));
@@ -612,10 +609,7 @@ pub(crate) fn draw_tree_node(
     let is_expanded = is_expanded || is_ancestor;
 
     let children: Vec<PathBuf> = if is_expanded {
-        tree_cache
-            .get(path)
-            .cloned()
-            .unwrap_or_default()
+        tree_cache.get(path).cloned().unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -679,7 +673,16 @@ pub(crate) fn draw_tree_node(
 
     if is_expanded {
         for child in &children {
-            draw_tree_node(ui, child, depth + 1, current, expanded, tree_cache, nav, toggle);
+            draw_tree_node(
+                ui,
+                child,
+                depth + 1,
+                current,
+                expanded,
+                tree_cache,
+                nav,
+                toggle,
+            );
         }
     }
 }
@@ -706,7 +709,8 @@ pub(crate) fn extract_embedded_icc_from_bytes(data: &[u8]) -> Option<Vec<u8>> {
     } else if data.starts_with(b"\x89PNG\r\n\x1a\n") {
         // PNG
         parse_png_icc_chunk(data)
-    } else if data.len() >= 2 && (data[0] == 0x49 || data[0] == 0x4d)
+    } else if data.len() >= 2
+        && (data[0] == 0x49 || data[0] == 0x4d)
         && (data[1] == 0x49 || data[1] == 0x4d)
     {
         // TIFF (II or MM)
