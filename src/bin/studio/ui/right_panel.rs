@@ -1184,8 +1184,11 @@ impl App {
                                     will_rotate
                                 };
 
-                                // For crop calculation, swap dimensions if rotation is needed
-                                let (calc_w, calc_h) = if will_rotate {
+                                // For crop calculation, swap dimensions if rotation is needed,
+                                // or when force_original_orientation + crop_inverted (layout engine swaps cell).
+                                let (calc_w, calc_h) = if item.force_original_orientation && item.crop_inverted {
+                                    (oriented_h, oriented_w)
+                                } else if will_rotate {
                                     (oriented_h, oriented_w)
                                 } else {
                                     (oriented_w, oriented_h)
@@ -1335,9 +1338,11 @@ impl App {
                                 will_rotate
                             };
 
-                            // For crop calculation, swap dimensions if rotation is needed
-                            // so calc_crop_uv returns UVs in original image space
-                            let (calc_w, calc_h) = if will_rotate {
+                            // For crop calculation, swap dimensions if rotation is needed,
+                            // or when force_original_orientation + crop_inverted (layout engine swaps cell).
+                            let (calc_w, calc_h) = if force_original_orientation && crop_inverted {
+                                (oriented_h, oriented_w)
+                            } else if will_rotate {
                                 (oriented_h, oriented_w)
                             } else {
                                 (oriented_w, oriented_h)
@@ -2264,13 +2269,16 @@ impl App {
                         } else {
                             will_rotate
                         };
-                        // When force_original_orientation is on, the layout engine
-                        // uses the print-size dimensions as-is (no orientation flip to match
-                        // the source). The cell aspect therefore matches (cell_w_in, cell_h_in),
-                        // NOT the source-oriented (oriented_w, oriented_h). Match that here so
-                        // the crop-UV aspect target is correct.
-                        let (full_w, full_h) = if force_original_orientation {
-                            (cell_w_in, cell_h_in)
+                        // When force_original_orientation is on, the layout engine orients
+                        // the print size to match the source image (natural orientation).
+                        // The cell aspect therefore matches (oriented_w, oriented_h), EXCEPT when
+                        // crop_inverted is also true, in which case the layout engine swaps the
+                        // cell to the inverted aspect. Match that here so the crop-UV aspect
+                        // target is correct.
+                        let (full_w, full_h) = if force_original_orientation && crop_inverted {
+                            (oriented_h, oriented_w)
+                        } else if force_original_orientation {
+                            (oriented_w, oriented_h)
                         } else if effective_will_rotate {
                             (oriented_h, oriented_w)
                         } else {

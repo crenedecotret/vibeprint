@@ -1059,7 +1059,9 @@ impl App {
                         (sh as f32 * s) * (sw as f32 * s)
                     };
                     let will_rotate = fitted_rot > fitted_no_rot;
-                    let (full_w, full_h) = if will_rotate {
+                    let (full_w, full_h) = if item.force_original_orientation && item.crop_inverted {
+                        (oriented_h, oriented_w)
+                    } else if will_rotate {
                         (oriented_h, oriented_w)
                     } else {
                         (oriented_w, oriented_h)
@@ -1211,7 +1213,9 @@ impl App {
                     };
                     let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
 
-                    let (full_w, full_h) = if will_rotate {
+                    let (full_w, full_h) = if item.force_original_orientation && item.crop_inverted {
+                        (oriented_h, oriented_w)
+                    } else if will_rotate {
                         (oriented_h, oriented_w)
                     } else {
                         (oriented_w, oriented_h)

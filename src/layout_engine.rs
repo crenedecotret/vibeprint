@@ -168,8 +168,13 @@ pub fn layout_queue(
                 spacing_px,
                 item.force_original_orientation,
             );
-            // When force_original_orientation is on, FOO overrides crop_inverted —
-            // the cell stays in its natural orientation (matching un-rotated content).
+            // When force_original_orientation + crop_inverted, the inverted crop
+            // changes the effective aspect ratio, so swap cell dimensions.
+            let (box_w_px, box_h_px) = if item.force_original_orientation && item.crop_inverted {
+                (box_h_px, box_w_px)
+            } else {
+                (box_w_px, box_h_px)
+            };
             // box_w_px / box_h_px already include the border expansion
 
             // Calculate center position based on actual box size (including outer border expansion)
@@ -224,8 +229,13 @@ pub fn layout_queue(
                 spacing_px,
                 item.force_original_orientation,
             );
-            // When force_original_orientation is on, FOO overrides crop_inverted —
-            // the cell stays in its natural orientation (matching un-rotated content).
+            // When force_original_orientation + crop_inverted, the inverted crop
+            // changes the effective aspect ratio, so swap cell dimensions.
+            let (box_w_px, box_h_px) = if item.force_original_orientation && item.crop_inverted {
+                (box_h_px, box_w_px)
+            } else {
+                (box_w_px, box_h_px)
+            };
 
             // Convert stored point position to pixels, clamp within page
             let x_px = ((item.freehand_x_pt * dpi as f32 / 72.0).round().max(0.0) as u32)
@@ -277,8 +287,13 @@ pub fn layout_queue(
             spacing_px,
             item.force_original_orientation,
         );
-        // When force_original_orientation is on, FOO overrides crop_inverted —
-        // the cell stays in its natural orientation (matching un-rotated content).
+        // When force_original_orientation + crop_inverted, the inverted crop
+        // changes the effective aspect ratio, so swap cell dimensions.
+        let (box_w_px, box_h_px) = if item.force_original_orientation && item.crop_inverted {
+            (box_h_px, box_w_px)
+        } else {
+            (box_w_px, box_h_px)
+        };
         // box_w_px / box_h_px already include the border expansion
 
         if cursor_x > 0 && cursor_x.saturating_add(box_w_px) > page_w_px {
@@ -375,8 +390,15 @@ fn choose_orientation_for_flow_with_state(
     };
 
     if force_original_orientation {
-        let box_w = to_px(w_in);
-        let box_h = to_px(h_in);
+        // For FOO, orient the print size to match the source image's natural orientation
+        let src_landscape = sw > sh;
+        let (natural_w, natural_h) = if src_landscape {
+            (h_in, w_in)
+        } else {
+            (w_in, h_in)
+        };
+        let box_w = to_px(natural_w);
+        let box_h = to_px(natural_h);
         let (box_w, box_h) = if box_w > page_w_px || box_h > page_h_px {
             let pw = page_w_px.max(1) as f32;
             let ph = page_h_px.max(1) as f32;
@@ -953,5 +975,85 @@ mod tests {
 
         assert_eq!(p.w_px, 2480, "A4 width at 300dpi");
         assert_eq!(p.h_px, 3508, "A4 height at 300dpi");
+    }
+
+    #[test]
+    fn force_original_orientation_with_crop_inverted_swaps_cell_dimensions_flow() {
+        // Portrait source (2000×3000) with 4×6" print size.
+        // Normally the layout engine would rotate this to 6×4 (landscape).
+        // With crop_inverted, the user wants a landscape-visible crop from the
+        // portrait source, so the cell must be landscape even though the image
+        // is NOT rotated (force_original_orientation).
+        let mut item = queued(Uuid::new_v4(), 4.0, 6.0, (2000, 3000));
+        item.force_original_orientation = true;
+        item.crop_inverted = true;
+
+        // Large page so it easily fits
+        let result = layout_queue(&[item.clone()], 2000, 2000, 100, 0.0);
+        let p = result.placements.get(&item.id).expect("placement missing");
+
+        // Cell should be landscape (6×4) because the inverted crop requests
+        // the rotated aspect ratio, even though the content stays portrait.
+        assert!(
+            p.w_px > p.h_px,
+            "expected landscape cell when force_original_orientation && crop_inverted, \
+             got {}×{}",
+            p.w_px, p.h_px
+        );
+    }
+
+    #[test]
+    fn force_original_orientation_with_crop_inverted_swaps_cell_dimensions_center() {
+        let mut item = queued(Uuid::new_v4(), 4.0, 6.0, (2000, 3000));
+        item.center_to_page = true;
+        item.force_original_orientation = true;
+        item.crop_inverted = true;
+
+        let result = layout_queue(&[item.clone()], 2000, 2000, 100, 0.0);
+        let p = result.placements.get(&item.id).expect("placement missing");
+
+        assert!(
+            p.w_px > p.h_px,
+            "expected landscape cell for center-to-page when force_original_orientation && crop_inverted, \
+             got {}×{}",
+            p.w_px, p.h_px
+        );
+    }
+
+    #[test]
+    fn force_original_orientation_landscape_natural_cell_is_landscape() {
+        // Landscape source (3000×2000) with 4×6" print size.
+        // FOO means the image stays landscape, so the cell must be landscape (6×4).
+        let mut item = queued(Uuid::new_v4(), 4.0, 6.0, (3000, 2000));
+        item.force_original_orientation = true;
+
+        let result = layout_queue(&[item.clone()], 2000, 2000, 100, 0.0);
+        let p = result.placements.get(&item.id).expect("placement missing");
+
+        assert!(
+            p.w_px > p.h_px,
+            "expected landscape cell for landscape source with FOO, got {}×{}",
+            p.w_px, p.h_px
+        );
+    }
+
+    #[test]
+    fn force_original_orientation_landscape_crop_inverted_cell_is_portrait() {
+        // Landscape source (3000×2000) with 4×6" print size.
+        // FOO keeps the image landscape. crop_inverted requests the OTHER
+        // aspect ratio (portrait), so the cell must be portrait (4×6).
+        let mut item = queued(Uuid::new_v4(), 4.0, 6.0, (3000, 2000));
+        item.force_original_orientation = true;
+        item.crop_inverted = true;
+
+        let result = layout_queue(&[item.clone()], 2000, 2000, 100, 0.0);
+        let p = result.placements.get(&item.id).expect("placement missing");
+
+        assert!(
+            p.w_px < p.h_px,
+            "expected portrait cell for landscape source with FOO && crop_inverted, \
+             got {}×{}",
+            p.w_px, p.h_px
+        );
     }
 }

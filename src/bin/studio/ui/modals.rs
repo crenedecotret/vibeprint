@@ -850,7 +850,9 @@ impl App {
                     will_rotate
                 };
 
-                let (target_w, target_h) = if will_rotate {
+                let (target_w, target_h) = if q_force_original_orientation && self.state.crop_editor_inverted {
+                    (oriented_h, oriented_w)
+                } else if will_rotate {
                     (oriented_h, oriented_w)
                 } else {
                     (oriented_w, oriented_h)
