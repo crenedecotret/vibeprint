@@ -168,13 +168,8 @@ pub fn layout_queue(
                 spacing_px,
                 item.force_original_orientation,
             );
-            // When force_original_orientation + crop_inverted, the inverted crop
-            // changes the effective aspect ratio, so swap cell dimensions.
-            let (box_w_px, box_h_px) = if item.force_original_orientation && item.crop_inverted {
-                (box_h_px, box_w_px)
-            } else {
-                (box_w_px, box_h_px)
-            };
+            // When force_original_orientation is on, FOO overrides crop_inverted —
+            // the cell stays in its natural orientation (matching un-rotated content).
             // box_w_px / box_h_px already include the border expansion
 
             // Calculate center position based on actual box size (including outer border expansion)
@@ -229,13 +224,8 @@ pub fn layout_queue(
                 spacing_px,
                 item.force_original_orientation,
             );
-            // When force_original_orientation + crop_inverted, the inverted crop
-            // changes the effective aspect ratio, so swap cell dimensions.
-            let (box_w_px, box_h_px) = if item.force_original_orientation && item.crop_inverted {
-                (box_h_px, box_w_px)
-            } else {
-                (box_w_px, box_h_px)
-            };
+            // When force_original_orientation is on, FOO overrides crop_inverted —
+            // the cell stays in its natural orientation (matching un-rotated content).
 
             // Convert stored point position to pixels, clamp within page
             let x_px = ((item.freehand_x_pt * dpi as f32 / 72.0).round().max(0.0) as u32)
@@ -287,11 +277,8 @@ pub fn layout_queue(
             spacing_px,
             item.force_original_orientation,
         );
-        let (box_w_px, box_h_px) = if item.force_original_orientation && item.crop_inverted {
-            (box_h_px, box_w_px)
-        } else {
-            (box_w_px, box_h_px)
-        };
+        // When force_original_orientation is on, FOO overrides crop_inverted —
+        // the cell stays in its natural orientation (matching un-rotated content).
         // box_w_px / box_h_px already include the border expansion
 
         if cursor_x > 0 && cursor_x.saturating_add(box_w_px) > page_w_px {

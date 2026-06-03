@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 use crate::types::{
-    Engine, IccPickerContext, Intent, ProcState, RightTab, FIT_PAGE_IDX, print_sizes,
+    CutMarks, Engine, IccPickerContext, Intent, ProcState, RightTab, FIT_PAGE_IDX, print_sizes,
 };
 use crate::utils::check_size_fit;
 use crate::App;
@@ -695,6 +695,29 @@ impl App {
                             }
                         });
                 });
+
+                // Cut Marks
+                let prev_cut_marks = self.state.cut_marks;
+                ui.horizontal(|ui| {
+                    ui.label("Cut Marks:");
+                    egui::ComboBox::from_id_salt("cut_marks_cb")
+                        .selected_text(self.state.cut_marks.label())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.state.cut_marks,
+                                CutMarks::None,
+                                CutMarks::None.label(),
+                            );
+                            ui.selectable_value(
+                                &mut self.state.cut_marks,
+                                CutMarks::Crop,
+                                CutMarks::Crop.label(),
+                            );
+                        });
+                });
+                if self.state.cut_marks != prev_cut_marks {
+                    self.relayout_queue();
+                }
 
                 if self.state.target_dpi != prev_dpi {
                     self.relayout_queue();
@@ -2139,7 +2162,14 @@ let current_pt = border_width_pt.min(max_border_pt);
                         } else {
                             will_rotate
                         };
-                        let (full_w, full_h) = if effective_will_rotate {
+                        // When force_original_orientation is on, the layout engine
+                        // uses the print-size dimensions as-is (no orientation flip to match
+                        // the source). The cell aspect therefore matches (cell_w_in, cell_h_in),
+                        // NOT the source-oriented (oriented_w, oriented_h). Match that here so
+                        // the crop-UV aspect target is correct.
+                        let (full_w, full_h) = if force_original_orientation {
+                            (cell_w_in, cell_h_in)
+                        } else if effective_will_rotate {
                             (oriented_h, oriented_w)
                         } else {
                             (oriented_w, oriented_h)

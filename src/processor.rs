@@ -182,6 +182,18 @@ pub fn process_composite_page(opts: CompositePageOptions) -> Result<()> {
     let mut page: Rgb16Image = ImageBuffer::from_raw(opts.page_w_px, opts.page_h_px, page_data)
         .context("failed to allocate page buffer")?;
 
+    if opts.draw_cut_marks {
+        let working_black: [u16; 3] = if let Some(ref t) = srgb16_to_prophoto {
+            let src16 = [[0u16, 0u16, 0u16]];
+            let mut dst16 = [[0u16, 0u16, 0u16]];
+            t.transform_pixels(&src16[..], &mut dst16[..]);
+            dst16[0]
+        } else {
+            [0u16, 0u16, 0u16]
+        };
+        draw_cut_marks_rgb16(&mut page, &opts.placements, opts.target_dpi, working_black);
+    }
+
     for p in &opts.placements {
         debug_assert!(
             p.dest_x_px.saturating_add(p.dest_w_px) <= opts.page_w_px
@@ -483,6 +495,7 @@ pub struct CompositePageOptions {
     pub depth: u8,
     pub sharpen: u8,
     pub embed_icc_profile: bool,
+    pub draw_cut_marks: bool,
 }
 
 pub fn process(opts: ProcessOptions) -> Result<()> {
@@ -1357,6 +1370,9 @@ const SHARPEN_SLIDER_MAX: f64 = 20.0;
 const SHARPEN_NEUTRAL_AMOUNT: f64 = 0.8; // perceptual baseline USM strength
 const SHARPEN_MAX_AMOUNT: f64 = 2.0; // existing USM upper bound
 
+const CROPMARK_LEN_PT: f64 = 9.0;
+const CROPMARK_WIDTH_PT: f64 = 0.5;
+
 /// Maps the UI sharpening slider (0-20) to a normalized 0-1 strength while anchoring
 /// slider value 5 to the calibrated neutral amount (~0.8). The curve is piecewise:
 /// quadratic below 5 for fine control, cubic-ease above 5 for gentle growth.
@@ -1624,5 +1640,53 @@ fn draw_border_in_gap_rgb16(
             dst[di + 1] = border_rgb16[1];
             dst[di + 2] = border_rgb16[2];
         }
+    }
+}
+
+/// Stamp L-shaped corner crop marks just outside each placement rect.
+/// Inside corner of each L touches the placement corner exactly; legs
+/// extend outward only. Marks live entirely outside the placement rect.
+/// Pixel writes are clamped to the page buffer bounds.
+fn draw_cut_marks_rgb16(
+    page: &mut Rgb16Image,
+    placements: &[PagePlacement],
+    target_dpi: f64,
+    working_black: [u16; 3],
+) {
+    let len_px = ((CROPMARK_LEN_PT / 72.0) * target_dpi).round().max(1.0) as i64;
+    let width_px = ((CROPMARK_WIDTH_PT / 72.0) * target_dpi).round().max(1.0) as i64;
+    let page_w = page.width() as i64;
+    let page_h = page.height() as i64;
+
+    let fill = |page: &mut Rgb16Image, x0: i64, y0: i64, x1: i64, y1: i64| {
+        let x0c = x0.max(0) as u32;
+        let y0c = y0.max(0) as u32;
+        let x1c = x1.min(page_w) as u32;
+        let y1c = y1.min(page_h) as u32;
+        for y in y0c..y1c {
+            for x in x0c..x1c {
+                *page.get_pixel_mut(x, y) = image::Rgb(working_black);
+            }
+        }
+    };
+
+    for p in placements {
+        let x0 = p.dest_x_px as i64;
+        let y0 = p.dest_y_px as i64;
+        let x1 = x0 + p.dest_w_px as i64;
+        let y1 = y0 + p.dest_h_px as i64;
+
+        // Top-left
+        fill(page, x0 - len_px,   y0 - width_px, x0,            y0);
+        fill(page, x0 - width_px, y0 - len_px,   x0,            y0);
+        // Top-right
+        fill(page, x1,            y0 - width_px, x1 + len_px,   y0);
+        fill(page, x1,            y0 - len_px,   x1 + width_px, y0);
+        // Bottom-left
+        fill(page, x0 - len_px,   y1,            x0,            y1 + width_px);
+        fill(page, x0 - width_px, y1,            x0,            y1 + len_px);
+        // Bottom-right
+        fill(page, x1,            y1,            x1 + len_px,   y1 + width_px);
+        fill(page, x1,            y1,            x1 + width_px, y1 + len_px);
     }
 }

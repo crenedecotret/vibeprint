@@ -116,6 +116,28 @@ impl IccProfileEntry {
 
 // ── Engine & Color Types ────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum CutMarks {
+    #[default]
+    None,
+    Crop,
+}
+
+impl CutMarks {
+    pub fn label(&self) -> &'static str {
+        match self {
+            CutMarks::None => "None",
+            CutMarks::Crop => "Crop Marks",
+        }
+    }
+    pub fn from_label(s: &str) -> Self {
+        match s {
+            "Crop Marks" => CutMarks::Crop,
+            _ => CutMarks::None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Engine {
     Mks,
@@ -287,6 +309,7 @@ pub(crate) struct Settings {
     pub monitor_icc_override: Option<String>,
     pub use_metric: Option<bool>,
     pub safe_8bit_tiff_print_path: Option<bool>,
+    pub cut_marks: Option<String>,
 }
 
 // ── App State ───────────────────────────────────────────────────────────────
@@ -464,6 +487,9 @@ pub(crate) struct AppState {
 
     // ── Custom border color modal ──
     pub custom_border_color_temp: [u8; 3],
+
+    // ── Cut marks ──
+    pub cut_marks: CutMarks,
 }
 
 impl AppState {
@@ -617,6 +643,7 @@ impl AppState {
             show_about: false,
             custom_border_color_temp: [0, 0, 0],
             icc_picker_context: IccPickerContext::Output,
+            cut_marks: CutMarks::None,
         }
     }
 }

@@ -1,4 +1,5 @@
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use crate::types::CutMarks;
 
 /// Draw a filled rectangle with rounded coordinates to prevent sub-pixel gaps
 fn draw_solid_rect(painter: &egui::Painter, rect: Rect, color: Color32) {
@@ -96,6 +97,81 @@ impl App {
             .filter(|q| q.page == self.state.current_page)
             .cloned()
             .collect();
+
+        // Cut marks pre-pass — drawn before images so any overlap is hidden by image content
+        if self.state.cut_marks == CutMarks::Crop {
+            let dpi = self.state.target_dpi as f32;
+            let len_px_canvas = (9.0_f32 / 72.0 * dpi * sx).max(1.0);
+            let width_px_canvas = (0.5_f32 / 72.0 * dpi * sx).max(1.0);
+            let black = Color32::BLACK;
+
+            for item in &page_items {
+                let (w_px, h_px) = self.queued_box_px(item);
+                let r = Rect::from_min_size(
+                    Pos2::new(
+                        ia_rect.min.x + item.position.x as f32 * sx,
+                        ia_rect.min.y + item.position.y as f32 * sy,
+                    ),
+                    Vec2::new(w_px as f32 * sx, h_px as f32 * sy),
+                );
+                let lx = len_px_canvas;
+                let wy = width_px_canvas;
+                // Top-left
+                painter.rect_filled(
+                    Rect::from_min_max(Pos2::new(r.min.x - lx, r.min.y - wy), r.min),
+                    0.0, black,
+                );
+                painter.rect_filled(
+                    Rect::from_min_max(Pos2::new(r.min.x - wy, r.min.y - lx), r.min),
+                    0.0, black,
+                );
+                // Top-right
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(r.max.x,      r.min.y - wy),
+                        Pos2::new(r.max.x + lx, r.min.y),
+                    ),
+                    0.0, black,
+                );
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(r.max.x,      r.min.y - lx),
+                        Pos2::new(r.max.x + wy, r.min.y),
+                    ),
+                    0.0, black,
+                );
+                // Bottom-left
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(r.min.x - lx, r.max.y),
+                        Pos2::new(r.min.x,      r.max.y + wy),
+                    ),
+                    0.0, black,
+                );
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(r.min.x - wy, r.max.y),
+                        Pos2::new(r.min.x,      r.max.y + lx),
+                    ),
+                    0.0, black,
+                );
+                // Bottom-right
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        r.max,
+                        Pos2::new(r.max.x + lx, r.max.y + wy),
+                    ),
+                    0.0, black,
+                );
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        r.max,
+                        Pos2::new(r.max.x + wy, r.max.y + lx),
+                    ),
+                    0.0, black,
+                );
+            }
+        }
 
         for item in &page_items {
             let border_color = self.preview_border_color(item.border_color);

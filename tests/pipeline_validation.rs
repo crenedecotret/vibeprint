@@ -83,6 +83,7 @@ fn unset_output_icc_can_default_to_wide_profile() -> Result<()> {
         depth: 16,
         sharpen: 0,
         embed_icc_profile: true,
+        draw_cut_marks: false,
     })?;
 
     let embedded = read_tiff_embedded_icc(&output_path)?;
@@ -791,6 +792,7 @@ fn composite_page_smoke_test() -> Result<()> {
         depth: 8,
         sharpen: 0,
         embed_icc_profile: true,
+        draw_cut_marks: false,
     })?;
 
     let (bit_depth, dpi) = read_tiff_bit_depth_and_dpi(&output_path)?;
@@ -1240,6 +1242,7 @@ fn four_by_six_print_geometry_is_preserved() -> Result<()> {
             depth: 16,
             sharpen: 5,
             embed_icc_profile: true,
+            draw_cut_marks: false,
         })
         .with_context(|| format!("composite 4×6 page failed at {} dpi", target_dpi))?;
 
@@ -1306,6 +1309,180 @@ fn four_by_six_print_geometry_is_preserved() -> Result<()> {
         "CLI fractional --dpi was truncated in TIFF rational: read {} (expected 360.5)",
         cli_dpi
     );
+
+    Ok(())
+}
+
+#[test]
+fn cut_marks_render_in_gap_around_placements() -> Result<()> {
+    let tmp = tempdir().context("failed to create tempdir")?;
+    let input_path = tmp.path().join("cutmarks_in.tif");
+    // Small page: 600×800 px at 300 dpi. Placement 200×200 at offset (200, 300).
+    let page_w_px: u32 = 600;
+    let page_h_px: u32 = 800;
+    let dest_x_px: u32 = 200;
+    let dest_y_px: u32 = 300;
+    let dest_w_px: u32 = 200;
+    let dest_h_px: u32 = 200;
+
+    write_gradient_rgb16_tiff(&input_path, 64, 64, 300.0)?;
+
+    // ── Render WITHOUT cut marks ─────────────────────────────────────────────
+    let out_no_marks = tmp.path().join("cutmarks_off.tif");
+    vibeprint::processor::process_composite_page(vibeprint::processor::CompositePageOptions {
+        output: out_no_marks.clone(),
+        placements: vec![vibeprint::processor::PagePlacement {
+            input: input_path.clone(),
+            input_icc: None,
+            dest_x_px,
+            dest_y_px,
+            dest_w_px,
+            dest_h_px,
+            rotate_cw: false,
+            crop_u0: 0.0,
+            crop_v0: 0.0,
+            crop_u1: 1.0,
+            crop_v1: 1.0,
+            border_type: vibeprint::layout_engine::BorderType::None,
+            border_width_px: 0,
+            border_color: [0, 0, 0],
+        }],
+        page_w_px,
+        page_h_px,
+        output_icc: None,
+        default_wide_output_when_unset: false,
+        target_dpi: 300.0,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: false,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 16,
+        sharpen: 0,
+        embed_icc_profile: false,
+        draw_cut_marks: false,
+    })?;
+
+    // ── Render WITH cut marks ────────────────────────────────────────────────
+    let out_with_marks = tmp.path().join("cutmarks_on.tif");
+    vibeprint::processor::process_composite_page(vibeprint::processor::CompositePageOptions {
+        output: out_with_marks.clone(),
+        placements: vec![vibeprint::processor::PagePlacement {
+            input: input_path.clone(),
+            input_icc: None,
+            dest_x_px,
+            dest_y_px,
+            dest_w_px,
+            dest_h_px,
+            rotate_cw: false,
+            crop_u0: 0.0,
+            crop_v0: 0.0,
+            crop_u1: 1.0,
+            crop_v1: 1.0,
+            border_type: vibeprint::layout_engine::BorderType::None,
+            border_width_px: 0,
+            border_color: [0, 0, 0],
+        }],
+        page_w_px,
+        page_h_px,
+        output_icc: None,
+        default_wide_output_when_unset: false,
+        target_dpi: 300.0,
+        intent: lcms2::Intent::RelativeColorimetric,
+        bpc: false,
+        engine: vibeprint::processor::ResampleEngine::Mks,
+        depth: 16,
+        sharpen: 0,
+        embed_icc_profile: false,
+        draw_cut_marks: true,
+    })?;
+
+    // ── Read both outputs ────────────────────────────────────────────────────
+    let read_all_pixels = |path: &std::path::Path| -> Result<Vec<u16>> {
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        let mut decoder = tiff::decoder::Decoder::new(std::io::BufReader::new(file))
+            .context("failed to create TIFF decoder")?;
+        let data = decoder.read_image().context("failed to read image")?;
+        match data {
+            tiff::decoder::DecodingResult::U16(v) => Ok(v),
+            _ => anyhow::bail!("expected u16 TIFF"),
+        }
+    };
+
+    let pixels_off = read_all_pixels(&out_no_marks)?;
+    let pixels_on = read_all_pixels(&out_with_marks)?;
+
+    // Both pages are same dimensions.
+    assert_eq!(pixels_off.len(), pixels_on.len(), "output sizes must match");
+
+    // ── Assertion 1: At least one near-black pixel in each mark region ───────
+    // At 300 dpi: len = round(9/72 * 300) = round(37.5) = 38 px, width = max(round(0.5/72*300),1) = max(2,1) = 2 px
+    let is_near_black = |r: u16, g: u16, b: u16| -> bool {
+        // Use a generous threshold to accommodate any minimal ICC round-trip shift.
+        (r as u32 + g as u32 + b as u32) < 3000
+    };
+
+    let get_pixel = |pixels: &[u16], x: i64, y: i64| -> Option<(u16, u16, u16)> {
+        if x < 0 || y < 0 || x >= page_w_px as i64 || y >= page_h_px as i64 {
+            return None;
+        }
+        let idx = ((y as u32 * page_w_px + x as u32) * 3) as usize;
+        if idx + 2 >= pixels.len() {
+            return None;
+        }
+        Some((pixels[idx], pixels[idx + 1], pixels[idx + 2]))
+    };
+
+    // At 300 dpi: len_px = 38, width_px = 2.
+    let len_px: i64 = ((9.0_f64 / 72.0) * 300.0).round() as i64;
+    let x0 = dest_x_px as i64;
+    let y0 = dest_y_px as i64;
+    let x1 = x0 + dest_w_px as i64;
+    let y1 = y0 + dest_h_px as i64;
+
+    // Sample one interior pixel from each of the 8 arms across 4 corners:
+    let arm_samples: Vec<(i64, i64, &str)> = vec![
+        // Top-left horizontal arm: x in [x0-len, x0), y in [y0-width, y0)
+        (x0 - len_px / 2, y0 - 1, "TL-horiz"),
+        // Top-left vertical arm: x in [x0-width, x0), y in [y0-len, y0)
+        (x0 - 1, y0 - len_px / 2, "TL-vert"),
+        // Top-right horizontal arm: x in [x1, x1+len), y in [y0-width, y0)
+        (x1 + len_px / 2, y0 - 1, "TR-horiz"),
+        // Top-right vertical arm: x in [x1, x1+width), y in [y0-len, y0)
+        (x1, y0 - len_px / 2, "TR-vert"),
+        // Bottom-left horizontal arm: x in [x0-len, x0), y in [y1, y1+width)
+        (x0 - len_px / 2, y1, "BL-horiz"),
+        // Bottom-left vertical arm: x in [x0-width, x0), y in [y1, y1+len)
+        (x0 - 1, y1 + len_px / 2, "BL-vert"),
+        // Bottom-right horizontal arm: x in [x1, x1+len), y in [y1, y1+width)
+        (x1 + len_px / 2, y1, "BR-horiz"),
+        // Bottom-right vertical arm: x in [x1, x1+width), y in [y1, y1+len)
+        (x1, y1 + len_px / 2, "BR-vert"),
+    ];
+
+    for (sx, sy, label) in &arm_samples {
+        if let Some((r, g, b)) = get_pixel(&pixels_on, *sx, *sy) {
+            assert!(
+                is_near_black(r, g, b),
+                "cut-mark pixel at {label} ({sx},{sy}) is not near-black: r={r} g={g} b={b}"
+            );
+        }
+        // If pixel is out of bounds (page edge clipping), skip — that's acceptable per plan.
+    }
+
+    // ── Assertion 2: Pixels INSIDE r are identical between both runs ─────────
+    let interior_samples: Vec<(u32, u32)> = vec![
+        (dest_x_px + 10, dest_y_px + 10),
+        (dest_x_px + dest_w_px / 2, dest_y_px + dest_h_px / 2),
+        (dest_x_px + dest_w_px - 10, dest_y_px + dest_h_px - 10),
+    ];
+    for (ix, iy) in &interior_samples {
+        let idx = ((*iy * page_w_px + *ix) * 3) as usize;
+        assert_eq!(
+            (pixels_off[idx], pixels_off[idx + 1], pixels_off[idx + 2]),
+            (pixels_on[idx], pixels_on[idx + 1], pixels_on[idx + 2]),
+            "cut marks leaked into image interior at ({ix},{iy})"
+        );
+    }
 
     Ok(())
 }

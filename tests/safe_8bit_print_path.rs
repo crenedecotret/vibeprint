@@ -43,6 +43,7 @@ fn safe_8bit_tiff_strips_icc_profile() {
         depth: 8,
         sharpen: 0,
         embed_icc_profile: false, // Safe 8-bit path: strip profile
+        draw_cut_marks: false,
     };
 
     processor::process_composite_page(opts).expect("processing failed");
@@ -114,6 +115,7 @@ fn standard_export_embeds_icc_profile() {
         depth: 8,
         sharpen: 0,
         embed_icc_profile: true, // Standard path: embed profile
+        draw_cut_marks: false,
     };
 
     processor::process_composite_page(opts).expect("processing failed");
@@ -186,6 +188,7 @@ fn safe_8bit_applies_icc_transformation() {
         depth: 8,
         sharpen: 0,
         embed_icc_profile: false,
+        draw_cut_marks: false,
     };
 
     processor::process_composite_page(opts).expect("processing failed");

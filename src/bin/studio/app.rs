@@ -16,7 +16,7 @@ use crate::icc::{
     apply_preview_transform, extract_file_date, extract_file_size, transform_preview_border_color,
 };
 use crate::types::{
-    AppState, Borders, Engine, IccProfileEntry, IccProfileFilter, IccProfileSource, Intent,
+    AppState, Borders, CutMarks, Engine, IccProfileEntry, IccProfileFilter, IccProfileSource, Intent,
     LoadKind, MAX_PREVIEW_PX, ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX,
     print_sizes, QUEUE_SPACING_IN, THUMB_PX,
 };
@@ -227,6 +227,7 @@ impl App {
         state.pending_input_slot_key = s.input_slot_key;
         state.monitor_icc_override = s.monitor_icc_override.clone();
         state.pref_override_checked = s.monitor_icc_override.is_some();
+        state.cut_marks = s.cut_marks.as_deref().map(CutMarks::from_label).unwrap_or(CutMarks::None);
         state.log.extend(deferred_logs);
 
         if state.monitor_icc_profile.is_none() {
@@ -755,10 +756,26 @@ impl App {
 
     pub(crate) fn relayout_queue(&mut self) {
         let (page_w_px, page_h_px) = self.imageable_size_px();
+
+        // When cut marks are enabled, reserve space for the mark legs so no
+        // mark leg crosses into the user-defined border.  Both the layout area
+        // and every resulting position are adjusted by this inset.
+        let cropmark_inset_px: u32 = if self.state.cut_marks == CutMarks::Crop {
+            let dpi = self.state.target_dpi as f64;
+            // CROPMARK_LEN_PT = 9.0 (same constant as processor.rs)
+            ((9.0_f64 / 72.0) * dpi).round().max(1.0) as u32
+        } else {
+            0
+        };
+
+        // Reduce the layout canvas by the inset on all four sides.
+        let layout_w = page_w_px.saturating_sub(cropmark_inset_px * 2).max(1);
+        let layout_h = page_h_px.saturating_sub(cropmark_inset_px * 2).max(1);
+
         let result = layout_engine::layout_queue(
             &self.state.queue,
-            page_w_px,
-            page_h_px,
+            layout_w,
+            layout_h,
             self.state.target_dpi,
             QUEUE_SPACING_IN,
         );
@@ -766,8 +783,8 @@ impl App {
         for qi in &mut self.state.queue {
             if let Some(p) = result.placements.get(&qi.id) {
                 qi.position = Point {
-                    x: p.x_px,
-                    y: p.y_px,
+                    x: p.x_px.saturating_add(cropmark_inset_px),
+                    y: p.y_px.saturating_add(cropmark_inset_px),
                 };
                 qi.page = p.page;
                 qi.rotation = p.rotation_deg;
@@ -776,7 +793,8 @@ impl App {
             }
         }
 
-        // Override position for freehand items with their saved positions
+        // Override position for freehand items with their saved positions.
+        // Clamp within the reduced layout canvas (inset on all sides).
         let dpi = self.state.target_dpi as f32;
         for qi in &mut self.state.queue {
             if qi.freehand_placement {
@@ -784,10 +802,10 @@ impl App {
                 let y_px = (qi.freehand_y_pt * dpi / 72.0).round().max(0.0) as u32;
                 let box_w = qi.placed_w_px.max(1);
                 let box_h = qi.placed_h_px.max(1);
-                let max_x = page_w_px.saturating_sub(box_w);
-                let max_y = page_h_px.saturating_sub(box_h);
-                qi.position.x = x_px.min(max_x);
-                qi.position.y = y_px.min(max_y);
+                let max_x = page_w_px.saturating_sub(box_w).saturating_sub(cropmark_inset_px);
+                let max_y = page_h_px.saturating_sub(box_h).saturating_sub(cropmark_inset_px);
+                qi.position.x = x_px.clamp(cropmark_inset_px, max_x.max(cropmark_inset_px));
+                qi.position.y = y_px.clamp(cropmark_inset_px, max_y.max(cropmark_inset_px));
             }
         }
 
@@ -1610,6 +1628,8 @@ impl App {
             ProcessTarget::Print => !self.state.safe_8bit_tiff_print_path,
         };
 
+        let draw_cut_marks_flag = self.state.cut_marks == CutMarks::Crop;
+
         if let ProcessTarget::Print = target {
             if self.state.safe_8bit_tiff_print_path {
                 self.state.log.push("Using safe 8-bit TIFF print path (no ICC profile embedded)".into());
@@ -1640,6 +1660,7 @@ impl App {
                     depth,
                     sharpen,
                     embed_icc_profile: embed_icc,
+                    draw_cut_marks: draw_cut_marks_flag,
                 };
                 if let Err(e) = processor::process_composite_page(opts) {
                     let _ = tx.send(Err(e.to_string()));

@@ -21,11 +21,11 @@ This document describes how the crop editor, inner borders, and outer borders wo
 
 **How it works:**
 - When enabled: The image is displayed in its original orientation (portrait images stay portrait, landscape stay landscape)
-- The effective rotation becomes `crop_inverted` (true = rotated, false = not rotated)
+- Rotation is always disabled (`will_rotate = false`) regardless of `crop_inverted`
 - This is a per-image setting in `QueuedImage.force_original_orientation`
-- The canvas dims the edit button when the image is already in its natural orientation, or when the natural box cannot fit within the page bounds
+- The right panel dims the "Keep original orientation" checkbox when: the image is already in its natural orientation, or when the natural box cannot fit within the page bounds, or when no source image is loaded
 
-**Interaction with Crop Inversion:** When `force_original_orientation` is enabled, `crop_inverted` effectively becomes the rotation decision: `effective_will_rotate = crop_inverted` instead of the normal `should_rotate` logic.
+**Interaction with Crop Inversion:** When `force_original_orientation` is enabled, rotation is forced off (`effective_will_rotate = false`), overriding both the normal `should_rotate` logic and any `crop_inverted` state.
 
 ### Visible Area Calculation
 
@@ -70,7 +70,7 @@ The visible area is the portion of the print where the image appears:
 
 **Flow:**
 1. Calculate `will_rotate` based on oriented dimensions
-2. If `force_original_orientation` is set, override `will_rotate = crop_inverted`
+2. If `force_original_orientation` is set, override `will_rotate = false`
 3. Set `(calc_w, calc_h)` based on `will_rotate`
 4. **For Inner/Outer Border with Inversion:** swap before border adjustment, expand/shrink, swap back
 5. Calculate `will_rotate_for_uv` accounting for inversion
@@ -88,7 +88,7 @@ The visible area is the portion of the print where the image appears:
 **Flow:**
 1. Set default border width BEFORE crop calculation (order matters)
 2. Calculate `will_rotate` based on oriented dimensions
-3. If `force_original_orientation` is set, override `will_rotate = crop_inverted`
+3. If `force_original_orientation` is set, override `will_rotate = false`
 4. **CRITICAL:** Calculate `effective_will_rotate` accounting for inversion
 5. Set `(full_w, full_h)` based on `effective_will_rotate`
 6. Apply border to get `new_vis_w, new_vis_h`
@@ -104,7 +104,7 @@ The visible area is the portion of the print where the image appears:
 **Flow:**
 1. Load stored UVs or calculate auto-crop UVs
 2. Calculate `will_rotate` for the oriented box
-3. If `force_original_orientation` is set, override `will_rotate = crop_editor_inverted`
+3. If `force_original_orientation` is set, override `will_rotate = false`
 4. Set `(target_w, target_h)` based on `will_rotate`
 5. Adjust display rect for borders
 6. Handle user interactions (drag, resize, zoom, right-click invert)
@@ -112,7 +112,7 @@ The visible area is the portion of the print where the image appears:
 
 **Key Point:** The crop editor displays the crop selection based on the visible area (after border adjustment), so it correctly shows the aspect ratio that will be rendered.
 
-### 4. Canvas Preview (canvas.rs — render loop in `show`)
+### 4. Canvas Preview (canvas.rs — `draw_canvas` method)
 
 **When triggered:** Main window renders the print preview
 
@@ -132,17 +132,23 @@ The visible area is the portion of the print where the image appears:
 
 **Logic:**
 ```rust
+if placed_w_px > 0 && placed_h_px > 0:
+    return (placed_w_px, placed_h_px)  // early return from layout engine
+
+if rotation > 0.0:
+    swap(w, h)  // apply rotation
+
 if Outer Border:
-    if crop_inverted:
+    if crop_inverted && !force_original_orientation:
         swap(w, h)
     expand by 2×border
-    if crop_inverted:
+    if crop_inverted && !force_original_orientation:
         swap_back(w, h)
 elif Inner Border:
-    if crop_inverted:
+    if crop_inverted && !force_original_orientation:
         swap(w, h)
     shrink by 2×border
-    if crop_inverted:
+    if crop_inverted && !force_original_orientation:
         swap_back(w, h)
 else:
     return (w, h)
@@ -150,17 +156,17 @@ else:
 
 **Key Point:** This ensures the processor and canvas preview use dimensions that match the actual visible area after accounting for borders and inversion.
 
-### 6. Processor (processor.rs — `process_placed`)
+### 6. Processor (processor.rs — `process_composite_page`)
 
 **When triggered:** Export/print generates the final output
 
 **Flow:**
-1. Get dimensions from `queued_box_px()` via `PagePlacement`
+1. Receive `PagePlacement` structs from the layout engine (dimensions already computed)
 2. Calculate `scale_dest_w, scale_dest_h` by subtracting 2×border for inner borders
 3. If crop enabled: Stretch cropped image to fill inner area
 4. If no crop: Aspect-fit image within inner area
 
-**Key Point:** For inner borders, the processor shrinks the destination by the border amount, then stretches the cropped image to fill exactly.
+**Key Point:** For inner borders, the processor shrinks the destination by the border amount, then stretches the cropped image to fill exactly. The processor receives dimensions from `PagePlacement` structs (computed by the layout engine), not by calling `queued_box_px()` directly.
 
 ## Aspect Ratio Calculations
 
@@ -197,7 +203,7 @@ Same setup but inverted:
 
 **Fix:** In the border change handler in `right_panel.rs`:
 ```rust
-let effective_will_rotate = if crop_inverted { !will_rotate } else { will_rotate };
+let effective_will_rotate = if force_original_orientation { false } else if crop_inverted { !will_rotate } else { will_rotate };
 ```
 
 ### Issue: Canvas preview doesn't match crop editor
@@ -248,7 +254,7 @@ When modifying crop/border code, verify:
 - [ ] Canvas preview matches crop editor display
 - [ ] Export/print matches preview
 - [ ] Force original orientation: image stays in natural orientation
-- [ ] Force original orientation + crop inverted: effective rotation is inverted
+- [ ] Force original orientation + crop inverted: rotation stays off
 - [ ] Force original orientation + inner border: aspect correct
 
 ## Key Takeaways
@@ -256,7 +262,7 @@ When modifying crop/border code, verify:
 1. **Inversion affects display rotation, not UV calculation directly**
 2. **Always use `effective_will_rotate` when dimensions affect the visible area**
 3. **Inner borders shrink the visible area, outer borders expand the cell**
-4. **`force_original_orientation` overrides the normal rotation calculation, using `crop_inverted` as the effective rotation**
+4. **`force_original_orientation` overrides the normal rotation calculation, forcing `effective_will_rotate = false`**
 5. **Crop UVs are calculated once, then adjusted (not recalculated) for border changes**
 6. **The four paths (crop enable, border change, crop editor, canvas preview) must use consistent logic for both inversion and force_original_orientation**
 
@@ -265,7 +271,7 @@ When modifying crop/border code, verify:
 - **Crop enable:** `src/bin/studio/ui/right_panel.rs` — Crop Image checkbox handler in `draw_tab_image`
 - **Border change:** `src/bin/studio/ui/right_panel.rs` — border type/width change handler in `draw_tab_image`
 - **Crop editor:** `src/bin/studio/ui/modals.rs` — `show_crop_editor` method
-- **Canvas preview:** `src/bin/studio/ui/canvas.rs` — render loop in `show`
+- **Canvas preview:** `src/bin/studio/ui/canvas.rs` — `draw_canvas` method
 - **Box dimensions:** `src/bin/studio/app.rs` — `queued_box_px` method
-- **Processor:** `src/processor.rs` — `process_placed`
+- **Processor:** `src/processor.rs` — `process_composite_page`
 - **UV calculation:** `src/bin/studio/utils.rs` — `calc_crop_uv`

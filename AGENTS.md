@@ -25,6 +25,7 @@ cargo run --release --bin vibeprint -- meta image.tif  # Image metadata
 
 - `--intent <relative|perceptual|saturation>` (default: relative)
 - `--engine <catmullrom|lanczos3|iterative-step|mitchell-ewa|mitchell-ewa-sharp>` (default: catmullrom)
+- `--dpi <N>` — **required**, controls output resolution
 - `--depth <8|16>` (default: 16)
 - `--sharpen <0-20>` (default: 5)
 - `--input-icc <path>` — input ICC profile (default: use embedded or sRGB)
@@ -52,9 +53,9 @@ cargo test
 
 ## System Dependencies
 
-Ubuntu: `libcups2 cups-client libcups2-dev liblcms2-2 liblcms2-dev libx11-6 libx11-dev libxrandr2 libxrandr-dev ghostscript libtiff-tools`
+Ubuntu: `libcups2 cups-client libcups2-dev liblcms2-2 liblcms2-dev libx11-6 libx11-dev ghostscript libtiff-tools`
 
-Fedora: `cups-libs cups-client lcms2 lcms2-devel libX11 libX11-devel libXrandr libXrandr-devel ghostscript libtiff-tools`
+Fedora: `cups-libs cups-client lcms2 lcms2-devel libX11 libX11-devel ghostscript libtiff-tools`
 
 ## Architecture
 
@@ -63,13 +64,14 @@ src/
   lib.rs              — re-exports: processor, layout_engine, monitor_icc, printer_discovery
   main.rs             — CLI entry, delegates to processor::process()
   processor.rs        — ICC transform → resample → USM sharpen → TIFF output
+                        Also exposes process_composite_page() for the GUI path
   layout_engine.rs    — page layout logic
   monitor_icc.rs      — X11 monitor ICC profile extraction
-  printer_discovery/  — CUPS printer discovery (cups_ffi.rs)
-  printer_discovery.rs
+  printer_discovery.rs        — CUPS printer discovery
+  printer_discovery/cups_ffi.rs
   bin/studio/         — eframe/egui GUI
     main.rs, mod.rs, app.rs, types.rs, icc.rs, processing.rs, utils.rs
-    ui/               — canvas.rs, left_panel.rs, right_panel.rs, modals.rs
+    ui/               — canvas.rs, left_panel.rs, mod.rs, right_panel.rs, modals.rs
 ```
 
 ## Key Gotchas
