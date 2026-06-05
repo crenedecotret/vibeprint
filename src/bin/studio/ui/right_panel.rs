@@ -1545,8 +1545,76 @@ impl App {
                     egui::Checkbox::new(&mut force_orig, "Keep original orientation"),
                 );
                 if force_orig_resp.changed() {
+                    let ia_size = self.imageable_size_in();
                     if let Some(item) = self.selected_queue_mut() {
+                        let had_crop = item.crop_enabled && item.crop_u0.is_some();
                         item.force_original_orientation = force_orig;
+                        if had_crop {
+                            let (w_in, h_in) = if item.fit_to_page {
+                                ia_size
+                            } else {
+                                item.size.as_inches()
+                            };
+                            let (sw, sh) = item.src_size_px.unwrap_or((1, 1));
+                            let sw_f = sw as f32;
+                            let sh_f = sh as f32;
+                            let src_landscape = sw_f > sh_f;
+                            let (oriented_w, oriented_h) = if src_landscape {
+                                (h_in, w_in)
+                            } else {
+                                (w_in, h_in)
+                            };
+                            let fitted_area_no_rotate = {
+                                let s = (oriented_w / sw_f).min(oriented_h / sh_f);
+                                (sw_f * s) * (sh_f * s)
+                            };
+                            let fitted_area_rotate = {
+                                let s = (oriented_w / sh_f).min(oriented_h / sw_f);
+                                (sh_f * s) * (sw_f * s)
+                            };
+                            let will_rotate = fitted_area_rotate > fitted_area_no_rotate;
+                            let (full_w, full_h) = if item.force_original_orientation && item.crop_inverted {
+                                (oriented_h, oriented_w)
+                            } else if item.force_original_orientation {
+                                (oriented_w, oriented_h)
+                            } else if will_rotate {
+                                (oriented_h, oriented_w)
+                            } else {
+                                (oriented_w, oriented_h)
+                            };
+                            let border_in = item.border_width_pt / 72.0;
+                            let (vis_w, vis_h) = if item.border_type == vibeprint::layout_engine::BorderType::Inner && border_in > 0.0 {
+                                ((full_w - border_in * 2.0).max(0.1), (full_h - border_in * 2.0).max(0.1))
+                            } else if item.border_type == vibeprint::layout_engine::BorderType::Outer && border_in > 0.0 {
+                                (full_w + border_in * 2.0, full_h + border_in * 2.0)
+                            } else {
+                                (full_w, full_h)
+                            };
+                            if let (Some(u0), Some(v0), Some(u1), Some(v1)) = (item.crop_u0, item.crop_v0, item.crop_u1, item.crop_v1) {
+                                let old_center_u = (u0 + u1) / 2.0;
+                                let old_center_v = (v0 + v1) / 2.0;
+                                let old_crop_area = (u1 - u0) * (v1 - v0);
+                                let src_aspect = if will_rotate {
+                                    sh_f / sw_f
+                                } else {
+                                    sw_f / sh_f
+                                };
+                                let box_aspect = if item.crop_inverted && !item.force_original_orientation {
+                                    vis_h / vis_w
+                                } else {
+                                    vis_w / vis_h
+                                };
+                                let target_aspect = box_aspect / src_aspect;
+                                let new_crop_w = (old_crop_area * target_aspect).sqrt();
+                                let new_crop_h = (old_crop_area / target_aspect).sqrt();
+                                let half_w = new_crop_w / 2.0;
+                                let half_h = new_crop_h / 2.0;
+                                item.crop_u0 = Some((old_center_u - half_w).max(0.0));
+                                item.crop_v0 = Some((old_center_v - half_h).max(0.0));
+                                item.crop_u1 = Some((old_center_u + half_w).min(1.0));
+                                item.crop_v1 = Some((old_center_v + half_h).min(1.0));
+                            }
+                        }
                         self.relayout_queue();
                         if let Some(id) = self.state.selected_queue_id {
                             if let Some(item) = self.state.queue.iter().find(|q| q.id == id) {

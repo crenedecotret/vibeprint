@@ -753,6 +753,82 @@ impl App {
             });
     }
 
+    /// Compute crop-editor dimensions for a queued image given an inversion state.
+    /// Returns (target_w, target_h, final_w, final_h).
+    fn crop_editor_dimensions(
+        &self,
+        q: &vibeprint::layout_engine::QueuedImage,
+        src_w: f32,
+        src_h: f32,
+        will_rotate: bool,
+        inverted: bool,
+    ) -> (f32, f32, f32, f32) {
+        let (ia_w_in, ia_h_in) = self.imageable_size_in();
+        let (w_in, h_in) = if q.fit_to_page {
+            (ia_w_in, ia_h_in)
+        } else {
+            q.size.as_inches()
+        };
+
+        let src_landscape = src_w > src_h;
+        let (oriented_w, oriented_h) = if src_landscape {
+            (h_in, w_in)
+        } else {
+            (w_in, h_in)
+        };
+
+        let (target_w, target_h) = if q.force_original_orientation && inverted {
+            (oriented_h, oriented_w)
+        } else if will_rotate {
+            (oriented_h, oriented_w)
+        } else {
+            (oriented_w, oriented_h)
+        };
+
+        let (final_w, final_h) =
+            if q.border_type == vibeprint::layout_engine::BorderType::Outer
+                && q.border_width_pt > 0.0
+            {
+                let border_in = q.border_width_pt / 72.0;
+                let (expand_w, expand_h) = if inverted && !q.force_original_orientation {
+                    (target_h, target_w)
+                } else {
+                    (target_w, target_h)
+                };
+                let (expanded_w, expanded_h) = (
+                    expand_w + border_in * 2.0,
+                    expand_h + border_in * 2.0,
+                );
+                if inverted && !q.force_original_orientation {
+                    (expanded_h, expanded_w)
+                } else {
+                    (expanded_w, expanded_h)
+                }
+            } else if q.border_type == vibeprint::layout_engine::BorderType::Inner
+                && q.border_width_pt > 0.0
+            {
+                let border_in = q.border_width_pt / 72.0;
+                let (shrink_w, shrink_h) = if inverted && !q.force_original_orientation {
+                    (target_h, target_w)
+                } else {
+                    (target_w, target_h)
+                };
+                let (shrunk_w, shrunk_h) = (
+                    (shrink_w - border_in * 2.0).max(0.1),
+                    (shrink_h - border_in * 2.0).max(0.1),
+                );
+                if inverted && !q.force_original_orientation {
+                    (shrunk_h, shrunk_w)
+                } else {
+                    (shrunk_w, shrunk_h)
+                }
+            } else {
+                (target_w, target_h)
+            };
+
+        (target_w, target_h, final_w, final_h)
+    }
+
     pub(crate) fn show_crop_editor(&mut self, ctx: &Context) {
         let Some(queue_id) = self.state.crop_editor_queue_id else {
             self.state.show_crop_editor = false;
@@ -780,8 +856,8 @@ impl App {
         let q_fit_to_page = q.fit_to_page;
         let q_size = q.size;
         let q_src_size_px = q.src_size_px;
-        let q_border_type = q.border_type;
-        let q_border_width_pt = q.border_width_pt;
+        let _q_border_type = q.border_type;
+        let _q_border_width_pt = q.border_width_pt;
         let q_force_original_orientation = q.force_original_orientation;
 
         let screen = ctx.screen_rect();
@@ -850,59 +926,8 @@ impl App {
                     will_rotate
                 };
 
-                let (target_w, target_h) = if q_force_original_orientation && self.state.crop_editor_inverted {
-                    (oriented_h, oriented_w)
-                } else if will_rotate {
-                    (oriented_h, oriented_w)
-                } else {
-                    (oriented_w, oriented_h)
-                };
-
-                // Adjust cell dimensions for border type:
-                // - Outer: expand by 2×border (border adds outside the cell)
-                // - Inner: shrink by 2×border (border eats inside the cell)
-                // This ensures crop aspect matches the visible area.
-                let (final_w, final_h) = if q_border_type
-                    == vibeprint::layout_engine::BorderType::Outer
-                    && q_border_width_pt > 0.0
-                {
-                    let border_in = q_border_width_pt / 72.0;
-                    let (expand_w, expand_h) = if self.state.crop_editor_inverted && !q_force_original_orientation {
-                        (target_h, target_w)
-                    } else {
-                        (target_w, target_h)
-                    };
-                    let (expanded_w, expanded_h) = (
-                        expand_w + border_in * 2.0,
-                        expand_h + border_in * 2.0,
-                    );
-                    if self.state.crop_editor_inverted && !q_force_original_orientation {
-                        (expanded_h, expanded_w)
-                    } else {
-                        (expanded_w, expanded_h)
-                    }
-                } else if q_border_type
-                    == vibeprint::layout_engine::BorderType::Inner
-                    && q_border_width_pt > 0.0
-                {
-                    let border_in = q_border_width_pt / 72.0;
-                    let (shrink_w, shrink_h) = if self.state.crop_editor_inverted && !q_force_original_orientation {
-                        (target_h, target_w)
-                    } else {
-                        (target_w, target_h)
-                    };
-                    let (shrunk_w, shrunk_h) = (
-                        (shrink_w - border_in * 2.0).max(0.1),
-                        (shrink_h - border_in * 2.0).max(0.1),
-                    );
-                    if self.state.crop_editor_inverted && !q_force_original_orientation {
-                        (shrunk_h, shrunk_w)
-                    } else {
-                        (shrunk_w, shrunk_h)
-                    }
-                } else {
-                    (target_w, target_h)
-                };
+                let (target_w, target_h, final_w, final_h) =
+                    self.crop_editor_dimensions(&q, src_w, src_h, will_rotate, self.state.crop_editor_inverted);
 
                 // Aspect for the crop selection box
                 // When inverted, the rotation flip will cause the opposite aspect
@@ -1011,11 +1036,14 @@ impl App {
                     }
 
                     if cb.changed() {
+                        let inverted = self.state.crop_editor_inverted;
+                        let (_target_w, _target_h, final_w, final_h) =
+                            self.crop_editor_dimensions(&q, src_w, src_h, will_rotate, inverted);
                         // Reset crop to auto-calculated for the new orientation.
                         // When inverted, flip the rotation decision to match processor logic.
                         let will_rotate_for_uv = if q_force_original_orientation {
                             false
-                        } else if self.state.crop_editor_inverted {
+                        } else if inverted {
                             !will_rotate
                         } else {
                             will_rotate
@@ -1299,11 +1327,14 @@ impl App {
                     && invert_response.clicked_by(egui::PointerButton::Secondary)
                 {
                     self.state.crop_editor_inverted = !self.state.crop_editor_inverted;
+                    let inverted = self.state.crop_editor_inverted;
+                    let (_target_w, _target_h, final_w, final_h) =
+                        self.crop_editor_dimensions(&q, src_w, src_h, will_rotate, inverted);
                     // Reset crop to auto-calculated for the new orientation.
                     // When inverted, flip the rotation decision to compute opposite aspect.
                     let will_rotate_for_uv = if q_force_original_orientation {
                         false
-                    } else if self.state.crop_editor_inverted {
+                    } else if inverted {
                         !will_rotate
                     } else {
                         will_rotate
@@ -1418,12 +1449,15 @@ if apply_btn.clicked() {
 
                         // Reset button (middle)
                         if ui.add_sized(btn_size, egui::Button::new("Reset")).clicked() {
+                            let inverted = self.state.crop_editor_inverted;
+                            let (_target_w, _target_h, final_w, final_h) =
+                                self.crop_editor_dimensions(&q, src_w, src_h, will_rotate, inverted);
                             // Reset to auto-calculated centered crop
                             // Use final_w/final_h which accounts for crop_editor_inverted.
                             // When inverted, flip the rotation decision to match processor logic.
                             let will_rotate_for_uv = if q_force_original_orientation {
                                 false
-                            } else if self.state.crop_editor_inverted {
+                            } else if inverted {
                                 !will_rotate
                             } else {
                                 will_rotate
