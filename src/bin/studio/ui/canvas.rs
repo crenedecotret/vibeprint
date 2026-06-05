@@ -1,5 +1,6 @@
 use crate::types::CutMarks;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use std::path::PathBuf;
 
 /// Draw a filled rectangle with rounded coordinates to prevent sub-pixel gaps
 fn draw_solid_rect(painter: &egui::Painter, rect: Rect, color: Color32) {
@@ -533,6 +534,29 @@ impl App {
                     egui::CursorIcon::Grab
                 };
                 ui.ctx().set_cursor_icon(icon);
+            }
+        }
+
+        // ── DnD drop target (batch enqueue from file browser) ─────────
+        {
+            let ctx = ui.ctx();
+            let has_payload = egui::DragAndDrop::has_payload_of_type::<Vec<PathBuf>>(ctx);
+            let pointer_in_canvas = ui.input(|i| i.pointer.hover_pos())
+                .map_or(false, |pos| canvas_area.contains(pos));
+            if has_payload && pointer_in_canvas {
+                // Blue halo around the white paper (not the full canvas section)
+                painter.rect_stroke(
+                    paper_rect.shrink(2.0),
+                    0.0,
+                    Stroke::new(4.0, Color32::from_rgb(80, 170, 255)),
+                );
+            }
+            // On the release frame, if the pointer is over our area, take the payload
+            if has_payload && pointer_in_canvas && ui.input(|i| i.pointer.any_released()) {
+                if let Some(payload) = egui::DragAndDrop::take_payload::<Vec<PathBuf>>(ctx) {
+                    let paths = std::sync::Arc::unwrap_or_clone(payload);
+                    self.start_batch_enqueue(paths);
+                }
             }
         }
 

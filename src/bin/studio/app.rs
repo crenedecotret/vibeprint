@@ -324,6 +324,7 @@ impl App {
         self.state.nav_forward.clear();
         self.state.current_dir = path.clone();
         self.state.addr_bar = path.to_string_lossy().into_owned();
+        self.state.selected_paths.clear();
         let sel = self.state.selected.clone();
         self.state.thumbs.retain(|p, _| sel.as_ref() == Some(p));
         self.scan_dir();
@@ -335,6 +336,7 @@ impl App {
             self.state.nav_forward.push(cur);
             self.state.current_dir = prev.clone();
             self.state.addr_bar = prev.to_string_lossy().into_owned();
+            self.state.selected_paths.clear();
             let sel = self.state.selected.clone();
             self.state.thumbs.retain(|p, _| sel.as_ref() == Some(p));
             self.scan_dir();
@@ -347,6 +349,7 @@ impl App {
             self.state.nav_history.push(cur);
             self.state.current_dir = next.clone();
             self.state.addr_bar = next.to_string_lossy().into_owned();
+            self.state.selected_paths.clear();
             let sel = self.state.selected.clone();
             self.state.thumbs.retain(|p, _| sel.as_ref() == Some(p));
             self.scan_dir();
@@ -363,6 +366,72 @@ impl App {
         }
 
         let _ = self.state.stager_tx.as_ref().unwrap().send(path);
+    }
+
+    pub(crate) fn start_batch_enqueue(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        let valid: Vec<PathBuf> = paths.into_iter().filter(|p| is_image(p)).collect();
+        if valid.is_empty() {
+            self.state.log.push("⚠ No valid images to enqueue".into());
+            return;
+        }
+        self.state
+            .log
+            .push(format!("Enqueuing {} image(s) with Fit to Page...", valid.len()));
+
+        // Clear file-browser selection after drop
+        self.state.selected_paths.clear();
+        self.state.highlighted = None;
+        self.state.batch_add_mode = false;
+        self.state.batch_target_size_idx = None;
+
+        let first = valid[0].clone();
+        self.state.auto_enqueue_queue = valid.into_iter().skip(1).collect();
+        self.state.auto_enqueue_pending = true;
+        self.state.auto_enqueue_path = Some(first.clone());
+
+        self.stage_image(first);
+    }
+
+    pub(crate) fn start_batch_enqueue_with_size(&mut self, size_idx: usize) {
+        if self.state.selected_paths.is_empty() {
+            return;
+        }
+        let paths: Vec<PathBuf> = self.state.selected_paths.iter().cloned().collect();
+        let valid: Vec<PathBuf> = paths.into_iter().filter(|p| is_image(p)).collect();
+        if valid.is_empty() {
+            self.state.log.push("⚠ No valid images to enqueue".into());
+            return;
+        }
+
+        let size_label = if size_idx == FIT_PAGE_IDX {
+            "Fit to Page".to_string()
+        } else {
+            print_sizes(self.state.use_metric)
+                .get(size_idx)
+                .map(|(_, _, label)| label.to_string())
+                .unwrap_or_else(|| "custom".to_string())
+        };
+        self.state.log.push(format!(
+            "Enqueuing {} image(s) with '{}'...",
+            valid.len(),
+            size_label
+        ));
+
+        // Clear file-browser selection after enqueue
+        self.state.selected_paths.clear();
+        self.state.highlighted = None;
+        self.state.batch_add_mode = false;
+
+        let first = valid[0].clone();
+        self.state.auto_enqueue_queue = valid.into_iter().skip(1).collect();
+        self.state.auto_enqueue_pending = true;
+        self.state.auto_enqueue_path = Some(first.clone());
+        self.state.batch_target_size_idx = Some(size_idx);
+
+        self.stage_image(first);
     }
 
     pub(crate) fn mark_preview_dirty(&mut self) {
@@ -1392,14 +1461,32 @@ impl App {
                         if self.state.auto_enqueue_pending
                             && self.state.auto_enqueue_path.as_ref() == Some(&path)
                         {
-                            if self.enqueue_staged_with_idx(FIT_PAGE_IDX) {
+                            let size_idx = self.state.batch_target_size_idx.unwrap_or(FIT_PAGE_IDX);
+                            if self.enqueue_staged_with_idx(size_idx) {
+                                let size_label = if size_idx == FIT_PAGE_IDX {
+                                    "Fit to Page".to_string()
+                                } else {
+                                    print_sizes(self.state.use_metric)
+                                        .get(size_idx)
+                                        .map(|(_, _, label)| label.to_string())
+                                        .unwrap_or_else(|| "custom".to_string())
+                                };
                                 self.state.log.push(format!(
-                                    "Auto-enqueued with 'Fit to Page': {}",
+                                    "Auto-enqueued with '{}': {}",
+                                    size_label,
                                     path.display()
                                 ));
                             }
                             self.state.auto_enqueue_path = None;
-                            self.state.auto_enqueue_pending = false;
+                            // Check for more images in the batch queue
+                            if let Some(next) = self.state.auto_enqueue_queue.pop_front() {
+                                self.state.auto_enqueue_path = Some(next.clone());
+                                self.stage_image(next);
+                            } else {
+                                self.state.auto_enqueue_pending = false;
+                                self.state.batch_target_size_idx = None;
+                                self.state.log.push("✓ Batch enqueue complete".into());
+                            }
                         }
                     } else {
                         self.state.full_images.insert(path.clone(), ci.clone());

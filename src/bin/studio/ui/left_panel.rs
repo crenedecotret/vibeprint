@@ -192,6 +192,7 @@ impl App {
                     for path in &files {
                         let is_staged = self.state.staged.as_ref() == Some(path);
                         let is_hi = self.state.highlighted.as_ref() == Some(path);
+                        let is_selected = self.state.selected_paths.contains(path);
                         let thumb_f = (THUMB_PX as f32 * self.state.thumb_zoom).round();
 
                         // Aspect-ratio-preserving display size; square placeholder while loading
@@ -206,18 +207,18 @@ impl App {
                         };
 
                         let cell_size = Vec2::new(disp_w, disp_h + 14.0);
-                        let (resp, _) = ui.allocate_painter(cell_size, Sense::click());
+                        let (resp, _) = ui.allocate_painter(cell_size, Sense::click_and_drag());
                         let painter = ui.painter_at(resp.rect);
                         let img_rect =
                             Rect::from_min_size(resp.rect.min, Vec2::new(disp_w, disp_h));
 
-                        let fill = if is_hi {
-                            Color32::from_rgb(45, 55, 70)
-                        } else {
-                            Color32::TRANSPARENT
-                        };
-                        painter.rect_filled(img_rect, 4.0, fill);
-                        if is_hi {
+                        // Highlight background for focused item
+                        if is_hi && !is_selected {
+                            painter.rect_filled(
+                                img_rect,
+                                4.0,
+                                Color32::from_rgb(45, 55, 70),
+                            );
                             painter.rect_stroke(
                                 img_rect,
                                 4.0,
@@ -253,6 +254,41 @@ impl App {
                             }
                         }
 
+                        // Checkbox overlay for multi-selection
+                        if is_selected {
+                            let cb_size = 18.0;
+                            let cb_pad = 3.0;
+                            let cb_rect = Rect::from_min_size(
+                                img_rect.min + Vec2::new(cb_pad, cb_pad),
+                                Vec2::splat(cb_size),
+                            );
+                            // Dark rounded background
+                            painter.rect_filled(cb_rect, 3.0, Color32::from_rgba_premultiplied(0, 0, 0, 180));
+                            painter.rect_stroke(
+                                cb_rect,
+                                3.0,
+                                Stroke::new(1.5, Color32::from_rgb(80, 170, 255)),
+                            );
+                            // Checkmark
+                            let cx = cb_rect.center().x;
+                            let cy = cb_rect.center().y;
+                            let s = cb_size * 0.22;
+                            painter.line_segment(
+                                [
+                                    Pos2::new(cx - s * 1.2, cy),
+                                    Pos2::new(cx - s * 0.3, cy + s * 1.0),
+                                ],
+                                Stroke::new(2.0, Color32::WHITE),
+                            );
+                            painter.line_segment(
+                                [
+                                    Pos2::new(cx - s * 0.3, cy + s * 1.0),
+                                    Pos2::new(cx + s * 1.4, cy - s * 1.0),
+                                ],
+                                Stroke::new(2.0, Color32::WHITE),
+                            );
+                        }
+
                         let name = path.file_name().unwrap_or_default().to_string_lossy();
                         let text_color = if is_staged {
                             Color32::from_rgb(100, 180, 255)
@@ -279,9 +315,64 @@ impl App {
                             );
                         }
 
+                        // Handle click with modifiers
                         if resp.clicked() {
-                            self.state.highlighted = Some(path.clone());
-                            self.stage_image(path.clone());
+                            let modifiers = ui.input(|i| i.modifiers);
+                            if modifiers.ctrl {
+                                // CTRL+click: toggle selection, enter batch mode
+                                if is_selected {
+                                    self.state.selected_paths.remove(path);
+                                } else {
+                                    self.state.selected_paths.insert(path.clone());
+                                    self.state.highlighted = Some(path.clone());
+                                }
+                                self.state.batch_add_mode = true;
+                                self.state.right_tab = crate::types::RightTab::ImageProperties;
+                            } else if modifiers.shift {
+                                // SHIFT+click: range select, enter batch mode
+                                if let Some(hi_path) = &self.state.highlighted {
+                                    let files = self.state.image_files.clone();
+                                    if let Some(hi_idx) = files.iter().position(|p| p == hi_path) {
+                                        if let Some(click_idx) = files.iter().position(|p| p == path) {
+                                            let start = hi_idx.min(click_idx);
+                                            let end = hi_idx.max(click_idx);
+                                            for i in start..=end {
+                                                self.state.selected_paths.insert(files[i].clone());
+                                            }
+                                        }
+                                    } else {
+                                        self.state.selected_paths.insert(path.clone());
+                                        self.state.highlighted = Some(path.clone());
+                                    }
+                                } else {
+                                    self.state.selected_paths.insert(path.clone());
+                                    self.state.highlighted = Some(path.clone());
+                                }
+                                self.state.batch_add_mode = true;
+                                self.state.right_tab = crate::types::RightTab::ImageProperties;
+                            } else {
+                                // Plain click: clear selection, stage image, enter batch mode
+                                self.state.selected_paths.clear();
+                                self.state.selected_paths.insert(path.clone());
+                                self.state.highlighted = Some(path.clone());
+                                self.state.batch_add_mode = true;
+                                self.stage_image(path.clone());
+                            }
+                        }
+
+                        // Drag source setup
+                        if resp.drag_started() {
+                            // Determine payload: if dragged image is selected, use all selected; else just this one
+                            let payload: Vec<PathBuf> = if is_selected && !self.state.selected_paths.is_empty() {
+                                self.state.selected_paths.iter().cloned().collect()
+                            } else {
+                                vec![path.clone()]
+                            };
+                            resp.dnd_set_drag_payload(payload);
+                            self.state.drag_active = true;
+                        }
+                        if resp.drag_stopped() {
+                            self.state.drag_active = false;
                         }
                     }
                 });

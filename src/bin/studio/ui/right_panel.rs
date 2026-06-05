@@ -1,4 +1,5 @@
 use eframe::egui::{self, Color32, RichText, Vec2};
+use std::path::PathBuf;
 
 use crate::types::{
     print_sizes, CutMarks, Engine, IccPickerContext, Intent, ProcState, RightTab, FIT_PAGE_IDX,
@@ -994,7 +995,7 @@ impl App {
         });
 
         let has_target = self.state.staged.is_some() || self.state.selected_queue_id.is_some();
-        if !has_target {
+        if !has_target && !self.state.batch_add_mode {
             ui.add_space(8.0);
             ui.label(
                 RichText::new("Stage an image or select one from queue")
@@ -1064,7 +1065,9 @@ impl App {
                             .on_disabled_hover_text("Too large for the printable area");
                     }
                     if resp.clicked() {
-                        if self.state.staged.is_some() {
+                        if self.state.batch_add_mode {
+                            self.start_batch_enqueue_with_size(idx);
+                        } else if self.state.staged.is_some() {
                             let _ = self.enqueue_staged_with_idx(idx);
                         } else {
                             self.update_selected_queue_size_idx(idx);
@@ -1083,7 +1086,9 @@ impl App {
                             Color32::from_gray(210)
                         });
                 if ui.selectable_label(false, fit_text).clicked() {
-                    if self.state.staged.is_some() {
+                    if self.state.batch_add_mode {
+                        self.start_batch_enqueue_with_size(FIT_PAGE_IDX);
+                    } else if self.state.staged.is_some() {
                         let _ = self.enqueue_staged_with_idx(FIT_PAGE_IDX);
                     } else {
                         self.update_selected_queue_size_idx(FIT_PAGE_IDX);
@@ -1131,6 +1136,11 @@ impl App {
                     self.state.custom_size_long_str = long_str;
                     self.state.custom_size_input_is_metric = self.state.use_metric;
                     self.state.show_custom_size_modal = true;
+                }
+
+                // In batch mode, only show print sizes — skip crop/border/etc.
+                if self.state.batch_add_mode {
+                    return;
                 }
 
                 ui.separator();
@@ -2433,8 +2443,23 @@ impl App {
         ui.label(RichText::new("Queued Images").strong().size(12.0));
         ui.separator();
 
+        // Check for DnD payload to show visual feedback on the tab
+        let has_payload = egui::DragAndDrop::has_payload_of_type::<Vec<PathBuf>>(ui.ctx());
+
         if self.state.queue.is_empty() {
             ui.label(RichText::new("Queue is empty").weak().italics().size(11.0));
+            // Even with empty queue, allow drop
+            if has_payload {
+                let queue_area = ui.available_rect_before_wrap();
+                let pointer_in_queue = ui.input(|i| i.pointer.hover_pos())
+                    .map_or(false, |pos| queue_area.contains(pos));
+                if pointer_in_queue && ui.input(|i| i.pointer.any_released()) {
+                    if let Some(payload) = egui::DragAndDrop::take_payload::<Vec<PathBuf>>(ui.ctx()) {
+                        let paths = std::sync::Arc::unwrap_or_clone(payload);
+                        self.start_batch_enqueue(paths);
+                    }
+                }
+            }
             return;
         }
 
@@ -2448,6 +2473,19 @@ impl App {
         egui::ScrollArea::vertical()
             .id_salt("queue_list")
             .show(ui, |ui| {
+                // Drop target: if dragging from file browser, allow dropping on the queue list
+                if has_payload {
+                    let queue_area = ui.available_rect_before_wrap();
+                    let pointer_in_queue = ui.input(|i| i.pointer.hover_pos())
+                        .map_or(false, |pos| queue_area.contains(pos));
+                    if pointer_in_queue && ui.input(|i| i.pointer.any_released()) {
+                        if let Some(payload) = egui::DragAndDrop::take_payload::<Vec<PathBuf>>(ui.ctx()) {
+                            let paths = std::sync::Arc::unwrap_or_clone(payload);
+                            self.start_batch_enqueue(paths);
+                        }
+                    }
+                }
+
                 for (id, path, page) in &rows {
                     let name = path
                         .file_name()

@@ -125,6 +125,21 @@ impl eframe::App for App {
             }
         }
 
+        // CTRL+A — select all images in the file browser
+        if ctx.input(|i| i.key_pressed(eframe::egui::Key::A) && i.modifiers.ctrl) {
+            if !ctx.wants_keyboard_input() {
+                self.state.selected_paths.clear();
+                for path in &self.state.image_files {
+                    self.state.selected_paths.insert(path.clone());
+                }
+                if let Some(first) = self.state.image_files.first() {
+                    self.state.highlighted = Some(first.clone());
+                }
+                self.state.batch_add_mode = true;
+                self.state.right_tab = types::RightTab::ImageProperties;
+            }
+        }
+
         // Arrow key nudge for freehand placement
         if !ctx.wants_keyboard_input() {
             let shift = ctx.input(|i| i.modifiers.shift);

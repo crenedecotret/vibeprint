@@ -1,5 +1,5 @@
 use eframe::egui::{self, ColorImage, TextureHandle};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use uuid::Uuid;
@@ -493,6 +493,18 @@ pub(crate) struct AppState {
 
     // ── Cut marks ──
     pub cut_marks: CutMarks,
+
+    // ── Multi-select & drag-and-drop ──
+    pub selected_paths: HashSet<PathBuf>,
+    pub auto_enqueue_queue: VecDeque<PathBuf>,
+    pub drag_active: bool,
+
+    // ── Batch add mode ──
+    /// When true, Image Properties tab shows only print sizes and clicking
+    /// one enqueues all selected_paths images with that size.
+    pub batch_add_mode: bool,
+    /// Size index chosen for the current batch (None = Fit to Page).
+    pub batch_target_size_idx: Option<usize>,
 }
 
 impl AppState {
@@ -647,6 +659,11 @@ impl AppState {
             custom_border_color_temp: [0, 0, 0],
             icc_picker_context: IccPickerContext::Output,
             cut_marks: CutMarks::None,
+            selected_paths: HashSet::new(),
+            auto_enqueue_queue: VecDeque::new(),
+            drag_active: false,
+            batch_add_mode: false,
+            batch_target_size_idx: None,
         }
     }
 }
