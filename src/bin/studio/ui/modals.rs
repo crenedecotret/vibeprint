@@ -2000,7 +2000,7 @@ if apply_btn.clicked() {
 
                 // Version
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("Version 0.1.0").weak());
+                    ui.label(RichText::new("Version 1.0").weak());
                 });
 
                 ui.add_space(16.0);
