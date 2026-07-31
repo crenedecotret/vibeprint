@@ -5,6 +5,9 @@ use crate::types::{ThumbState, THUMB_PX};
 use crate::utils::draw_tree_node;
 use crate::App;
 
+const CAPTION_LINES: usize = 3;
+const CAPTION_H: f32 = 46.0;
+
 impl App {
     pub(crate) fn draw_left(&mut self, ui: &mut egui::Ui) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -43,6 +46,13 @@ impl App {
             {
                 self.navigate(home.clone());
             }
+            if ui
+                .add(egui::Button::new("⟳").min_size(btn_size))
+                .on_hover_text("Refresh (F5)")
+                .clicked()
+            {
+                self.refresh_full();
+            }
 
             // Push hamburger menu to the right
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -72,7 +82,11 @@ impl App {
         if addr_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             let p = PathBuf::from(&self.state.addr_bar);
             if p.is_dir() {
-                self.navigate(p);
+                if p == self.state.current_dir {
+                    self.refresh_full();
+                } else {
+                    self.navigate(p);
+                }
             } else {
                 self.state.addr_bar = self.state.current_dir.to_string_lossy().into_owned();
             }
@@ -206,8 +220,12 @@ impl App {
                             _ => (thumb_f, thumb_f),
                         };
 
-                        let cell_size = Vec2::new(disp_w, disp_h + 14.0);
+                        let cell_size = Vec2::new(disp_w, disp_h + CAPTION_H);
                         let (resp, _) = ui.allocate_painter(cell_size, Sense::click_and_drag());
+                        let name_owned = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        let resp = resp.on_hover_ui(|ui| {
+                            ui.label(RichText::new(name_owned.clone()).color(Color32::WHITE));
+                        });
                         let painter = ui.painter_at(resp.rect);
                         let img_rect =
                             Rect::from_min_size(resp.rect.min, Vec2::new(disp_w, disp_h));
@@ -289,21 +307,23 @@ impl App {
                             );
                         }
 
-                        let name = path.file_name().unwrap_or_default().to_string_lossy();
                         let text_color = if is_staged {
                             Color32::from_rgb(100, 180, 255)
                         } else {
                             Color32::LIGHT_GRAY
                         };
-                        painter.text(
-                            Pos2::new(resp.rect.min.x + 2.0, resp.rect.min.y + disp_h + 1.0),
-                            egui::Align2::LEFT_TOP,
-                            if name.len() > 12 {
-                                &name[..12]
-                            } else {
-                                name.as_ref()
-                            },
-                            egui::FontId::proportional(14.0),
+                        let mut job = egui::text::LayoutJob::simple(
+                            name_owned.clone(),
+                            egui::FontId::proportional(11.0),
+                            text_color,
+                            disp_w.max(1.0),
+                        );
+                        job.wrap.max_rows = CAPTION_LINES;
+                        job.wrap.break_anywhere = true;
+                        let galley = ui.fonts(|f| f.layout_job(job));
+                        painter.galley(
+                            Pos2::new(resp.rect.min.x + 2.0, resp.rect.min.y + disp_h + 2.0),
+                            galley,
                             text_color,
                         );
                         if is_staged {

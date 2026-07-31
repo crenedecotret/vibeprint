@@ -141,6 +141,11 @@ impl eframe::App for App {
             }
         }
 
+        // F5 — manual refresh
+        if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
+            self.refresh_full();
+        }
+
         // Arrow key nudge for freehand placement
         if !ctx.wants_keyboard_input() {
             let shift = ctx.input(|i| i.modifiers.shift);

@@ -370,6 +370,17 @@ pub(crate) struct AppState {
     pub thumb_zoom: f32,
     pub thumb_pool: rayon::ThreadPool,
 
+    // ── File watcher ──
+    pub debouncer: Option<notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>>,
+    pub refresh_rx: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
+    pub watched_dir: Option<PathBuf>,
+    /// Timestamp of the last watcher-triggered rescan. Used to suppress the
+    /// feedback loop: notify's inotify backend watches `IN_OPEN`, so our own
+    /// `read_dir`/`load_thumb` reads generate events that would otherwise cause
+    /// an infinite refresh loop. Events arriving within the cooldown window
+    /// (see `WATCH_COOLDOWN` in app.rs) are drained but not acted on.
+    pub last_watch_refresh: Option<std::time::Instant>,
+
     // ── CUPS ──
     pub printers: Vec<PrinterInfo>,
     pub all_caps: HashMap<String, PrinterCaps>,
@@ -591,6 +602,10 @@ impl AppState {
                 .num_threads(4)
                 .build()
                 .expect("failed to create thumbnail thread pool"),
+            debouncer: None,
+            refresh_rx: None,
+            watched_dir: None,
+            last_watch_refresh: None,
             printers: Vec::new(),
             all_caps: HashMap::new(),
             caps: None,

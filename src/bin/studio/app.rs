@@ -22,6 +22,14 @@ use crate::types::{
 };
 use crate::utils::{extract_embedded_icc_from_bytes, is_image, load_full_image_on_demand, load_thumb};
 
+/// Cooldown for watcher-triggered refreshes. notify's inotify backend watches
+/// `IN_OPEN`, so our own `read_dir()` / `load_thumb()` file reads generate
+/// events that would otherwise cause an infinite refresh loop. The 400 ms
+/// debouncer delivers those spurious events ~400-800 ms after our scan; a 1 s
+/// cooldown absorbs them. Real external changes arriving after the cooldown
+/// expires are processed normally.
+const WATCH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Main application wrapper
 pub struct App {
     pub state: AppState,
@@ -66,6 +74,20 @@ impl App {
                 }
             }
         });
+
+        // File watcher: notifies on directory changes for auto-refresh
+        let (refresh_tx, refresh_rx) = std::sync::mpsc::channel::<Vec<PathBuf>>();
+        let ctx_for_watch = cc.egui_ctx.clone();
+        let debouncer = notify_debouncer_mini::new_debouncer(
+            std::time::Duration::from_millis(400),
+            move |res: notify_debouncer_mini::DebounceEventResult| {
+                if let Ok(events) = res {
+                    let paths: Vec<PathBuf> = events.into_iter().map(|e| e.path).collect();
+                    let _ = refresh_tx.send(paths);
+                }
+                ctx_for_watch.request_repaint();
+            })
+        .ok();
 
         let s = load_settings();
         let curated_profiles = crate::icc::load_custom_icc_profile_entries();
@@ -225,6 +247,8 @@ impl App {
             curated_profiles, // NEW - last argument
         );
         state.stager_tx = Some(stager_tx);
+        state.debouncer = debouncer;
+        state.refresh_rx = Some(refresh_rx);
         state.pending_extra_option_indices = s.extra_option_indices;
         state.pending_media_type_key = s.media_type_key;
         state.pending_input_slot_key = s.input_slot_key;
@@ -260,10 +284,17 @@ impl App {
         }
 
         app.scan_dir();
+        app.rewatch_current_dir();
         app
     }
 
     pub(crate) fn scan_dir(&mut self) {
+        // Mark the start of our own filesystem reads so the watcher cooldown
+        // (pump()) absorbs the IN_OPEN/IN_CLOSE events that read_dir() and
+        // load_thumb() will generate. Without this, every scan triggers a
+        // watcher event → a rescan → a watcher event feedback loop.
+        self.state.last_watch_refresh = Some(std::time::Instant::now());
+
         self.state.tree_children_cache.clear();
         self.state.subdirs.clear();
         self.state.image_files.clear();
@@ -285,7 +316,7 @@ impl App {
             if path.is_dir() {
                 self.state.subdirs.push((name, path));
             } else if is_image(&path) {
-                if selected.as_ref() != Some(&path) {
+                if selected.as_ref() != Some(&path) && !self.state.thumbs.contains_key(&path) {
                     let tx = self.state.thumb_tx.clone();
                     let p = path.clone();
                     let px = self.thumb_load_px();
@@ -294,6 +325,28 @@ impl App {
                 self.state.image_files.push(path);
             }
         }
+        let sel = self.state.selected.clone();
+        self.state.thumbs.retain(|p, _| self.state.image_files.contains(p) || sel.as_ref() == Some(p));
+    }
+
+    pub(crate) fn rewatch_current_dir(&mut self) {
+        let new_dir = self.state.current_dir.clone();
+        let old = self.state.watched_dir.take();
+        if let Some(ref mut debouncer) = self.state.debouncer {
+            if let Some(old) = &old {
+                let _ = debouncer.watcher().unwatch(old);
+            }
+            let _ = debouncer.watcher().watch(
+                &new_dir,
+                notify_debouncer_mini::notify::RecursiveMode::NonRecursive,
+            );
+        }
+        self.state.watched_dir = Some(new_dir);
+    }
+
+    pub(crate) fn refresh_full(&mut self) {
+        self.scan_dir();
+        self.reload_thumbs();
     }
 
     pub(crate) fn thumb_load_px(&self) -> u32 {
@@ -303,6 +356,9 @@ impl App {
     }
 
     pub(crate) fn reload_thumbs(&mut self) {
+        // Stamp cooldown: reload_thumbs spawns load_thumb reads (IN_OPEN events).
+        self.state.last_watch_refresh = Some(std::time::Instant::now());
+
         let selected = self.state.selected.clone();
         self.state
             .thumbs
@@ -331,6 +387,7 @@ impl App {
         let sel = self.state.selected.clone();
         self.state.thumbs.retain(|p, _| sel.as_ref() == Some(p));
         self.scan_dir();
+        self.rewatch_current_dir();
     }
 
     pub(crate) fn nav_back(&mut self) {
@@ -343,6 +400,7 @@ impl App {
             let sel = self.state.selected.clone();
             self.state.thumbs.retain(|p, _| sel.as_ref() == Some(p));
             self.scan_dir();
+            self.rewatch_current_dir();
         }
     }
 
@@ -356,10 +414,16 @@ impl App {
             let sel = self.state.selected.clone();
             self.state.thumbs.retain(|p, _| sel.as_ref() == Some(p));
             self.scan_dir();
+            self.rewatch_current_dir();
         }
     }
 
     pub(crate) fn stage_image(&mut self, path: PathBuf) {
+        // The stager thread will read this file (std::fs::read), firing IN_OPEN
+        // on the watched directory. Stamp the cooldown so pump() absorbs that
+        // self-generated event instead of triggering a spurious rescan.
+        self.state.last_watch_refresh = Some(std::time::Instant::now());
+
         self.state.staged = Some(path.clone());
         self.state.staged_embedded_icc = None;
         self.state.staged_source_image = None;
@@ -642,6 +706,8 @@ impl App {
         }
         if !self.state.loading_images.contains(path) {
             self.state.loading_images.insert(path.clone());
+            // Stamp cooldown: the on-demand load reads the file (IN_OPEN event).
+            self.state.last_watch_refresh = Some(std::time::Instant::now());
             let tx = self.state.thumb_tx.clone();
             load_full_image_on_demand(path.clone(), tx, ctx.clone());
         }
@@ -1440,6 +1506,41 @@ impl App {
     }
 
     pub(crate) fn pump(&mut self, ctx: &Context) {
+        // Drain file-watcher events for targeted auto-refresh
+        let changed: Vec<PathBuf> = match &self.state.refresh_rx {
+            Some(rx) => {
+                let mut v = Vec::new();
+                while let Ok(paths) = rx.try_recv() {
+                    v.extend(paths);
+                }
+                v
+            }
+            None => Vec::new(),
+        };
+        if !changed.is_empty() {
+            // Cooldown: suppress events generated by our own read_dir/load_thumb
+            // reads (notify watches IN_OPEN on the current dir). Always update
+            // the timestamp so the window covers any in-flight thumbnail loads;
+            // only call scan_dir when outside the cooldown.
+            let now = std::time::Instant::now();
+            let in_cooldown = self
+                .state
+                .last_watch_refresh
+                .map(|t| now.duration_since(t) < WATCH_COOLDOWN)
+                .unwrap_or(false);
+            self.state.last_watch_refresh = Some(now);
+            if !in_cooldown {
+                let sel = self.state.selected.clone();
+                for p in &changed {
+                    // Drop only changed image thumbs (skip the selected one — scan_dir won't respawn it)
+                    if is_image(p) && sel.as_ref() != Some(p) {
+                        self.state.thumbs.remove(p);
+                    }
+                }
+                self.scan_dir();
+            }
+        }
+
         // Thumbnails / canvas image
         while let Ok((path, ci, embedded_icc, kind)) = self.state.thumb_rx.try_recv() {
             let name = path.to_string_lossy().to_string();
