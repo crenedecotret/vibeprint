@@ -30,7 +30,7 @@ cargo test --test safe_8bit_print_path  # integration: ICC embedding toggle for 
 
 - `--dpi <N>` is **required** for `vibeprint process`; there is no default.
 - `--bpc` defaults to on **only** for `--intent relative`; explicitly pass `--bpc` / `--no-bpc` if you want to override for other intents.
-- Engine flag accepts: `catmullrom` (default, alias `mks`), `lanczos3`, `iterative-step`, `mitchell-ewa`, `mitchell-ewa-sharp` (alias `mitchell-sharp`).
+- Engine flag accepts: `catmullrom` (alias `mks`), `lanczos3`, `iterative-step`, `mitchell-ewa`, `mitchell-ewa-sharp` (alias `mitchell-sharp`, **default**).
 - Generated outputs `*_out.tif`, `*_out.tiff`, engine-suffixed `*_<engine>.tif`, and a broad `*.tif` in the repo root are all gitignored (see `.gitignore`). Don't be surprised when processed output never shows up in `git status`.
 
 ## GUI (studio)

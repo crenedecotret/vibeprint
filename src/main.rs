@@ -18,7 +18,7 @@ struct Cli {
 
 #[derive(clap::ValueEnum, Debug, Clone)]
 enum CliEngine {
-    /// Catmull-Rom cubic resampler (default; accepts legacy alias "mks")
+    /// Catmull-Rom cubic resampler (accepts legacy alias "mks")
     #[value(name = "catmullrom", alias = "mks")]
     Mks,
     /// Classic Lanczos3
@@ -91,8 +91,8 @@ enum Command {
         /// Explicitly disable Black Point Compensation
         #[arg(long = "no-bpc", conflicts_with = "bpc")]
         no_bpc: bool,
-        /// Resampling engine (default: catmullrom)
-        #[arg(long = "engine", default_value = "catmullrom")]
+        /// Resampling engine (default: mitchell-ewa-sharp)
+        #[arg(long = "engine", default_value = "mitchell-ewa-sharp")]
         engine: CliEngine,
         /// Output bit depth: 8 (dithered) or 16 (default)
         #[arg(long = "depth", default_value = "16")]

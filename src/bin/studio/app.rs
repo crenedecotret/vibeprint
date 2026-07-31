@@ -138,7 +138,7 @@ impl App {
             Some("mitchell") => Engine::MitchellEwa,
             Some("mitchell-sharp") => Engine::MitchellEwaSharp,
             Some("catmullrom") | Some("mks") => Engine::Mks,
-            _ => Engine::MitchellEwa,
+            _ => Engine::MitchellEwaSharp,
         };
         let saved_intent = match s.intent.as_deref() {
             Some("perceptual") => Intent::Perceptual,
