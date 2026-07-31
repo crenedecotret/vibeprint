@@ -544,6 +544,8 @@ impl App {
                                         self.state.log.push(format!("⚠ Selected file is not a valid ICC profile: {}", path.display()));
                                     } else if let Err(e) = add_custom_icc_profile(path.clone()) {
                                         self.state.log.push(format!("⚠ Failed to add curated profile: {}", e));
+                                    } else if self.state.icc_curated_profiles.iter().any(|e| e.path == path) {
+                                        self.state.log.push(format!("Profile is already in curated list: {}", path.display()));
                                     } else if let Some(entry) = path_to_icc_entry(&path) {
                                         self.state.icc_curated_profiles.push(entry);
                                         self.state.log.push(format!("Added curated ICC profile: {}", path.display()));
