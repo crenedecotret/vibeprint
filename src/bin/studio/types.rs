@@ -87,6 +87,7 @@ pub(crate) struct IccProfileEntry {
 pub(crate) enum IccProfileSource {
     System,
     User,
+    UserCurated,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -94,6 +95,7 @@ pub(crate) enum IccProfileFilter {
     All,
     System,
     User,
+    UserCurated,
 }
 
 impl IccProfileEntry {
@@ -457,6 +459,10 @@ pub(crate) struct AppState {
     pub icc_auto_switch_pending: bool,
     pub saved_icc_filter_for_restore: IccProfileFilter,
     pub icc_picker_context: IccPickerContext,
+    pub icc_curated_profiles: Vec<IccProfileEntry>,
+    pub icc_picker_highlighted_path: Option<PathBuf>,
+    pub show_icc_missing_alert: bool,
+    pub icc_missing_alert_msg: String,
 
     // ── CLI auto-load ──
     pub auto_enqueue_path: Option<PathBuf>,
@@ -541,6 +547,7 @@ impl AppState {
         saved_bpc: bool,
         saved_use_metric: bool,
         saved_safe_8bit: bool,
+        curated_icc_profiles: Vec<IccProfileEntry>,
     ) -> Self {
         Self {
             current_dir: home.clone(),
@@ -672,6 +679,10 @@ impl AppState {
             show_about: false,
             custom_border_color_temp: [0, 0, 0],
             icc_picker_context: IccPickerContext::Output,
+            icc_curated_profiles: curated_icc_profiles,
+            icc_picker_highlighted_path: None,
+            show_icc_missing_alert: false,
+            icc_missing_alert_msg: String::new(),
             cut_marks: CutMarks::None,
             selected_paths: HashSet::new(),
             auto_enqueue_queue: VecDeque::new(),

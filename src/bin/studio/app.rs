@@ -68,6 +68,7 @@ impl App {
         });
 
         let s = load_settings();
+        let curated_profiles = crate::icc::load_custom_icc_profile_entries();
 
         let start_dir = s
             .current_dir
@@ -148,6 +149,7 @@ impl App {
             Some("all") => IccProfileFilter::All,
             Some("system") => IccProfileFilter::System,
             Some("user") => IccProfileFilter::User,
+            Some("user_curated") => IccProfileFilter::UserCurated,
             _ => IccProfileFilter::System,
         };
 
@@ -220,6 +222,7 @@ impl App {
             s.bpc.unwrap_or(true),
             s.use_metric.unwrap_or(false),
             s.safe_8bit_tiff_print_path.unwrap_or(false),
+            curated_profiles, // NEW - last argument
         );
         state.stager_tx = Some(stager_tx);
         state.pending_extra_option_indices = s.extra_option_indices;
@@ -1664,6 +1667,22 @@ impl App {
     }
 
     fn start_process_with_target(&mut self, target: ProcessTarget) {
+        if let Some(ref entry) = self.state.output_icc {
+            if !entry.path.is_file() {
+                self.state.log.push(format!(
+                    "⚠ Output ICC profile no longer exists: {}. Please select a new one.",
+                    entry.path.display()
+                ));
+                self.state.icc_missing_alert_msg = format!(
+                    "The previously selected ICC profile could not be found:\n{}\n\nPlease select a new profile.",
+                    entry.path.display()
+                );
+                self.state.output_icc = None;
+                self.state.show_icc_missing_alert = true;
+                return;
+            }
+        }
+
         if self.state.queue.is_empty() {
             self.state.log.push("⚠ Queue is empty.".into());
             return;
@@ -1863,6 +1882,21 @@ impl App {
             }
             let _ = tx.send(Ok((done, target_clone)));
         });
+    }
+
+    pub(crate) fn open_icc_picker_for_output(&mut self) {
+        self.state.show_icc_picker = true;
+        self.state.icc_picker_context = crate::types::IccPickerContext::Output;
+        use crate::icc::scan_icc_directories;
+        use std::sync::mpsc::channel;
+        let (tx, rx) = channel::<Vec<crate::types::IccProfileEntry>>();
+        self.state.icc_scan_rx = Some(rx);
+        self.state.icc_scan_pending = true;
+        self.state.icc_profiles.clear();
+        self.state.icc_filter_text.clear();
+        std::thread::spawn(move || scan_icc_directories(tx));
+        self.state.icc_picker_highlighted_path = None;
+        self.state.icc_curated_profiles = crate::icc::load_custom_icc_profile_entries();
     }
 }
 

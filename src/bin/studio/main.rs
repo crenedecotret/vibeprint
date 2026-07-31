@@ -50,6 +50,7 @@ impl eframe::App for App {
             IccProfileFilter::All => "all",
             IccProfileFilter::System => "system",
             IccProfileFilter::User => "user",
+            IccProfileFilter::UserCurated => "user_curated",
         };
         let printer_name = self
             .state
@@ -206,6 +207,9 @@ impl eframe::App for App {
             }
         }
 
+        if self.state.show_icc_missing_alert {
+            self.show_icc_missing_alert(ctx);
+        }
         if self.state.show_props {
             self.show_printer_props(ctx);
         }

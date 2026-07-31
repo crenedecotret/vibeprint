@@ -2,9 +2,15 @@ use eframe::egui::{self, Color32, Context, Pos2, Rect, RichText, Sense, Vec2};
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 
-use crate::icc::{apply_preview_transform, extract_file_date, extract_file_size};
+use crate::icc::{
+    add_custom_icc_profile, apply_preview_transform, extract_file_date, extract_file_size,
+    is_system_icc_path, is_user_icc_path, is_valid_icc_profile, path_to_icc_entry,
+    remove_custom_icc_profile,
+};
 use crate::processing::{submit_print_jobs_direct_tiff, submit_print_jobs_sync};
-use crate::types::{CustomSizeMode, IccProfileEntry, IccProfileFilter, IccProfileSource};
+use crate::types::{
+    CustomSizeMode, IccPickerContext, IccProfileEntry, IccProfileFilter, IccProfileSource,
+};
 use crate::App;
 
 impl App {
@@ -431,6 +437,11 @@ impl App {
                         IccProfileFilter::User,
                         "User profiles",
                     );
+                    ui.radio_value(
+                        &mut self.state.icc_profile_filter,
+                        IccProfileFilter::UserCurated,
+                        "User Curated",
+                    );
                     if previous_filter != self.state.icc_profile_filter {
                         use crate::app::save_settings;
                         use crate::types::{Engine, IccProfileFilter, Intent};
@@ -451,6 +462,7 @@ impl App {
                             IccProfileFilter::All => "all",
                             IccProfileFilter::System => "system",
                             IccProfileFilter::User => "user",
+                            IccProfileFilter::UserCurated => "user_curated",
                         };
                         let printer_name = self
                             .state
@@ -506,6 +518,55 @@ impl App {
                             cut_marks: Some(self.state.cut_marks.label().to_string()),
                         });
                     }
+
+                    if self.state.icc_profile_filter == IccProfileFilter::UserCurated {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let can_remove = self
+                                .state
+                                .icc_picker_highlighted_path
+                                .as_ref()
+                                .and_then(|path| {
+                                    self.state
+                                        .icc_curated_profiles
+                                        .iter()
+                                        .find(|e| &e.path == path)
+                                })
+                                .map(|e| e.source == IccProfileSource::UserCurated)
+                                .unwrap_or(false);
+                            let btn_size = egui::Vec2::new(80.0, 24.0);
+                            let add_btn = egui::Button::new("Add").min_size(btn_size);
+                            if ui.add(add_btn).clicked() {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("ICC Profile", &["icc", "icm"])
+                                    .pick_file()
+                                {
+                                    if !is_valid_icc_profile(&path) {
+                                        self.state.log.push(format!("⚠ Selected file is not a valid ICC profile: {}", path.display()));
+                                    } else if let Err(e) = add_custom_icc_profile(path.clone()) {
+                                        self.state.log.push(format!("⚠ Failed to add curated profile: {}", e));
+                                    } else if let Some(entry) = path_to_icc_entry(&path) {
+                                        self.state.icc_curated_profiles.push(entry);
+                                        self.state.log.push(format!("Added curated ICC profile: {}", path.display()));
+                                    } else {
+                                        self.state.log.push(format!("⚠ Failed to read curated ICC profile: {}", path.display()));
+                                    }
+                                }
+                            }
+                            let remove_btn = egui::Button::new("Remove").min_size(btn_size);
+                            if ui.add_enabled(can_remove, remove_btn).clicked() {
+                                if let Some(ref path) = self.state.icc_picker_highlighted_path {
+                                    if let Err(e) = remove_custom_icc_profile(path) {
+                                        self.state.log.push(format!("⚠ Failed to remove curated profile: {}", e));
+                                    } else {
+                                        self.state.icc_curated_profiles.retain(|e| &e.path != path);
+                                        self.state.icc_picker_highlighted_path = None;
+                                        self.state.log.push("Removed curated ICC profile from list.".into());
+                                    }
+                                }
+                            }
+                        });
+                    }
+
                 });
 
                 ui.add_space(8.0);
@@ -523,16 +584,35 @@ impl App {
                 ui.add_space(8.0);
 
                 // Profile list
+                // Build merged display list: curated first, then scanned (deduped by path)
+                let mut display_profiles: Vec<IccProfileEntry> = self.state.icc_curated_profiles.clone();
+                let curated_paths: std::collections::HashSet<PathBuf> =
+                    display_profiles.iter().map(|e| e.path.clone()).collect();
+                for p in &self.state.icc_profiles {
+                    if !curated_paths.contains(&p.path) {
+                        display_profiles.push(p.clone());
+                    }
+                }
+
                 let filter_lower = self.state.icc_filter_text.to_lowercase();
-                let filtered: Vec<&IccProfileEntry> = self
-                    .state
-                    .icc_profiles
+                let mut filtered: Vec<&IccProfileEntry> = display_profiles
                     .iter()
                     .filter(|p| {
                         let location_match = match self.state.icc_profile_filter {
                             IccProfileFilter::All => true,
-                            IccProfileFilter::System => p.source == IccProfileSource::System,
-                            IccProfileFilter::User => p.source == IccProfileSource::User,
+                            IccProfileFilter::System => {
+                                p.source == IccProfileSource::System
+                                    || (p.source == IccProfileSource::UserCurated
+                                        && is_system_icc_path(&p.path))
+                            }
+                            IccProfileFilter::User => {
+                                p.source == IccProfileSource::User
+                                    || (p.source == IccProfileSource::UserCurated
+                                        && is_user_icc_path(&p.path))
+                            }
+                            IccProfileFilter::UserCurated => {
+                                p.source == IccProfileSource::UserCurated
+                            }
                         };
 
                         let text_match = filter_lower.is_empty()
@@ -544,7 +624,17 @@ impl App {
                     })
                     .collect();
 
-                let mut selected_path: Option<PathBuf> = None;
+                // For "All", sort curated first, then by description
+                if self.state.icc_profile_filter == IccProfileFilter::All {
+                    filtered.sort_by(|a, b| {
+                        let a_curated = (a.source == IccProfileSource::UserCurated) as u8;
+                        let b_curated = (b.source == IccProfileSource::UserCurated) as u8;
+                        b_curated.cmp(&a_curated).then_with(|| {
+                            a.description.to_lowercase().cmp(&b.description.to_lowercase())
+                        })
+                    });
+                }
+
                 let scroll_height = height - 200.0;
 
                 egui::ScrollArea::vertical()
@@ -553,7 +643,7 @@ impl App {
                     .show(ui, |ui| {
                         if filtered.is_empty() {
                             ui.centered_and_justified(|ui| {
-                                if self.state.icc_profiles.is_empty() {
+                                if display_profiles.is_empty() {
                                     ui.label("No ICC profiles found in standard directories.");
                                 } else {
                                     ui.label("No profiles match your filter.");
@@ -593,11 +683,40 @@ impl App {
                                     for profile in filtered {
                                         body.row(22.0, |mut row| {
                                             row.col(|ui| {
-                                                if ui
-                                                    .selectable_label(false, &profile.description)
-                                                    .clicked()
-                                                {
-                                                    selected_path = Some(profile.path.clone());
+                                                let is_highlighted = self
+                                                    .state
+                                                    .icc_picker_highlighted_path
+                                                    .as_ref()
+                                                    == Some(&profile.path);
+                                                let resp = ui
+                                                    .selectable_label(is_highlighted, &profile.description);
+                                                if resp.clicked() {
+                                                    self.state.icc_picker_highlighted_path = Some(profile.path.clone());
+                                                }
+                                                if resp.double_clicked() {
+                                                    match self.state.icc_picker_context {
+                                                        IccPickerContext::Output => {
+                                                            self.state.output_icc = Some(profile.clone());
+                                                        }
+                                                        IccPickerContext::Monitor => {
+                                                            match std::fs::read(&profile.path) {
+                                                                Ok(bytes) => {
+                                                                    self.state.monitor_icc_override =
+                                                                        Some(profile.path.to_string_lossy().into_owned());
+                                                                    self.state.monitor_icc_profile = Some(bytes);
+                                                                }
+                                                                Err(e) => {
+                                                                    self.state.log.push(format!(
+                                                                        "Failed to read ICC {}: {}",
+                                                                        profile.path.display(),
+                                                                        e
+                                                                    ));
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    self.state.show_icc_picker = false;
+                                                    self.mark_preview_dirty();
                                                 }
                                             });
                                             row.col(|ui| {
@@ -626,50 +745,6 @@ impl App {
                                 });
                         }
                     });
-
-                if let Some(path) = selected_path {
-                    use crate::types::IccPickerContext;
-                    match self.state.icc_picker_context {
-                        IccPickerContext::Output => {
-                            if let Some(entry) =
-                                self.state.icc_profiles.iter().find(|e| e.path == path)
-                            {
-                                self.state.output_icc = Some(entry.clone());
-                            } else {
-                                let date = extract_file_date(&path);
-                                let file_size = extract_file_size(&path);
-                                let description = path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("Unknown")
-                                    .to_string();
-                                self.state.output_icc = Some(IccProfileEntry {
-                                    path,
-                                    description,
-                                    date,
-                                    file_size,
-                                    source: IccProfileSource::User,
-                                });
-                            }
-                        }
-                        IccPickerContext::Monitor => match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                self.state.monitor_icc_override =
-                                    Some(path.to_string_lossy().into_owned());
-                                self.state.monitor_icc_profile = Some(bytes);
-                            }
-                            Err(e) => {
-                                self.state.log.push(format!(
-                                    "Failed to read ICC {}: {}",
-                                    path.display(),
-                                    e
-                                ));
-                            }
-                        },
-                    }
-                    self.state.show_icc_picker = false;
-                    self.mark_preview_dirty();
-                }
 
                 ui.add_space(12.0);
                 ui.separator();
@@ -751,6 +826,45 @@ impl App {
                     });
                 });
             });
+    }
+
+    pub(crate) fn show_icc_missing_alert(&mut self, ctx: &Context) {
+        let screen = ctx.screen_rect();
+        let width = (screen.width() * 0.30).clamp(320.0, 480.0);
+        let scale = (screen.height() / 1080.0).clamp(1.0, 1.5);
+        let btn_size = [90.0 * scale, 30.0 * scale];
+
+        egui::Window::new(
+            RichText::new("ICC Profile Missing")
+                .strong()
+                .color(Color32::WHITE),
+        )
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size([width, 0.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("⚠")
+                    .size(24.0)
+                    .color(Color32::YELLOW),
+            );
+            ui.add_space(4.0);
+            for line in self.state.icc_missing_alert_msg.lines() {
+                ui.label(line);
+            }
+            ui.add_space(12.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_sized(btn_size, egui::Button::new("OK")).clicked() {
+                        self.state.show_icc_missing_alert = false;
+                        self.open_icc_picker_for_output();
+                    }
+                });
+            });
+        });
     }
 
     /// Compute crop-editor dimensions for a queued image given an inversion state.
