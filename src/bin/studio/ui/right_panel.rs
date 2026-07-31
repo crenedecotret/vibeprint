@@ -7,6 +7,10 @@ use crate::types::{
 use crate::utils::check_size_fit;
 use crate::App;
 
+/// Minimum imageable width/height the user is allowed to reserve when adjusting
+/// borders. Prevents collapsing the printable area to nothing.
+const MIN_IMAGEABLE_IN: f32 = 0.5;
+
 // ── RGB ↔ HSL helpers ───────────────────────────────────────────────────────
 
 fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
@@ -343,13 +347,17 @@ impl App {
                                 } else {
                                     v
                                 };
-                                let max_left = (0.5 * paper_w_in - self.state.user_border.right)
+                                let max_left = (paper_w_in
+                                    - self.state.user_border.right
+                                    - MIN_IMAGEABLE_IN)
                                     .max(self.state.reported_border.left);
                                 let new_left =
                                     input_in.clamp(self.state.reported_border.left, max_left);
                                 if (new_left - self.state.user_border.left).abs() > 0.0001 {
-                                    if self.state.user_border.right + new_left > 0.5 * paper_w_in {
-                                        let new_right = (0.5 * paper_w_in - new_left)
+                                    if self.state.user_border.right + new_left
+                                        > paper_w_in - MIN_IMAGEABLE_IN
+                                    {
+                                        let new_right = (paper_w_in - new_left - MIN_IMAGEABLE_IN)
                                             .max(self.state.reported_border.right);
                                         if (new_right - self.state.user_border.right).abs() > 0.0001
                                         {
@@ -406,13 +414,17 @@ impl App {
                                 } else {
                                     v
                                 };
-                                let max_right = (0.5 * paper_w_in - self.state.user_border.left)
+                                let max_right = (paper_w_in
+                                    - self.state.user_border.left
+                                    - MIN_IMAGEABLE_IN)
                                     .max(self.state.reported_border.right);
                                 let new_right =
                                     input_in.clamp(self.state.reported_border.right, max_right);
                                 if (new_right - self.state.user_border.right).abs() > 0.0001 {
-                                    if self.state.user_border.left + new_right > 0.5 * paper_w_in {
-                                        let new_left = (0.5 * paper_w_in - new_right)
+                                    if self.state.user_border.left + new_right
+                                        > paper_w_in - MIN_IMAGEABLE_IN
+                                    {
+                                        let new_left = (paper_w_in - new_right - MIN_IMAGEABLE_IN)
                                             .max(self.state.reported_border.left);
                                         if (new_left - self.state.user_border.left).abs() > 0.0001 {
                                             self.state.user_border.left = new_left;
@@ -528,13 +540,17 @@ impl App {
                                 } else {
                                     v
                                 };
-                                let max_top = (0.5 * paper_h_in - self.state.user_border.bottom)
+                                let max_top = (paper_h_in
+                                    - self.state.user_border.bottom
+                                    - MIN_IMAGEABLE_IN)
                                     .max(self.state.reported_border.top);
                                 let new_top =
                                     input_in.clamp(self.state.reported_border.top, max_top);
                                 if (new_top - self.state.user_border.top).abs() > 0.0001 {
-                                    if self.state.user_border.bottom + new_top > 0.5 * paper_h_in {
-                                        let new_bottom = (0.5 * paper_h_in - new_top)
+                                    if self.state.user_border.bottom + new_top
+                                        > paper_h_in - MIN_IMAGEABLE_IN
+                                    {
+                                        let new_bottom = (paper_h_in - new_top - MIN_IMAGEABLE_IN)
                                             .max(self.state.reported_border.bottom);
                                         if (new_bottom - self.state.user_border.bottom).abs()
                                             > 0.0001
@@ -592,13 +608,17 @@ impl App {
                                 } else {
                                     v
                                 };
-                                let max_bottom = (0.5 * paper_h_in - self.state.user_border.top)
+                                let max_bottom = (paper_h_in
+                                    - self.state.user_border.top
+                                    - MIN_IMAGEABLE_IN)
                                     .max(self.state.reported_border.bottom);
                                 let new_bottom =
                                     input_in.clamp(self.state.reported_border.bottom, max_bottom);
                                 if (new_bottom - self.state.user_border.bottom).abs() > 0.0001 {
-                                    if self.state.user_border.top + new_bottom > 0.5 * paper_h_in {
-                                        let new_top = (0.5 * paper_h_in - new_bottom)
+                                    if self.state.user_border.top + new_bottom
+                                        > paper_h_in - MIN_IMAGEABLE_IN
+                                    {
+                                        let new_top = (paper_h_in - new_bottom - MIN_IMAGEABLE_IN)
                                             .max(self.state.reported_border.top);
                                         if (new_top - self.state.user_border.top).abs() > 0.0001 {
                                             self.state.user_border.top = new_top;
@@ -675,13 +695,19 @@ impl App {
                         .and_then(|c| c.page_sizes.get(self.state.selected_page_size_idx))
                         .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
                         .unwrap_or((8.5, 11.0));
-                    if self.state.user_border.left + self.state.user_border.right > 0.5 * pw {
-                        self.state.user_border.right = (0.5 * pw - self.state.user_border.left)
-                            .max(self.state.reported_border.right);
+                    if self.state.user_border.left + self.state.user_border.right
+                        > pw - MIN_IMAGEABLE_IN
+                    {
+                        self.state.user_border.right =
+                            (pw - self.state.user_border.left - MIN_IMAGEABLE_IN)
+                                .max(self.state.reported_border.right);
                     }
-                    if self.state.user_border.top + self.state.user_border.bottom > 0.5 * ph {
-                        self.state.user_border.bottom = (0.5 * ph - self.state.user_border.top)
-                            .max(self.state.reported_border.bottom);
+                    if self.state.user_border.top + self.state.user_border.bottom
+                        > ph - MIN_IMAGEABLE_IN
+                    {
+                        self.state.user_border.bottom =
+                            (ph - self.state.user_border.top - MIN_IMAGEABLE_IN)
+                                .max(self.state.reported_border.bottom);
                     }
                     self.state.border_edit_l = crate::app::format_border_edit(
                         self.state.user_border.left,
@@ -1740,17 +1766,25 @@ impl App {
 
                     if let Some(v) = update_x {
                         let new_pt = (v / mm_factor * 72.0).clamp(0.0, max_x_pt);
+                        let mut changed = false;
                         if let Some(item) = self.state.queue.iter_mut().find(|q| q.id == id) {
+                            changed = (item.freehand_x_pt - new_pt).abs() > 0.001;
                             item.freehand_x_pt = new_pt;
                         }
-                        self.relayout_queue();
+                        if changed {
+                            self.relayout_queue();
+                        }
                     }
                     if let Some(v) = update_y {
                         let new_pt = (v / mm_factor * 72.0).clamp(0.0, max_y_pt);
+                        let mut changed = false;
                         if let Some(item) = self.state.queue.iter_mut().find(|q| q.id == id) {
+                            changed = (item.freehand_y_pt - new_pt).abs() > 0.001;
                             item.freehand_y_pt = new_pt;
                         }
-                        self.relayout_queue();
+                        if changed {
+                            self.relayout_queue();
+                        }
                     }
                 }
 
@@ -1904,6 +1938,12 @@ impl App {
                         );
                         self.state.border_width_edit_focus = resp.has_focus();
                         if resp.gained_focus() {
+                            // Remember which queue item the edit applies to. If
+                            // the user switches selection while the field is still
+                            // focused, lost_focus must not apply the edit to a
+                            // different item.
+                            self.state.border_width_edit_item_id =
+                                self.state.selected_queue_id;
                             if self.state.use_metric {
                                 self.state.border_width_edit_string = format!(
                                     "{}",
@@ -1915,26 +1955,33 @@ impl App {
                             }
                         }
                         if resp.lost_focus() {
-                            if self.state.use_metric {
-                                if let Ok(mm_val) =
-                                    self.state.border_width_edit_string.parse::<u32>()
-                                {
-                                    let pt = vibeprint::layout_engine::mm_to_inches(mm_val as f32)
-                                        * 72.0;
-                                    border_width_pt = pt.max(0.0).min(max_border_pt);
+                            // Only apply the edit if the user has not switched to
+                            // a different queue item while the field was focused.
+                            let edit_item_id = self.state.border_width_edit_item_id;
+                            let current_id = self.state.selected_queue_id;
+                            if edit_item_id == current_id && current_id.is_some() {
+                                if self.state.use_metric {
+                                    if let Ok(mm_val) =
+                                        self.state.border_width_edit_string.parse::<u32>()
+                                    {
+                                        let pt = vibeprint::layout_engine::mm_to_inches(mm_val as f32)
+                                            * 72.0;
+                                        border_width_pt = pt.max(0.0).min(max_border_pt);
+                                    }
+                                    self.state.border_width_edit_string = format!(
+                                        "{}",
+                                        (vibeprint::layout_engine::inches_to_mm(border_width_pt / 72.0))
+                                            .round() as u32
+                                    );
+                                } else {
+                                    if let Ok(v) = self.state.border_width_edit_string.parse::<f32>() {
+                                        border_width_pt = v.max(0.0).min(max_border_pt);
+                                    }
+                                    self.state.border_width_edit_string =
+                                        format!("{:.3}", border_width_pt.min(max_border_pt));
                                 }
-                                self.state.border_width_edit_string = format!(
-                                    "{}",
-                                    (vibeprint::layout_engine::inches_to_mm(border_width_pt / 72.0))
-                                        .round() as u32
-                                );
-                            } else {
-                                if let Ok(v) = self.state.border_width_edit_string.parse::<f32>() {
-                                    border_width_pt = v.max(0.0).min(max_border_pt);
-                                }
-                                self.state.border_width_edit_string =
-                                    format!("{:.3}", border_width_pt.min(max_border_pt));
                             }
+                            self.state.border_width_edit_item_id = None;
                         }
                         ui.label(if self.state.use_metric { "mm" } else { "pt" });
                         let max_label = if self.state.use_metric {
@@ -2421,15 +2468,12 @@ impl App {
                             item.border_type = border_type;
                             item.border_width_pt = border_width_pt.min(max_border_pt); // Clamp to max for this cell size
                             item.border_color = border_color;
-                            // Trigger relayout for outer border (affects cell size)
-                            if border_type == vibeprint::layout_engine::BorderType::Outer
-                                || (old_border_type
-                                    == Some(vibeprint::layout_engine::BorderType::Outer))
-                            {
-                                self.relayout_queue();
-                            } else {
-                                self.mark_preview_dirty();
-                            }
+                            // Border type/width changes affect both placement (outer
+                            // border expands the cell) and crop UVs (inner border
+                            // shrinks the visible area). Always relayout so the
+                            // queued image's placed_w_px/placed_h_px reflect the new
+                            // border state.
+                            self.relayout_queue();
                         }
                     }
                 }

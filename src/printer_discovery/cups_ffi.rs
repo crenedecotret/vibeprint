@@ -164,8 +164,11 @@ pub fn is_dest_default(dest: *const cups_dest_t) -> bool {
 
 /// Index into a cups_dest_t array via the concrete CupsDest struct
 /// so pointer arithmetic uses the correct element stride (not ZST stride).
-pub fn get_dest_at(dests: *mut cups_dest_t, index: i32) -> *mut cups_dest_t {
-    if dests.is_null() || index < 0 {
+///
+/// Bounds-checked: returns null if `index` is outside `[0, num_dests)` to
+/// prevent out-of-bounds reads from the caller.
+pub fn get_dest_at(dests: *mut cups_dest_t, num_dests: i32, index: i32) -> *mut cups_dest_t {
+    if dests.is_null() || index < 0 || index >= num_dests {
         return ptr::null_mut();
     }
     unsafe {

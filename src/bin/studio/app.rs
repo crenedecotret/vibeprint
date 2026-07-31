@@ -20,7 +20,7 @@ use crate::types::{
     IccProfileSource, Intent, LoadKind, ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX,
     MAX_PREVIEW_PX, QUEUE_SPACING_IN, THUMB_PX,
 };
-use crate::utils::{extract_embedded_icc_from_bytes, is_image, load_thumb};
+use crate::utils::{extract_embedded_icc_from_bytes, is_image, load_full_image_on_demand, load_thumb};
 
 /// Main application wrapper
 pub struct App {
@@ -481,7 +481,7 @@ impl App {
                 cached.clone()
             } else {
                 // Clone base image to release the &mut self borrow from ensure_full_image_loaded
-                let Some(base) = self.ensure_full_image_loaded(&path).cloned() else {
+                let Some(base) = self.ensure_full_image_loaded(&path, ctx).cloned() else {
                     continue;
                 };
                 let ci = self.build_preview_image(&path, &base);
@@ -624,25 +624,25 @@ impl App {
         h.finish()
     }
 
-    pub(crate) fn ensure_full_image_loaded(&mut self, path: &PathBuf) -> Option<&ColorImage> {
-        if !self.state.full_images.contains_key(path) {
-            let data = std::fs::read(path).ok()?;
-            let img = image::load_from_memory(&data).ok()?.into_rgb8();
-            let size = [img.width() as usize, img.height() as usize];
-            let pixels = img
-                .into_raw()
-                .chunks_exact(3)
-                .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
-                .collect();
-            self.state
-                .full_images
-                .insert(path.clone(), ColorImage { size, pixels });
-            self.state
-                .embedded_icc_by_path
-                .entry(path.clone())
-                .or_insert_with(|| extract_embedded_icc_from_bytes(&data));
+    /// Return the cached full-resolution image for `path`, or trigger a
+    /// background load if not yet cached. Returns `None` while the load is in
+    /// flight; the caller can fall back to a placeholder and rely on the
+    /// background thread to mark the preview dirty (via the `thumb_rx` channel
+    /// handled in `pump`) when the image becomes available.
+    pub(crate) fn ensure_full_image_loaded(
+        &mut self,
+        path: &PathBuf,
+        ctx: &Context,
+    ) -> Option<&ColorImage> {
+        if self.state.full_images.contains_key(path) {
+            return self.state.full_images.get(path);
         }
-        self.state.full_images.get(path)
+        if !self.state.loading_images.contains(path) {
+            self.state.loading_images.insert(path.clone());
+            let tx = self.state.thumb_tx.clone();
+            load_full_image_on_demand(path.clone(), tx, ctx.clone());
+        }
+        None
     }
 
     pub(crate) fn calc_reported_border(&self) -> Borders {
@@ -1447,6 +1447,15 @@ impl App {
                         .thumbs
                         .insert(path, crate::types::ThumbState::Ready(tex));
                 }
+                LoadKind::FullResOnDemand => {
+                    // Result of ensure_full_image_loaded()'s background load.
+                    self.state.loading_images.remove(&path);
+                    self.state.full_images.insert(path.clone(), ci);
+                    self.state
+                        .embedded_icc_by_path
+                        .insert(path, embedded_icc);
+                    self.mark_preview_dirty();
+                }
                 LoadKind::FullResStaged => {
                     if self.state.staged.as_ref() == Some(&path) {
                         let size = ci.size;
@@ -1799,11 +1808,14 @@ impl App {
             CutMarks::Crop => processor::CutMarkMode::Crop,
             CutMarks::GuideLines => processor::CutMarkMode::GuideLines,
         };
+        // Guide lines extend across the full max-imageable area (the processor's
+        // page extent). This matches the canvas preview which clips guide lines to
+        // the max-imageable region (see canvas.rs).
         let cut_mark_bounds_px = Some(processor::CutMarkBoundsPx {
-            left: offset_x,
-            top: offset_y,
-            right: offset_x.saturating_add(self.imageable_size_px().0),
-            bottom: offset_y.saturating_add(self.imageable_size_px().1),
+            left: 0,
+            top: 0,
+            right: page_w_px,
+            bottom: page_h_px,
         });
 
         if let ProcessTarget::Print = target {
@@ -2010,6 +2022,9 @@ mod tests {
 
     #[test]
     fn sum_cap_left_right() {
+        // Mirror the production formula in `right_panel.rs`: user borders must
+        // leave at least MIN_IMAGEABLE_IN of imageable width.
+        const MIN_IMAGEABLE_IN: f32 = 0.5;
         let reported = Borders {
             left: 0.1,
             right: 0.1,
@@ -2017,17 +2032,26 @@ mod tests {
             bottom: 0.1,
         };
         let paper_w = 8.5f32;
-        let half_w = paper_w * 0.5;
 
-        let left = 3.0f32.clamp(reported.left, (half_w - reported.right).max(reported.left));
-        let right = 3.0f32.clamp(reported.right, (half_w - left).max(reported.right));
+        // Sequentially apply two requested values, each clamped against the
+        // current value of the opposite border.
+        let left = 3.0f32.clamp(
+            reported.left,
+            (paper_w - reported.right - MIN_IMAGEABLE_IN).max(reported.left),
+        );
+        let right = 3.0f32.clamp(
+            reported.right,
+            (paper_w - left - MIN_IMAGEABLE_IN).max(reported.right),
+        );
         assert_eq!(left, 3.0);
-        assert_eq!(right, 1.25);
-        assert!(left + right <= half_w);
+        // With the wider cap the user gets the requested 3.0 right border too.
+        assert_eq!(right, 3.0);
+        assert!(left + right + MIN_IMAGEABLE_IN <= paper_w);
     }
 
     #[test]
     fn sum_cap_top_bottom() {
+        const MIN_IMAGEABLE_IN: f32 = 0.5;
         let reported = Borders {
             left: 0.1,
             right: 0.1,
@@ -2035,12 +2059,17 @@ mod tests {
             bottom: 0.1,
         };
         let paper_h = 11.0f32;
-        let half_h = paper_h * 0.5;
 
-        let top = 4.0f32.clamp(reported.top, (half_h - reported.bottom).max(reported.top));
-        let bottom = 2.0f32.clamp(reported.bottom, (half_h - top).max(reported.bottom));
+        let top = 4.0f32.clamp(
+            reported.top,
+            (paper_h - reported.bottom - MIN_IMAGEABLE_IN).max(reported.top),
+        );
+        let bottom = 2.0f32.clamp(
+            reported.bottom,
+            (paper_h - top - MIN_IMAGEABLE_IN).max(reported.bottom),
+        );
         assert_eq!(top, 4.0);
-        assert_eq!(bottom, 1.5);
-        assert!(top + bottom <= half_h);
+        assert_eq!(bottom, 2.0);
+        assert!(top + bottom + MIN_IMAGEABLE_IN <= paper_h);
     }
 }

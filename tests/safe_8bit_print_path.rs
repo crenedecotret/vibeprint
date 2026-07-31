@@ -1,23 +1,24 @@
 use std::fs;
 use std::path::Path;
 
+use tempfile::tempdir;
 use vibeprint::processor::{self, CompositePageOptions, PagePlacement, ResampleEngine};
 
 /// Test that 8-bit TIFF with embed_icc_profile=false does not contain an ICC profile tag
 #[test]
 fn safe_8bit_tiff_strips_icc_profile() {
-    let out_path = "/tmp/vibeprint_test_safe_8bit_no_icc.tif";
-    let _ = fs::remove_file(out_path);
+    let tmp = tempdir().expect("failed to create tempdir");
+    let out_path = tmp.path().join("safe_8bit_no_icc.tif");
 
     // Create a simple 64×64 test image
-    let test_img_path = "/tmp/vibeprint_test_input_8bit.tif";
-    create_simple_test_tiff(test_img_path, 64, 64);
+    let test_img_path = tmp.path().join("input_8bit.tif");
+    create_simple_test_tiff(&test_img_path, 64, 64);
 
     // Process with embed_icc_profile=false (safe 8-bit path)
     let opts = CompositePageOptions {
-        output: out_path.into(),
+        output: out_path.clone(),
         placements: vec![PagePlacement {
-            input: test_img_path.into(),
+            input: test_img_path.clone(),
             input_icc: None,
             crop_u0: 0.0,
             crop_v0: 0.0,
@@ -50,10 +51,13 @@ fn safe_8bit_tiff_strips_icc_profile() {
     processor::process_composite_page(opts).expect("processing failed");
 
     // Verify the TIFF exists and read it back
-    assert!(Path::new(out_path).exists(), "Output TIFF was not created");
+    assert!(
+        Path::new(&out_path).exists(),
+        "Output TIFF was not created"
+    );
 
     // Read the TIFF and check for ICC profile absence
-    let file = fs::File::open(out_path).expect("failed to open output TIFF");
+    let file = fs::File::open(&out_path).expect("failed to open output TIFF");
     let mut decoder = tiff::decoder::Decoder::new(file).expect("failed to create TIFF decoder");
 
     // Check that IccProfile tag is NOT present
@@ -68,27 +72,23 @@ fn safe_8bit_tiff_strips_icc_profile() {
     let (width, height) = decoder.dimensions().expect("failed to get dimensions");
     assert_eq!(width, 64, "width mismatch");
     assert_eq!(height, 64, "height mismatch");
-
-    // Cleanup
-    let _ = fs::remove_file(out_path);
-    let _ = fs::remove_file(test_img_path);
 }
 
 /// Test that standard export path (embed_icc_profile=true) DOES embed ICC profile
 #[test]
 fn standard_export_embeds_icc_profile() {
-    let out_path = "/tmp/vibeprint_test_standard_export_with_icc.tif";
-    let _ = fs::remove_file(out_path);
+    let tmp = tempdir().expect("failed to create tempdir");
+    let out_path = tmp.path().join("standard_export_with_icc.tif");
 
     // Create a simple 64×64 test image
-    let test_img_path = "/tmp/vibeprint_test_input_8bit_std.tif";
-    create_simple_test_tiff(test_img_path, 64, 64);
+    let test_img_path = tmp.path().join("input_8bit_std.tif");
+    create_simple_test_tiff(&test_img_path, 64, 64);
 
     // Process with embed_icc_profile=true (standard export path)
     let opts = CompositePageOptions {
-        output: out_path.into(),
+        output: out_path.clone(),
         placements: vec![PagePlacement {
-            input: test_img_path.into(),
+            input: test_img_path.clone(),
             input_icc: None,
             crop_u0: 0.0,
             crop_v0: 0.0,
@@ -121,10 +121,13 @@ fn standard_export_embeds_icc_profile() {
     processor::process_composite_page(opts).expect("processing failed");
 
     // Verify the TIFF exists
-    assert!(Path::new(out_path).exists(), "Output TIFF was not created");
+    assert!(
+        Path::new(&out_path).exists(),
+        "Output TIFF was not created"
+    );
 
     // Read the TIFF and check for ICC profile presence
-    let file = fs::File::open(out_path).expect("failed to open output TIFF");
+    let file = fs::File::open(&out_path).expect("failed to open output TIFF");
     let mut decoder = tiff::decoder::Decoder::new(file).expect("failed to create TIFF decoder");
 
     // Check that IccProfile tag IS present
@@ -142,27 +145,23 @@ fn standard_export_embeds_icc_profile() {
         icc_profile_data.len() > 4,
         "ICC profile should be larger than 4 bytes"
     );
-
-    // Cleanup
-    let _ = fs::remove_file(out_path);
-    let _ = fs::remove_file(test_img_path);
 }
 
 /// Test that RGB values are transformed (not just passed through)
 #[test]
 fn safe_8bit_applies_icc_transformation() {
-    let out_path = "/tmp/vibeprint_test_safe_8bit_transform.tif";
-    let _ = fs::remove_file(out_path);
+    let tmp = tempdir().expect("failed to create tempdir");
+    let out_path = tmp.path().join("safe_8bit_transform.tif");
 
     // Create a test TIFF with known RGB values
-    let test_img_path = "/tmp/vibeprint_test_input_8bit_transform.tif";
-    create_colored_test_tiff(test_img_path, 16, 16);
+    let test_img_path = tmp.path().join("input_8bit_transform.tif");
+    create_colored_test_tiff(&test_img_path, 16, 16);
 
     // Process with safe 8-bit path
     let opts = CompositePageOptions {
-        output: out_path.into(),
+        output: out_path.clone(),
         placements: vec![PagePlacement {
-            input: test_img_path.into(),
+            input: test_img_path.clone(),
             input_icc: None,
             crop_u0: 0.0,
             crop_v0: 0.0,
@@ -195,10 +194,13 @@ fn safe_8bit_applies_icc_transformation() {
     processor::process_composite_page(opts).expect("processing failed");
 
     // Verify the output exists
-    assert!(Path::new(out_path).exists(), "Output TIFF was not created");
+    assert!(
+        Path::new(&out_path).exists(),
+        "Output TIFF was not created"
+    );
 
     // Read back and verify pixels were processed
-    let file = fs::File::open(out_path).expect("failed to open output TIFF");
+    let file = fs::File::open(&out_path).expect("failed to open output TIFF");
     let mut decoder = tiff::decoder::Decoder::new(file).expect("failed to create TIFF decoder");
     let image_data = decoder.read_image().expect("failed to read image data");
 
@@ -219,16 +221,12 @@ fn safe_8bit_applies_icc_transformation() {
     } else {
         panic!("Expected U8 pixel data for 8-bit TIFF");
     }
-
-    // Cleanup
-    let _ = fs::remove_file(out_path);
-    let _ = fs::remove_file(test_img_path);
 }
 
 // ── Helper functions ────────────────────────────────────────────────────────
 
 /// Create a simple grayscale test TIFF
-fn create_simple_test_tiff(path: &str, width: u32, height: u32) {
+fn create_simple_test_tiff(path: &Path, width: u32, height: u32) {
     use tiff::encoder::{colortype, TiffEncoder};
 
     let file = fs::File::create(path).expect("failed to create test TIFF");
@@ -255,7 +253,7 @@ fn create_simple_test_tiff(path: &str, width: u32, height: u32) {
 }
 
 /// Create a colored test TIFF with distinct RGB values
-fn create_colored_test_tiff(path: &str, width: u32, height: u32) {
+fn create_colored_test_tiff(path: &Path, width: u32, height: u32) {
     use tiff::encoder::{colortype, TiffEncoder};
 
     let file = fs::File::create(path).expect("failed to create test TIFF");

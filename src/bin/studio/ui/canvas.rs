@@ -38,13 +38,25 @@ impl App {
         let (paper_w_pt, paper_h_pt) = selected_ps
             .map(|ps| ps.paper_size)
             .unwrap_or((612.0_f32, 792.0_f32));
-        // Calculate user-adjusted imageable area in points
+        // User-border area in points (used for ruler margin indicators and the
+        // user-border outline). This is the user's chosen "safe area".
         let ub = &self.state.user_border;
-        let (ia_l, ia_b, ia_r, ia_t) = (
+        let (ub_l, ub_b, ub_r, ub_t) = (
             ub.left * 72.0,               // left
             ub.bottom * 72.0,             // bottom
             paper_w_pt - ub.right * 72.0, // right
             paper_h_pt - ub.top * 72.0,   // top
+        );
+        // Max imageable area (printer's physical limit, i.e. reported_border).
+        // This matches the processor's coordinate system: item.position values are
+        // relative to the user-border origin, and `border_offset_px` translates
+        // them onto this max-imageable page.
+        let rb = &self.state.reported_border;
+        let (ia_l, ia_b, ia_r, ia_t) = (
+            rb.left * 72.0,
+            rb.bottom * 72.0,
+            paper_w_pt - rb.right * 72.0,
+            paper_h_pt - rb.top * 72.0,
         );
 
         let (resp, _) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
@@ -77,7 +89,8 @@ impl App {
         painter.rect_filled(paper_rect, 2.0, Color32::WHITE);
         painter.rect_stroke(paper_rect, 2.0, Stroke::new(1.0, Color32::from_gray(180)));
 
-        // Imageable area — gray dashed outline
+        // Max-imageable (reported_border) area — gray dashed outline.
+        // This is the actual page area the processor writes to.
         let ia_rect = Rect::from_min_max(
             paper_origin + Vec2::new(ia_l * scale, (paper_h_pt - ia_t) * scale),
             paper_origin + Vec2::new(ia_r * scale, (paper_h_pt - ia_b) * scale),
@@ -90,15 +103,34 @@ impl App {
             6.0,
         );
 
+        // User-border area — lighter dotted outline drawn inside the max imageable
+        // area. Indicates the user's chosen safe/cut region.
+        let user_ia_rect = Rect::from_min_max(
+            paper_origin + Vec2::new(ub_l * scale, (paper_h_pt - ub_t) * scale),
+            paper_origin + Vec2::new(ub_r * scale, (paper_h_pt - ub_b) * scale),
+        );
+        if user_ia_rect != ia_rect {
+            draw_dashed_rect(
+                &painter,
+                user_ia_rect,
+                Color32::from_rgba_premultiplied(60, 120, 200, 150),
+                1.0,
+                4.0,
+            );
+        }
+
         if self.state.preview_dirty
             || self.state.preview_cache_page != Some(self.state.current_page)
         {
             self.rebuild_canvas_texture(ui.ctx());
         }
         self.state.canvas_hit_rects.clear();
-        let (ia_w_px, ia_h_px) = self.imageable_size_px();
-        let sx = ia_rect.width() / ia_w_px.max(1) as f32;
-        let sy = ia_rect.height() / ia_h_px.max(1) as f32;
+        let (max_w_px, max_h_px) = self.max_imageable_size_px();
+        let sx = ia_rect.width() / max_w_px.max(1) as f32;
+        let sy = ia_rect.height() / max_h_px.max(1) as f32;
+        let (offset_x_px, offset_y_px) = self.border_offset_px();
+        let offset_x_f = offset_x_px as f32;
+        let offset_y_f = offset_y_px as f32;
 
         // Clone page items so we can call &mut self helpers inside the loop
         let page_items: Vec<_> = self
@@ -120,67 +152,75 @@ impl App {
                 let (w_px, h_px) = self.queued_box_px(item);
                 let r = Rect::from_min_size(
                     Pos2::new(
-                        ia_rect.min.x + item.position.x as f32 * sx,
-                        ia_rect.min.y + item.position.y as f32 * sy,
+                        ia_rect.min.x + (item.position.x as f32 + offset_x_f) * sx,
+                        ia_rect.min.y + (item.position.y as f32 + offset_y_f) * sy,
                     ),
                     Vec2::new(w_px as f32 * sx, h_px as f32 * sy),
                 );
                 let lx = len_px_canvas;
                 let wy = width_px_canvas;
                 // Top-left
-                painter.rect_filled(
+                draw_clipped_solid_rect(
+                    &painter,
                     Rect::from_min_max(Pos2::new(r.min.x - lx, r.min.y - wy), r.min),
-                    0.0,
+                    ia_rect,
                     black,
                 );
-                painter.rect_filled(
+                draw_clipped_solid_rect(
+                    &painter,
                     Rect::from_min_max(Pos2::new(r.min.x - wy, r.min.y - lx), r.min),
-                    0.0,
+                    ia_rect,
                     black,
                 );
                 // Top-right
-                painter.rect_filled(
+                draw_clipped_solid_rect(
+                    &painter,
                     Rect::from_min_max(
                         Pos2::new(r.max.x, r.min.y - wy),
                         Pos2::new(r.max.x + lx, r.min.y),
                     ),
-                    0.0,
+                    ia_rect,
                     black,
                 );
-                painter.rect_filled(
+                draw_clipped_solid_rect(
+                    &painter,
                     Rect::from_min_max(
                         Pos2::new(r.max.x, r.min.y - lx),
                         Pos2::new(r.max.x + wy, r.min.y),
                     ),
-                    0.0,
+                    ia_rect,
                     black,
                 );
                 // Bottom-left
-                painter.rect_filled(
+                draw_clipped_solid_rect(
+                    &painter,
                     Rect::from_min_max(
                         Pos2::new(r.min.x - lx, r.max.y),
                         Pos2::new(r.min.x, r.max.y + wy),
                     ),
-                    0.0,
+                    ia_rect,
                     black,
                 );
-                painter.rect_filled(
+                draw_clipped_solid_rect(
+                    &painter,
                     Rect::from_min_max(
                         Pos2::new(r.min.x - wy, r.max.y),
                         Pos2::new(r.min.x, r.max.y + lx),
                     ),
-                    0.0,
+                    ia_rect,
                     black,
                 );
                 // Bottom-right
-                painter.rect_filled(
+                draw_clipped_solid_rect(
+                    &painter,
                     Rect::from_min_max(r.max, Pos2::new(r.max.x + lx, r.max.y + wy)),
-                    0.0,
+                    ia_rect,
                     black,
                 );
-                painter.rect_filled(
+                draw_clipped_solid_rect(
+                    &painter,
                     Rect::from_min_max(r.max, Pos2::new(r.max.x + wy, r.max.y + lx)),
-                    0.0,
+                    ia_rect,
                     black,
                 );
             }
@@ -194,8 +234,8 @@ impl App {
                 let (w_px, h_px) = self.queued_box_px(item);
                 let r = Rect::from_min_size(
                     Pos2::new(
-                        ia_rect.min.x + item.position.x as f32 * sx,
-                        ia_rect.min.y + item.position.y as f32 * sy,
+                        ia_rect.min.x + (item.position.x as f32 + offset_x_f) * sx,
+                        ia_rect.min.y + (item.position.y as f32 + offset_y_f) * sy,
                     ),
                     Vec2::new(w_px as f32 * sx, h_px as f32 * sy),
                 );
@@ -244,8 +284,8 @@ impl App {
             let (w_px, h_px) = self.queued_box_px(item);
             let r = Rect::from_min_size(
                 Pos2::new(
-                    ia_rect.min.x + item.position.x as f32 * sx,
-                    ia_rect.min.y + item.position.y as f32 * sy,
+                    ia_rect.min.x + (item.position.x as f32 + offset_x_f) * sx,
+                    ia_rect.min.y + (item.position.y as f32 + offset_y_f) * sy,
                 ),
                 Vec2::new(w_px as f32 * sx, h_px as f32 * sy),
             );
@@ -263,21 +303,23 @@ impl App {
             let display_rect = if item.border_type == vibeprint::layout_engine::BorderType::Inner
                 && item.border_width_pt > 0.0
             {
-                let border_px =
-                    (item.border_width_pt / 72.0 * self.state.target_dpi as f32 * sx).max(1.0);
+                let bw = item.border_width_pt / 72.0 * self.state.target_dpi as f32;
+                let border_px_x = (bw * sx).max(1.0);
+                let border_px_y = (bw * sy).max(1.0);
                 Rect::from_min_size(
-                    r.min + Vec2::splat(border_px),
-                    r.size() - Vec2::splat(border_px * 2.0),
+                    r.min + Vec2::new(border_px_x, border_px_y),
+                    r.size() - Vec2::new(border_px_x * 2.0, border_px_y * 2.0),
                 )
             } else if item.border_type == vibeprint::layout_engine::BorderType::Outer
                 && item.border_width_pt > 0.0
             {
-                let border_px =
-                    (item.border_width_pt / 72.0 * self.state.target_dpi as f32 * sx).max(1.0);
+                let bw = item.border_width_pt / 72.0 * self.state.target_dpi as f32;
+                let border_px_x = (bw * sx).max(1.0);
+                let border_px_y = (bw * sy).max(1.0);
                 // Center the original image area within the expanded rect
                 Rect::from_min_size(
-                    r.min + Vec2::splat(border_px),
-                    r.size() - Vec2::splat(border_px * 2.0),
+                    r.min + Vec2::new(border_px_x, border_px_y),
+                    r.size() - Vec2::new(border_px_x * 2.0, border_px_y * 2.0),
                 )
             } else {
                 r
@@ -579,11 +621,12 @@ impl App {
             }
         }
 
-        // Rulers — pass imageable-area boundaries as pixel offsets from paper origin
-        let m_left = ia_l * scale;
-        let m_right = ia_r * scale;
-        let m_top = (paper_h_pt - ia_t) * scale;
-        let m_bottom = (paper_h_pt - ia_b) * scale;
+        // Rulers — orange markers indicate the user's chosen border boundaries
+        // (not the printer's physical max imageable area).
+        let m_left = ub_l * scale;
+        let m_right = ub_r * scale;
+        let m_top = (paper_h_pt - ub_t) * scale;
+        let m_bottom = (paper_h_pt - ub_b) * scale;
         draw_ruler_h(
             &painter,
             canvas_area,

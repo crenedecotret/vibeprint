@@ -1,88 +1,60 @@
 # Vibeprint
 
-ICC-aware print layout engine (Rust). Two binaries: `vibeprint` (CLI) and `studio` (GUI).
+ICC-aware print layout engine (Rust). Two binaries: `vibeprint` (CLI) and `studio` (GUI). See `README.md` for setup and quick start; this file only covers what an agent would otherwise get wrong.
 
 ## Build
 
 ```bash
-cargo build --release --no-default-features  # CLI-only, no X11 deps (test/verify only)
-cargo build --release                       # Build both binaries (default features = monitor-icc)
+cargo build --release                       # both binaries (default features = monitor-icc)
+cargo build --release --no-default-features # CLI-only, skips X11 — verification only
 ```
 
-- `monitor-icc` feature (default) pulls in `x11` and `libc` crates.
-- No rustfmt/clippy/Makefile config — uses Rust defaults.
-- **When building for the user** (not for compiler verification), always build with `cargo build --release` (default features). Never use `--no-default-features` for user-facing builds.
-
-## Run CLI
-
-```bash
-cargo run --release --bin vibeprint -- process --input in.tif --output out.tif --dpi 720
-cargo run --release --bin vibeprint -- printers   # List CUPS printers
-cargo run --release --bin vibeprint -- meta image.tif  # Image metadata
-```
-
-### Process Options
-
-- `--intent <relative|perceptual|saturation>` (default: relative)
-- `--engine <catmullrom|lanczos3|iterative-step|mitchell-ewa|mitchell-ewa-sharp>` (default: catmullrom)
-- `--dpi <N>` — **required**, controls output resolution
-- `--depth <8|16>` (default: 16)
-- `--sharpen <0-20>` (default: 5)
-- `--input-icc <path>` — input ICC profile (default: use embedded or sRGB)
-- `--output-icc <path>` — output ICC profile (default: sRGB passthrough)
-- `--bpc/--no-bpc` — black point compensation (on by default only for Relative intent)
-
-## GUI (studio)
-
-```bash
-cargo run --release --bin studio
-```
-
-Monitor ICC profile loading requires X11 — does **not** work on Wayland.
+- **Always build with default features when producing artifacts for the user.** Only use `--no-default-features` to check that the CLI still compiles without X11. The `monitor-icc` feature enables `x11` + `libc` and is required for `studio`.
+- No rustfmt/clippy config, no Makefile, no CI. Rust defaults apply.
 
 ## Test
 
 ```bash
-cargo test                                    # everything
-cargo test --test pipeline_validation         # focused integration test
-cargo test --test safe_8bit_print_path        # focused integration test
-cargo test --lib                              # unit tests only
+cargo test                              # everything
+cargo test --lib                        # unit tests only (skips integration suites)
+cargo test --test pipeline_validation   # integration: engine smoke, sharpen, layout, composite, PDF roundtrip
+cargo test --test safe_8bit_print_path  # integration: ICC embedding toggle for 8-bit output
 ```
 
-- Tests are in three inline modules (`src/layout_engine.rs`, `src/monitor_icc.rs`, `src/printer_discovery.rs`) plus integration tests in `tests/`.
-- Integration tests: `tests/pipeline_validation.rs` (engine smoke, sharpen, page layout, composite, PDF roundtrip) and `tests/safe_8bit_print_path.rs` (ICC embedding toggle).
-- Test `print_pipeline_pdf_output_is_unmodified` requires `ghostscript` installed.
-- No `[dev-dependencies]` in Cargo.toml — tests use the same dependency set as the crate.
+- Unit tests are inline in five files: `src/layout_engine.rs`, `src/monitor_icc.rs`, `src/printer_discovery.rs`, `src/bin/studio/app.rs`, `src/bin/studio/processing.rs`. Add new tests in the matching inline `#[cfg(test)] mod tests` block.
+- `print_pipeline_pdf_output_is_unmodified` (in `pipeline_validation.rs`) shells out to **`tiff2ps`** (from `libtiff-tools`) and **`gs`** (ghostscript). It will fail if either binary is missing.
+- `Cargo.toml` has an empty `[dev-dependencies]` section — tests use the crate's regular deps. Add dev-only deps there if needed.
+- `tests/bug_tests/` is currently an empty directory (no harness wired up).
 
-## System Dependencies
+## CLI Gotchas
 
-Ubuntu: `libcups2 cups-client libcups2-dev liblcms2-2 liblcms2-dev libx11-6 libx11-dev ghostscript libtiff-tools`
+- `--dpi <N>` is **required** for `vibeprint process`; there is no default.
+- `--bpc` defaults to on **only** for `--intent relative`; explicitly pass `--bpc` / `--no-bpc` if you want to override for other intents.
+- Engine flag accepts: `catmullrom` (default, alias `mks`), `lanczos3`, `iterative-step`, `mitchell-ewa`, `mitchell-ewa-sharp` (alias `mitchell-sharp`).
+- Generated outputs `*_out.tif`, `*_out.tiff`, engine-suffixed `*_<engine>.tif`, and a broad `*.tif` in the repo root are all gitignored (see `.gitignore`). Don't be surprised when processed output never shows up in `git status`.
 
-Fedora: `cups-libs cups-client lcms2 lcms2-devel libX11 libX11-devel ghostscript libtiff-tools`
+## GUI (studio)
 
-## Architecture
+- Entry point: `src/bin/studio/main.rs` (cargo bin discovered via `src/bin/studio/` layout, not declared in `Cargo.toml`).
+- Monitor ICC profile loading uses X11 directly — **does not work on Wayland**. Run under XWayland or a real X session when testing that path.
 
-```
-src/
-  lib.rs              — re-exports: processor, layout_engine, monitor_icc, printer_discovery
-  main.rs             — CLI entry, delegates to processor::process()
-  processor.rs        — ICC transform → resample → USM sharpen → TIFF output
-                        Also exposes process_composite_page() for the GUI path
-  layout_engine.rs    — page layout logic
-  monitor_icc.rs      — X11 monitor ICC profile extraction
-  printer_discovery.rs        — CUPS printer discovery
-  printer_discovery/cups_ffi.rs
-  bin/studio/         — eframe/egui GUI
-    main.rs, mod.rs, app.rs, types.rs, icc.rs, processing.rs, utils.rs
-    ui/               — canvas.rs, left_panel.rs, mod.rs, right_panel.rs, modals.rs
-```
+## Architecture (only the non-obvious bits)
 
-## Key Gotchas
+- `src/lib.rs` exposes four modules: `processor`, `layout_engine`, `monitor_icc`, `printer_discovery`. The CLI (`src/main.rs`) calls `processor::process()`; the GUI calls `processor::process_composite_page()`.
+- Studio code lives under `src/bin/studio/` with UI split into `ui/{canvas,left_panel,right_panel,modals}.rs`. `app.rs` holds the `eframe::App` state and the `queued_box_px` helper that the canvas and processor depend on.
+- `src/printer_discovery/cups_ffi.rs` contains hand-written CUPS bindings — there is no `cups-sys` crate dependency.
 
-- **Generated TIFFs are gitignored**: `*_out.tif`, `*_out.tiff`, and broad `*.tif` pattern in repo root. Do not commit processed output.
-- **Crop/border/inversion logic** is complex and documented in [`CROP_AND_BORDER.md`](./CROP_AND_BORDER.md). Key invariants:
-  - `force_original_orientation` orients the print size to match the **source image's natural orientation** (not the raw portrait-normalized print size).
-  - When `force_original_orientation && crop_inverted` are both true, the **cell dimensions must be swapped** from that natural orientation to match the inverted crop aspect, while the image content stays un-rotated.
-  - Every code path that selects between `(w, h)` and `(h, w)` must handle FOO and FOO+inverted before checking `will_rotate` — see the file's testing checklist.
-- **Order of operations matters** in border change handler (`right_panel.rs`): border width must be set *before* crop UV recalculation.
-- **Working-tree noise**: `.bak` files and `cargo_check.log` are present in the working tree but are not tracked by git. Do not commit them.
+## Crop / Border / Orientation Logic
+
+**This is the single highest-risk area in the codebase.** Read `CROP_AND_BORDER.md` before touching anything that selects cell dimensions, computes crop UVs, or handles border changes. Key invariants the file documents:
+
+- `PrintSize` is stored portrait-normalized (`w <= h`); every dimension-selection site must orient to the source aspect first.
+- `force_original_orientation` (FOO) forces `will_rotate = false` and orients the cell to the source's natural orientation.
+- `FOO && crop_inverted` is the trap case: cell dimensions swap from natural, but image content stays un-rotated. Every `(w, h)` vs `(h, w)` decision must check FOO and FOO+inverted **before** `will_rotate`.
+- In the border-change handler in `src/bin/studio/ui/right_panel.rs`, border width must be set **before** crop UV recalculation, or aspect drifts.
+- The testing checklist at the bottom of `CROP_AND_BORDER.md` enumerates every combination that must stay correct — run through it mentally for any change in this area.
+
+## Scratch / Local-Only
+
+- `.opencode/` is gitignored. `.opencode/plans/` holds prior agent plans and bug audits — useful prior art when investigating a regression, but not authoritative.
+- `cargo_check.log` is gitignored; safe to leave or delete.

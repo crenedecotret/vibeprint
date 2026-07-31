@@ -1503,38 +1503,50 @@ fn unsharp_mask_rgb16(
     amount: f64,
     threshold_frac: f64,
 ) -> Rgb16Image {
+    use rayon::prelude::*;
+
     let blurred = gaussian_blur_rgb16(img, sigma);
     let threshold = threshold_frac * 65535.0;
 
-    let w = img.width();
-    let h = img.height();
-    let mut result = vec![0u16; (w * h * 3) as usize];
+    let w = img.width() as usize;
+    let h = img.height() as usize;
+    let img_raw = img.as_raw();
+    let blur_raw = blurred.as_raw();
+    let mut result = vec![0u16; w * h * 3];
 
-    for y in 0..h {
-        for x in 0..w {
-            let orig = img.get_pixel(x, y);
-            let blur = blurred.get_pixel(x, y);
-            for c in 0..3usize {
-                let o = orig[c] as f64;
-                let b = blur[c] as f64;
-                let diff = o - b;
-                let idx = (y as usize * w as usize + x as usize) * 3 + c;
-                result[idx] = if diff.abs() > threshold {
-                    (o + amount * diff).round().clamp(0.0, 65535.0) as u16
-                } else {
-                    orig[c]
-                };
+    let row_stride = w * 3;
+    result
+        .par_chunks_mut(row_stride)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let row_offset = y * row_stride;
+            for x in 0..w {
+                let px_offset = row_offset + x * 3;
+                for c in 0..3usize {
+                    let o = img_raw[px_offset + c] as f64;
+                    let b = blur_raw[px_offset + c] as f64;
+                    let diff = o - b;
+                    row[x * 3 + c] = if diff.abs() > threshold {
+                        (o + amount * diff).round().clamp(0.0, 65535.0) as u16
+                    } else {
+                        img_raw[px_offset + c]
+                    };
+                }
             }
-        }
-    }
+        });
 
-    ImageBuffer::from_raw(w, h, result).expect("unsharp_mask_rgb16: buffer mismatch")
+    ImageBuffer::from_raw(w as u32, h as u32, result).expect("unsharp_mask_rgb16: buffer mismatch")
 }
+
+/// Maximum DPI value supported when packing into a TIFF rational.
+/// Beyond this, the numerator would overflow `u32`.
+const DPI_MAX: f64 = 100_000.0;
 
 fn dpi_to_rational(dpi: f64) -> (u32, u32) {
     // Preserve up to 4 decimal places of fractional DPI in the TIFF rational.
     let d = 10000u32;
-    let n = (dpi * d as f64).round().max(0.0) as u32;
+    let clamped = dpi.max(0.0).min(DPI_MAX);
+    let n = (clamped * d as f64).round() as u32;
     (n, d)
 }
 
@@ -1566,6 +1578,9 @@ fn rotate_90_cw_rgb16(img: &Rgb16Image) -> Rgb16Image {
 fn composite_rgb16(page: &mut Rgb16Image, img: &Rgb16Image, x: u32, y: u32) {
     let page_w = page.width();
     let page_h = page.height();
+    if x >= page_w || y >= page_h {
+        return;
+    }
     let img_w = img.width();
     let img_h = img.height();
     let src = img.as_raw();

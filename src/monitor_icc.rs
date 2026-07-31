@@ -58,19 +58,24 @@ pub fn get_monitor_profile() -> Option<Vec<u8>> {
             &mut prop_data as *mut *mut u8,
         );
 
-        if result != xlib::Success as i32 || prop_data.is_null() || nitems == 0 {
-            xlib::XCloseDisplay(display);
-            return None;
+        // Always free prop_data if XGetWindowProperty allocated it, even if we
+        // decide not to use it. The X11 docs state that prop_data may be allocated
+        // even when the call returns success with nitems == 0.
+        let profile_data = if result == xlib::Success as i32
+            && !prop_data.is_null()
+            && nitems > 0
+        {
+            Some(std::slice::from_raw_parts(prop_data, nitems as usize).to_vec())
+        } else {
+            None
+        };
+
+        if !prop_data.is_null() {
+            xlib::XFree(prop_data as *mut libc::c_void);
         }
-
-        // Copy the data
-        let profile_data = std::slice::from_raw_parts(prop_data, nitems as usize).to_vec();
-
-        // Free X11 resources
-        xlib::XFree(prop_data as *mut libc::c_void);
         xlib::XCloseDisplay(display);
 
-        Some(profile_data)
+        profile_data
     }
 }
 

@@ -4,16 +4,52 @@ use std::sync::mpsc::Sender;
 
 use vibeprint::printer_discovery::{PrinterCaps, PrinterInfo};
 
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\"'\"'"))
-}
-
 /// Calculate the PostScript translate offset to place a TIFF (sized to the
 /// imageable area) at the correct position on the physical page.
 /// `imageable_area` is `(left_pt, bottom_pt, right_pt, top_pt)` from CUPS.
 /// Returns `(offset_x_pts, offset_y_pts)` — the translation in PostScript points.
 fn calc_print_offset(imageable_area: (f32, f32, f32, f32)) -> (f32, f32) {
     (imageable_area.0, imageable_area.1)
+}
+
+/// Build the list of `key=value` strings to pass to `lpr -o`. The caller
+/// is responsible for passing each through `Command::arg("-o").arg(value)`.
+fn build_lpr_options(
+    caps: &PrinterCaps,
+    selected_page_size_idx: usize,
+    props_media_idx: usize,
+    props_slot_idx: usize,
+    extra_option_indices: &HashMap<String, usize>,
+) -> Vec<String> {
+    let mut opts: Vec<String> = Vec::new();
+
+    // Prevent CUPS auto-scaling — our TIFF is already sized to imageable area
+    opts.push("print-scaling=none".to_string());
+
+    // Paper size: use the PWG media name (e.g. "na_letter_8.5x11in")
+    if let Some(ps) = caps.page_sizes.get(selected_page_size_idx) {
+        opts.push(format!("media={}", ps.name));
+    }
+
+    // Media type: use the IPP keyword (e.g. "photographic-glossy")
+    if let Some((key, _)) = caps.media_types.get(props_media_idx) {
+        opts.push(format!("media-type={}", key));
+    }
+
+    // Input slot: use the IPP keyword (e.g. "auto", "cd")
+    if let Some((key, _)) = caps.input_slots.get(props_slot_idx) {
+        opts.push(format!("media-source={}", key));
+    }
+
+    // Extra options (color mode, duplex, quality, etc.)
+    for opt in &caps.extra_options {
+        if let Some(&idx) = extra_option_indices.get(&opt.key) {
+            if let Some((choice_key, _)) = opt.choices.get(idx) {
+                opts.push(format!("{}={}", opt.key, choice_key));
+            }
+        }
+    }
+    opts
 }
 
 /// Print job submission (sync version for background thread)
@@ -34,37 +70,13 @@ pub(crate) fn submit_print_jobs_sync(
     let caps = caps.ok_or("No printer selected")?;
     let printer = printers.get(printer_idx).ok_or("No printer selected")?;
 
-    // Build the lpr -o option list from user selections
-    let mut lpr_opts: Vec<String> = Vec::new();
-
-    // Prevent CUPS auto-scaling — our TIFF is already sized to imageable area
-    lpr_opts.push("-o print-scaling=none".to_string());
-
-    // Paper size: use the PWG media name (e.g. "na_letter_8.5x11in")
-    if let Some(ps) = caps.page_sizes.get(selected_page_size_idx) {
-        lpr_opts.push(format!("-o media={}", ps.name));
-    }
-
-    // Media type: use the IPP keyword (e.g. "photographic-glossy")
-    if let Some((key, _)) = caps.media_types.get(props_media_idx) {
-        lpr_opts.push(format!("-o media-type={}", key));
-    }
-
-    // Input slot: use the IPP keyword (e.g. "auto", "cd")
-    if let Some((key, _)) = caps.input_slots.get(props_slot_idx) {
-        lpr_opts.push(format!("-o media-source={}", key));
-    }
-
-    // Extra options (color mode, duplex, quality, etc.)
-    for opt in &caps.extra_options {
-        if let Some(&idx) = extra_option_indices.get(&opt.key) {
-            if let Some((choice_key, _)) = opt.choices.get(idx) {
-                lpr_opts.push(format!("-o {}={}", opt.key, choice_key));
-            }
-        }
-    }
-
-    let opts_str = lpr_opts.join(" ");
+    let lpr_opts = build_lpr_options(
+        &caps,
+        selected_page_size_idx,
+        props_media_idx,
+        props_slot_idx,
+        extra_option_indices,
+    );
 
     for (i, temp_path) in temp_paths.iter().enumerate() {
         let _ = log_tx.send(format!(
@@ -79,17 +91,16 @@ pub(crate) fn submit_print_jobs_sync(
             .as_secs();
         let pid = std::process::id();
 
-        let temp_path_q = shell_quote(&temp_path.display().to_string());
         let _ = log_tx.send(format!("Page {}: Converting to PDF...", i + 1));
 
-        let pdf_path = format!("/tmp/vibeprint_{}_{}.pdf", timestamp, pid);
-        let pdf_q = shell_quote(&pdf_path);
+        let pdf_path = PathBuf::from(format!("/tmp/vibeprint_{}_{}.pdf", timestamp, pid));
+        let ps_temp = PathBuf::from(format!("/tmp/vibeprint_{}_{}_page_{}.ps", timestamp, pid, i));
 
         // PDF page = full physical paper size in pts.
         // The TIFF is sized to the imageable area (paper minus borders).
         // tiff2ps places the image at PostScript origin (0,0) = bottom-left.
-        // We wrap the PS with a translate to offset the image by the border amount
-        // so it sits correctly on the physical sheet.
+        // We pass a `gsave + translate` to gs as -c arguments so it offsets
+        // the image by the border amount.
         let (paper_w_pts, paper_h_pts) = caps
             .page_sizes
             .get(selected_page_size_idx)
@@ -131,25 +142,54 @@ pub(crate) fn submit_print_jobs_sync(
             .map(|ps| calc_print_offset(ps.imageable_area))
             .unwrap_or((0.0, 0.0));
 
-        // Pipe: tiff2ps → prepend a translate → gs with full paper size
-        let gs_cmd = format!(
-            "{{ echo 'gsave {:.4} {:.4} translate'; tiff2ps {}; echo 'grestore'; }} \
-             | gs -q -o {} -sDEVICE=pdfwrite \
-             -sColorConversionStrategy=LeaveColorUnchanged \
-             -dNOTRANSPARENCY \
-             -dDEVICEWIDTHPOINTS={:.4} -dDEVICEHEIGHTPOINTS={:.4} -dFIXEDMEDIA \
-             -dAutoFilterColorImages=false -sColorImageFilter=FlateEncode \
-             -dAutoFilterGrayImages=false -sGrayImageFilter=FlateEncode \
-             -dDownsampleColorImages=false -dDownsampleGrayImages=false \
-             -",
-            offset_x, offset_y, temp_path_q, pdf_q, paper_w_pts, paper_h_pts
-        );
+        // Step 1: Convert TIFF to PostScript via tiff2ps -> temp file
+        let ps_file = std::fs::File::create(&ps_temp).map_err(|e| {
+            format!("Failed to create temp PS file: {}", e)
+        })?;
+        let tiff2ps_output = std::process::Command::new("tiff2ps")
+            .arg(temp_path)
+            .stdout(ps_file)
+            .output()
+            .map_err(|e| format!("Failed to run tiff2ps: {}", e))?;
 
-        let gs_output = std::process::Command::new("sh")
+        if !tiff2ps_output.status.success() {
+            let stderr = String::from_utf8_lossy(&tiff2ps_output.stderr);
+            let _ = std::fs::remove_file(&ps_temp);
+            return Err(format!(
+                "tiff2ps failed (page {}): {}",
+                i + 1,
+                stderr
+            ));
+        }
+
+        // Step 2: Run Ghostscript with the PS file + gsave/translate/grestore
+        // wrapped via -c arguments (no shell pipeline required).
+        let gs_output = std::process::Command::new("gs")
+            .arg("-q")
+            .arg("-o")
+            .arg(&pdf_path)
+            .arg("-sDEVICE=pdfwrite")
+            .arg("-sColorConversionStrategy=LeaveColorUnchanged")
+            .arg("-dNOTRANSPARENCY")
+            .arg(format!("-dDEVICEWIDTHPOINTS={:.4}", paper_w_pts))
+            .arg(format!("-dDEVICEHEIGHTPOINTS={:.4}", paper_h_pts))
+            .arg("-dFIXEDMEDIA")
+            .arg("-dAutoFilterColorImages=false")
+            .arg("-sColorImageFilter=FlateEncode")
+            .arg("-dAutoFilterGrayImages=false")
+            .arg("-sGrayImageFilter=FlateEncode")
+            .arg("-dDownsampleColorImages=false")
+            .arg("-dDownsampleGrayImages=false")
             .arg("-c")
-            .arg(&gs_cmd)
+            .arg(format!("gsave {:.4} {:.4} translate", offset_x, offset_y))
+            .arg("-f")
+            .arg(&ps_temp)
+            .arg("-c")
+            .arg("grestore")
             .output()
             .map_err(|e| format!("Failed to run Ghostscript: {}", e))?;
+
+        let _ = std::fs::remove_file(&ps_temp);
 
         if !gs_output.status.success() {
             let stderr = String::from_utf8_lossy(&gs_output.stderr);
@@ -162,12 +202,13 @@ pub(crate) fn submit_print_jobs_sync(
 
         let _ = log_tx.send(format!("Page {}: Sending to printer...", i + 1));
 
-        let printer_q = shell_quote(&printer.name);
-        let lpr_cmd = format!("lpr -P {} {} {}", printer_q, opts_str, pdf_q);
-
-        let lpr_result = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&lpr_cmd)
+        let mut lpr_cmd = std::process::Command::new("lpr");
+        lpr_cmd.arg("-P").arg(&printer.name);
+        for opt in &lpr_opts {
+            lpr_cmd.arg("-o").arg(opt);
+        }
+        lpr_cmd.arg(&pdf_path);
+        let lpr_result = lpr_cmd
             .output()
             .map_err(|e| format!("Failed to run lpr: {}", e))?;
 
@@ -201,45 +242,16 @@ pub(crate) fn submit_print_jobs_direct_tiff(
     let caps = caps.ok_or("No printer selected")?;
     let printer = printers.get(printer_idx).ok_or("No printer selected")?;
 
-    // Build the lpr -o option list from user selections (same as standard path)
-    let mut lpr_opts: Vec<String> = Vec::new();
-
-    // Prevent CUPS auto-scaling — our TIFF is already sized to imageable area
-    lpr_opts.push("-o print-scaling=none".to_string());
-
-    // Paper size: use the PWG media name (e.g. "na_letter_8.5x11in")
-    if let Some(ps) = caps.page_sizes.get(selected_page_size_idx) {
-        lpr_opts.push(format!("-o media={}", ps.name));
-    }
-
-    // Media type: use the IPP keyword (e.g. "photographic-glossy")
-    if let Some((key, _)) = caps.media_types.get(props_media_idx) {
-        lpr_opts.push(format!("-o media-type={}", key));
-    }
-
-    // Input slot: use the IPP keyword (e.g. "auto", "cd")
-    if let Some((key, _)) = caps.input_slots.get(props_slot_idx) {
-        lpr_opts.push(format!("-o media-source={}", key));
-    }
-
-    // Extra options (color mode, duplex, quality, etc.)
-    for opt in &caps.extra_options {
-        if let Some(&idx) = extra_option_indices.get(&opt.key) {
-            if let Some((choice_key, _)) = opt.choices.get(idx) {
-                lpr_opts.push(format!("-o {}={}", opt.key, choice_key));
-            }
-        }
-    }
-
-    let opts_str = lpr_opts.join(" ");
-    let printer_q = shell_quote(&printer.name);
+    let lpr_opts = build_lpr_options(
+        &caps,
+        selected_page_size_idx,
+        props_media_idx,
+        props_slot_idx,
+        extra_option_indices,
+    );
 
     // Submit each TIFF directly to lpr (no PS/PDF conversion)
     for (i, temp_path) in temp_paths.iter().enumerate() {
-        let temp_path_q = shell_quote(&temp_path.display().to_string());
-
-        let lpr_cmd = format!("lpr -P {} {} {}", printer_q, opts_str, temp_path_q);
-
         let log_msg = format!(
             "Safe 8-bit TIFF: Sending page {} of {} directly to lpr (no PDF conversion)",
             i + 1,
@@ -247,9 +259,13 @@ pub(crate) fn submit_print_jobs_direct_tiff(
         );
         let _ = log_tx.send(log_msg);
 
-        let lpr_result = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&lpr_cmd)
+        let mut lpr_cmd = std::process::Command::new("lpr");
+        lpr_cmd.arg("-P").arg(&printer.name);
+        for opt in &lpr_opts {
+            lpr_cmd.arg("-o").arg(opt);
+        }
+        lpr_cmd.arg(temp_path);
+        let lpr_result = lpr_cmd
             .output()
             .map_err(|e| format!("Failed to run lpr: {}", e))?;
 

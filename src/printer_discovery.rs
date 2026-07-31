@@ -118,7 +118,7 @@ fn list_printers_cups() -> Vec<PrinterInfo> {
 
         let mut printers = Vec::new();
         for i in 0..num_dests {
-            let dest = get_dest_at(dests, i);
+            let dest = get_dest_at(dests, num_dests, i);
             if let Some(name) = get_dest_name(dest) {
                 let is_default = is_dest_default(dest);
                 printers.push(PrinterInfo { name, is_default });
@@ -236,7 +236,7 @@ fn query_printer_caps_cups_api(name: &str) -> Result<PrinterCaps> {
         // Find this printer's destination entry
         let mut found_dest: *mut cups_dest_t = ptr::null_mut();
         for i in 0..num_dests {
-            let d = get_dest_at(dests, i);
+            let d = get_dest_at(dests, num_dests, i);
             if let Some(n) = get_dest_name(d) {
                 if n == name {
                     found_dest = d;
@@ -463,7 +463,20 @@ unsafe fn build_cups_caps(
         let t_pt = hundredths_mm_to_pt(size.top);
 
         // Imageable area: left, bottom, (width - right margin), (height - top margin)
-        let ia = (l_pt, b_pt, w_pt - r_pt, h_pt - t_pt);
+        // Some printers report bogus right/top margins (sometimes the field is
+        // mis-interpreted as an absolute coordinate, or the printer just
+        // reports nonsense). Validate the derived imageable area: if it is
+        // degenerate (right <= left or top <= bottom), clamp it to leave at
+        // least one point of imageable area so downstream code doesn't crash.
+        let ia_right_raw = w_pt - r_pt;
+        let ia_top_raw = h_pt - t_pt;
+        let ia = if ia_right_raw <= l_pt || ia_top_raw <= b_pt {
+            let r = ia_right_raw.max(l_pt + 1.0);
+            let t = ia_top_raw.max(b_pt + 1.0);
+            (l_pt, b_pt, r, t)
+        } else {
+            (l_pt, b_pt, ia_right_raw, ia_top_raw)
+        };
 
         let label = pwg_media_label(&media_name);
 
@@ -743,26 +756,40 @@ fn fetch_ppd_from_cups(printer_name: &str) -> Option<PathBuf> {
     } else {
         host
     };
-    let url = format!("http://{}:{}/printers/{}.ppd", host, port, printer_name);
+    // Try HTTPS first (preferred when remote CUPS exposes TLS), fall back to
+    // HTTP if the secure attempt fails. `--insecure` is intentional: the CUPS
+    // server's self-signed certificate is the common case.
+    let urls = [
+        format!("https://{}:{}/printers/{}.ppd", host, port, printer_name),
+        format!("http://{}:{}/printers/{}.ppd", host, port, printer_name),
+    ];
 
     // Use curl with a short connect+transfer timeout — same as a subprocess
     // but without spawning lpstat which can block on CUPS being busy.
-    let out = Command::new("curl")
-        .args([
+    let mut out_data: Option<Vec<u8>> = None;
+    for url in &urls {
+        let mut cmd = Command::new("curl");
+        cmd.args([
             "--silent",
             "--fail",
+            "--insecure",
             "--max-time",
             "5", // 5 s total timeout
             "--connect-timeout",
             "2", // 2 s connect timeout
-            &url,
-        ])
-        .output()
-        .ok()?;
-
-    if !out.status.success() || out.stdout.is_empty() {
-        return None;
+            url,
+        ]);
+        let out = match cmd.output() {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        if out.status.success() && !out.stdout.is_empty() {
+            out_data = Some(out.stdout);
+            break;
+        }
     }
+
+    let out_stdout = out_data?;
 
     // Write to temp file so parse_ppd can read it as a path
     let mut tmp = tempfile::Builder::new()
@@ -770,7 +797,7 @@ fn fetch_ppd_from_cups(printer_name: &str) -> Option<PathBuf> {
         .suffix(".ppd")
         .tempfile()
         .ok()?;
-    tmp.write_all(&out.stdout).ok()?;
+    tmp.write_all(&out_stdout).ok()?;
     let (_, path) = tmp.keep().ok()?;
     Some(path)
 }

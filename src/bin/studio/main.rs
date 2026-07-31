@@ -298,7 +298,22 @@ impl eframe::App for App {
     }
 }
 
+#[cfg(feature = "monitor-icc")]
+fn init_x11_threads() {
+    // Must be called before any other X11 call (including XOpenDisplay).
+    // Required for thread-safe X11 calls from background threads (e.g. monitor
+    // ICC profile extraction during printer caps query).
+    unsafe {
+        x11::xlib::XInitThreads();
+    }
+}
+
+#[cfg(not(feature = "monitor-icc"))]
+fn init_x11_threads() {}
+
 fn main() -> eframe::Result<()> {
+    init_x11_threads();
+
     // Parse CLI arguments for optional image path
     let args: Vec<String> = std::env::args().collect();
     let auto_image_path = if args.len() > 1 {

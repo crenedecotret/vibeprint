@@ -228,6 +228,11 @@ impl std::fmt::Debug for ThumbState {
 pub(crate) enum LoadKind {
     Thumb,
     FullResStaged,
+    /// On-demand full-resolution load triggered by `ensure_full_image_loaded`.
+    /// Used to populate `full_images` for queue items whose original images
+    /// were never staged (e.g. drag-and-dropped queue items, or restored from
+    /// state) without blocking the UI thread.
+    FullResOnDemand,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -338,6 +343,9 @@ pub(crate) struct AppState {
     pub canvas_img_size: Option<[usize; 2]>,
     pub full_images: HashMap<PathBuf, ColorImage>,
     pub embedded_icc_by_path: HashMap<PathBuf, Option<Vec<u8>>>,
+    /// Paths whose full-resolution image is currently being loaded in the
+    /// background. Prevents duplicate spawns while a load is in flight.
+    pub loading_images: HashSet<PathBuf>,
     pub preview_textures: HashMap<PathBuf, TextureHandle>,
     /// Cached ICC-transformed images (keyed by path). Only rebuilt when ICC settings change.
     pub preview_icc_images: HashMap<PathBuf, ColorImage>,
@@ -386,6 +394,10 @@ pub(crate) struct AppState {
     pub border_edit_b: String,
     pub border_width_edit_string: String,
     pub border_width_edit_focus: bool,
+    /// Queue item ID that was selected when the border-width field gained focus.
+    /// Used to prevent applying an in-progress edit to a different item after
+    /// the user changes selection while the field is still focused.
+    pub border_width_edit_item_id: Option<uuid::Uuid>,
 
     // ── Engine settings ──
     pub engine: Engine,
@@ -550,6 +562,7 @@ impl AppState {
             canvas_img_size: None,
             full_images: HashMap::new(),
             embedded_icc_by_path: HashMap::new(),
+            loading_images: HashSet::new(),
             preview_textures: HashMap::new(),
             preview_icc_images: HashMap::new(),
             preview_icc_settings_hash: 0,
@@ -592,6 +605,7 @@ impl AppState {
             border_edit_b: format!("{:.3}", 0.25),
             border_width_edit_string: String::new(),
             border_width_edit_focus: false,
+            border_width_edit_item_id: None,
             engine: saved_engine,
             sharpen: saved_sharpen,
             depth16: saved_depth16,

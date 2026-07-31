@@ -227,6 +227,42 @@ pub(crate) fn load_thumb(
     }
 }
 
+/// Spawn a background thread that loads a full-resolution image and the
+/// embedded ICC profile (if present), then sends them through `tx` tagged with
+/// `LoadKind::FullResOnDemand`. The caller must mark `loading_images` so that
+/// duplicate spawns for the same path are avoided.
+pub(crate) fn load_full_image_on_demand(
+    path: PathBuf,
+    tx: Sender<(PathBuf, ColorImage, Option<Vec<u8>>, LoadKind)>,
+    ctx: egui::Context,
+) {
+    std::thread::spawn(move || {
+        let data = match std::fs::read(&path) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let icc = extract_embedded_icc_from_bytes(&data);
+        let img = match image::load_from_memory(&data) {
+            Ok(img) => img.into_rgb8(),
+            Err(_) => return,
+        };
+        let size = [img.width() as usize, img.height() as usize];
+        let pixels = img
+            .into_raw()
+            .chunks_exact(3)
+            .map(|p| Color32::from_rgb(p[0], p[1], p[2]))
+            .collect();
+        let _ = tx.send((
+            path,
+            ColorImage { size, pixels },
+            icc,
+            LoadKind::FullResOnDemand,
+        ));
+        // Request a repaint so the canvas shows the new image immediately.
+        ctx.request_repaint();
+    });
+}
+
 /// Draw a dashed rectangle outline via short line segments
 pub(crate) fn draw_dashed_rect(
     painter: &egui::Painter,
