@@ -132,27 +132,60 @@ impl App {
             let devices = self.state.devices.clone();
             let current = self.state.current_dir.clone();
             let mut nav: Option<PathBuf> = None;
+            let mut mount_req: Option<String> = None;
             for dev in &devices {
-                let active = current == dev.mount_point
-                    || current.starts_with(&dev.mount_point);
-                let icon = if dev.is_optical { "💿  " } else { "💾  " };
-                let text = RichText::new(format!("{icon}{}", dev.label)).size(12.0);
-                let hover = format!(
-                    "{} ({})",
-                    dev.mount_point.display(),
-                    dev.devnode.as_deref().unwrap_or("?")
-                );
-                if ui
-                    .selectable_label(active, text)
-                    .on_hover_text(hover)
-                    .clicked()
-                    && !active
-                {
-                    nav = Some(dev.mount_point.clone());
+                match &dev.mount_point {
+                    Some(mp) => {
+                        let active = current == *mp || current.starts_with(mp);
+                        let icon = if dev.is_optical { "💿  " } else { "💾  " };
+                        let text = RichText::new(format!("{icon}{}", dev.label)).size(12.0);
+                        let hover = format!("{} ({})", mp.display(), dev.devnode.as_deref().unwrap_or("?"));
+                        if ui
+                            .selectable_label(active, text)
+                            .on_hover_text(hover)
+                            .clicked()
+                            && !active
+                        {
+                            nav = Some(mp.clone());
+                        }
+                    }
+                    None => {
+                        ui.horizontal(|ui| {
+                            let icon = if dev.is_optical { "💿  " } else { "💾  " };
+                            let text = RichText::new(format!("{icon}{}  (not mounted)", dev.label))
+                                .size(12.0)
+                                .weak();
+                            let hover = format!(
+                                "{} (not mounted)",
+                                dev.devnode.as_deref().unwrap_or("?")
+                            );
+                            ui.label(text).on_hover_text(hover);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            dev.object_path.is_some(),
+                                            egui::Button::new("Mount").small(),
+                                        )
+                                        .clicked()
+                                    {
+                                        mount_req = dev.object_path.clone();
+                                    }
+                                },
+                            );
+                        });
+                    }
                 }
             }
             if let Some(p) = nav {
                 self.navigate(p);
+            }
+            if let Some(op) = mount_req {
+                let _ = self
+                    .state
+                    .device_action_tx
+                    .send(crate::devices::DeviceAction::Mount { object_path: op });
             }
         }
 

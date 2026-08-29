@@ -24,9 +24,11 @@ rayon = "1"
 notify-debouncer-mini = "0.7"
 x11 = { version = "2", features = ["xlib"], optional = true }
 libc = { version = "0.2", optional = true }
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"], optional = true }
 
 [features]
-default = ["monitor-icc"]
+default = ["monitor-icc", "udisks2"]
 monitor-icc = ["x11", "libc"]
+udisks2 = ["dep:zbus"]
 
 [dev-dependencies]

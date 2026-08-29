@@ -6,7 +6,7 @@ ICC-aware print layout engine (Rust). Two binaries: `vibeprint` (CLI) and `studi
 
 ```bash
 cargo build --release                       # both binaries (default features = monitor-icc)
-cargo build --release --no-default-features # CLI-only, skips X11 — verification only
+cargo build --release --no-default-features # CLI-only, skips X11 + optional udisks2 — verification only (no X11, no D-Bus)
 ```
 
 - **Always build with default features when producing artifacts for the user.** Only use `--no-default-features` to check that the CLI still compiles without X11. The `monitor-icc` feature enables `x11` + `libc` and is required for `studio`.
@@ -41,7 +41,7 @@ cargo test --test safe_8bit_print_path  # integration: ICC embedding toggle for 
 ## Architecture (only the non-obvious bits)
 
 - `src/lib.rs` exposes four modules: `processor`, `layout_engine`, `monitor_icc`, `printer_discovery`. The CLI (`src/main.rs`) calls `processor::process()`; the GUI calls `processor::process_composite_page()`.
-- Studio code lives under `src/bin/studio/` with UI split into `ui/{canvas,left_panel,right_panel,modals}.rs`. `app.rs` holds the `eframe::App` state and the `queued_box_px` helper that the canvas and processor depend on.
+- Studio code lives under `src/bin/studio/` with UI split into `ui/{canvas,left_panel,right_panel,modals}.rs`. `app.rs` holds the `eframe::App` state and the `queued_box_px` helper that the canvas and processor depend on. Device detection in `src/bin/studio/devices.rs` uses an optional `udisks2` feature (zbus, system D-Bus) for rich enumeration + mount actions, with a zero-dependency `/proc`+`/sys` polling fallback.
 - `src/printer_discovery/cups_ffi.rs` contains hand-written CUPS bindings — there is no `cups-sys` crate dependency.
 
 ## Crop / Border / Orientation Logic

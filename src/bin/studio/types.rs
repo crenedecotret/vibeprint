@@ -391,6 +391,7 @@ pub(crate) struct AppState {
     // ── Removable devices ──
     pub devices: Vec<crate::devices::RemovableDevice>,
     pub device_rx: Option<std::sync::mpsc::Receiver<crate::devices::DeviceEvent>>,
+    pub device_action_tx: std::sync::mpsc::Sender<crate::devices::DeviceAction>,
 
     // ── Printer props modal ──
     pub show_props: bool,
@@ -565,6 +566,7 @@ impl AppState {
         curated_icc_profiles: Vec<IccProfileEntry>,
         devices: Vec<crate::devices::RemovableDevice>,
         device_rx: std::sync::mpsc::Receiver<crate::devices::DeviceEvent>,
+        device_action_tx: std::sync::mpsc::Sender<crate::devices::DeviceAction>,
     ) -> Self {
         Self {
             current_dir: home.clone(),
@@ -619,6 +621,7 @@ impl AppState {
             discovery_rx: Some(discovery_rx),
             devices,
             device_rx: Some(device_rx),
+            device_action_tx,
             show_props: false,
             props_media_idx: 0,
             props_slot_idx: 0,

@@ -223,7 +223,8 @@ impl App {
             }
         };
 
-        let device_rx = crate::devices::spawn_device_monitor(cc.egui_ctx.clone());
+        let (device_action_tx, device_action_rx) = std::sync::mpsc::channel::<crate::devices::DeviceAction>();
+        let device_rx = crate::devices::spawn_device_monitor(cc.egui_ctx.clone(), device_action_rx);
         let initial_devices = crate::devices::enumerate_removable_mounts();
         let mut state = AppState::new(
             thumb_tx,
@@ -246,9 +247,10 @@ impl App {
             s.bpc.unwrap_or(true),
             s.use_metric.unwrap_or(false),
             s.safe_8bit_tiff_print_path.unwrap_or(false),
-            curated_profiles, // NEW - last argument
+            curated_profiles,
             initial_devices,
             device_rx,
+            device_action_tx,
         );
         state.stager_tx = Some(stager_tx);
         state.debouncer = debouncer;
@@ -1541,10 +1543,10 @@ impl App {
                         .state
                         .devices
                         .iter()
-                        .map(|d| d.mount_point.clone())
+                        .filter_map(|d| d.mount_point.clone())
                         .collect();
                     let new_mounts: std::collections::HashSet<std::path::PathBuf> =
-                        list.iter().map(|d| d.mount_point.clone()).collect();
+                        list.iter().filter_map(|d| d.mount_point.clone()).collect();
                     let removed: Vec<std::path::PathBuf> = prev
                         .into_iter()
                         .filter(|m| !new_mounts.contains(m))
