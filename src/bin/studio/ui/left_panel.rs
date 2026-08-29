@@ -152,7 +152,11 @@ impl App {
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui
-                                    .add_enabled(dev.object_path.is_some(), egui::Button::new("Eject").small())
+                                    .add_enabled(
+                                        dev.object_path.is_some(),
+                                        egui::Button::new("⏏").small(),
+                                    )
+                                    .on_hover_text("Eject")
                                     .clicked()
                                 {
                                     eject_req = dev.object_path.clone();
