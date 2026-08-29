@@ -10,6 +10,7 @@ cargo build --release --no-default-features # CLI-only, skips X11 + optional udi
 ```
 
 - **Always build with default features when producing artifacts for the user.** Only use `--no-default-features` to check that the CLI still compiles without X11. The `monitor-icc` feature enables `x11` + `libc` and is required for `studio`.
+- **Gotcha:** `cargo build --release --no-default-features` OVERWRITES `target/release/studio` with the CLI-only (poll-path, no udisks2) build, and a later plain `cargo build --release` may NOT rewrite it (cargo's fingerprints are per-feature-set, so it can report the default build as fresh while the binary on disk is stale). After any `--no-default-features` build, always finish with a default `cargo build --release` AND verify the binary contains udisks2 (e.g. `grep -a -c "org.freedesktop.UDisks2" target/release/studio` > 0), or `cargo clean -p vibeprint` before the default rebuild.
 - No rustfmt/clippy config, no Makefile, no CI. Rust defaults apply.
 
 ## Test
