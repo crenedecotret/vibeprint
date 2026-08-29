@@ -37,6 +37,7 @@ cargo test --test safe_8bit_print_path  # integration: ICC embedding toggle for 
 
 - Entry point: `src/bin/studio/main.rs` (cargo bin discovered via `src/bin/studio/` layout, not declared in `Cargo.toml`).
 - Monitor ICC profile loading uses X11 directly — **does not work on Wayland**. Run under XWayland or a real X session when testing that path.
+- Removable-device Mount via udisks2 (`Filesystem.Mount`) is polkit-gated and needs a polkit authentication agent running in the session -- built-in on GNOME/KDE, but on minimal compositors like Sway/Hyprland install and autostart one (e.g. `polkit-gnome` >= 0.105-7, `hyprpolkitagent`, `polkit-kde-agent`, `lxpolkit`, `mate-polkit`); without an agent Mount is silently denied (device stays "not mounted") while enumeration and yank still work, and this is not display-server-dependent.
 
 ## Architecture (only the non-obvious bits)
 

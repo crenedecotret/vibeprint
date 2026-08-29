@@ -68,6 +68,8 @@ cargo run --release --bin vibeprint -- meta image.tif     # Image metadata
 cargo run --release --bin studio
 ```
 
+Removable-device Mount via udisks2 requires a polkit authentication agent running in the session -- built-in on GNOME/KDE, but on minimal compositors like Sway/Hyprland install and autostart one (e.g. `polkit-gnome` >= 0.105-7, `hyprpolkitagent`); without an agent Mount is silently denied (device stays "not mounted") while enumeration still works.
+
 ## Test
 
 ```bash

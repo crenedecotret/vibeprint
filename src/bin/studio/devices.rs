@@ -157,6 +157,7 @@ pub fn spawn_device_monitor(
     #[cfg(feature = "udisks2")]
     {
         if let Some(rx) = try_spawn_udisks2_monitor(ctx.clone(), action_rx) {
+            eprintln!("vibeprint: udisks2 monitor active (system D-Bus)");
             return rx;
         }
     }
@@ -164,6 +165,7 @@ pub fn spawn_device_monitor(
     let _ = action_rx;
 
     let (tx, rx) = std::sync::mpsc::channel();
+    eprintln!("vibeprint: device monitor using /proc + /sys polling (no udisks2)");
     poll_loop(ctx, tx);
     rx
 }
