@@ -121,15 +121,13 @@ impl App {
         }
 
         // ── Devices ───────────────────────────────────────────────────────
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("  DEVICES")
-                .size(9.5)
-                .color(Color32::from_gray(130)),
-        );
-        if self.state.devices.is_empty() {
-            ui.label(RichText::new("  (no removable devices)").size(10.5).weak());
-        } else {
+        if !self.state.devices.is_empty() {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("  DEVICES")
+                    .size(9.5)
+                    .color(Color32::from_gray(130)),
+            );
             // Clone to avoid borrow conflict with self.navigate
             let devices = self.state.devices.clone();
             let current = self.state.current_dir.clone();
