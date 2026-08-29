@@ -101,8 +101,8 @@ impl App {
                 .color(Color32::from_gray(130)),
         );
         let places: &[(&str, fn() -> Option<PathBuf>)] = &[
-            ("💾  Root (/)", || Some(PathBuf::from("/"))),
             ("🏠  Home", || dirs::home_dir()),
+            ("💾  Root", || Some(PathBuf::from("/"))),
             ("🖥  Desktop", || dirs::desktop_dir()),
             ("📁  Documents", || dirs::document_dir()),
             ("📁  Downloads", || dirs::download_dir()),
