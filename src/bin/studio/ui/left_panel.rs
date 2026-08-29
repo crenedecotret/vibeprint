@@ -11,6 +11,7 @@ const CAPTION_H: f32 = 46.0;
 impl App {
     pub(crate) fn draw_left(&mut self, ui: &mut egui::Ui) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let root = PathBuf::from("/");
 
         // Init addr_bar on first draw
         if self.state.addr_bar.is_empty() {
@@ -100,6 +101,7 @@ impl App {
                 .color(Color32::from_gray(130)),
         );
         let places: &[(&str, fn() -> Option<PathBuf>)] = &[
+            ("💾  Root (/)", || Some(PathBuf::from("/"))),
             ("🏠  Home", || dirs::home_dir()),
             ("🖥  Desktop", || dirs::desktop_dir()),
             ("📁  Documents", || dirs::document_dir()),
@@ -133,10 +135,11 @@ impl App {
         egui::ScrollArea::vertical()
             .id_salt("tree_scroll")
             .max_height(tree_h)
+            .auto_shrink(false)
             .show(ui, |ui| {
                 draw_tree_node(
                     ui,
-                    &home,
+                    &root,
                     0,
                     &self.state.current_dir,
                     &self.state.tree_expanded,
