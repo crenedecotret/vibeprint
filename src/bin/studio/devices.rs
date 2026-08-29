@@ -333,6 +333,12 @@ fn parse_managed_objects(objects: &zbus::fdo::ManagedObjects) -> Vec<RemovableDe
             .get("IdLabel")
             .and_then(|v| String::try_from(v.clone()).ok());
         let id_label = id_label_owned.as_deref().unwrap_or("");
+        let id_type: Option<String> = block_props
+            .get("IdType")
+            .and_then(|v| String::try_from(v.clone()).ok());
+        let id_usage: Option<String> = block_props
+            .get("IdUsage")
+            .and_then(|v| String::try_from(v.clone()).ok());
 
         // Drive (o -> OwnedObjectPath string; may be absent or "/")
         let drive_path_str: Option<String> = block_props
@@ -353,7 +359,7 @@ fn parse_managed_objects(objects: &zbus::fdo::ManagedObjects) -> Vec<RemovableDe
                 }
             });
 
-        let (removable, media_removable, optical, drive_id, drive_model) =
+        let (removable, media_removable, optical, drive_id, drive_model, media_available) =
             if let Some(dp) = drive_props_opt {
                 let rem = dp
                     .get("Removable")
@@ -375,9 +381,13 @@ fn parse_managed_objects(objects: &zbus::fdo::ManagedObjects) -> Vec<RemovableDe
                     .get("Model")
                     .and_then(|v| String::try_from(v.clone()).ok())
                     .unwrap_or_default();
-                (rem, med, opt, id, model)
+                let media_available = dp
+                    .get("MediaAvailable")
+                    .and_then(|v| bool::try_from(v.clone()).ok())
+                    .unwrap_or(true);
+                (rem, med, opt, id, model, media_available)
             } else {
-                (false, false, false, String::new(), String::new())
+                (false, false, false, String::new(), String::new(), true)
             };
 
         // Include filter
@@ -387,6 +397,20 @@ fn parse_managed_objects(objects: &zbus::fdo::ManagedObjects) -> Vec<RemovableDe
             true // drive absent -> keep only when !HintSystem (already checked)
         };
         if !keep {
+            continue;
+        }
+
+        // Hide removable-media drives with nothing in them (empty optical trays,
+        // empty card readers): udisks2 sets Drive.MediaAvailable=false and the
+        // block has no filesystem identity (no Filesystem interface, empty
+        // IdLabel/IdType/IdUsage). Any device with recognized media or a
+        // filesystem is never hidden. Mirrors how GVFS/Thunar treat empty trays.
+        let media_available_or_identity = media_available
+            || ifaces.contains_key(&fs_iface)
+            || !id_label.is_empty()
+            || !id_type.as_deref().unwrap_or("").is_empty()
+            || !id_usage.as_deref().unwrap_or("").is_empty();
+        if drive_props_opt.is_some() && !media_available_or_identity {
             continue;
         }
 
@@ -882,5 +906,77 @@ tmpfs /run/user/1000 tmpfs rw,nosuid,nodev 0 0
                 assert!(d.mount_point.is_none(), "unmounted should have None: {:?}", d);
             }
         }
+
+        #[test]
+        fn udisks2_empty_optical_excluded() {
+            let mut objects = make_mounted_usb();
+            let drive_path = mo_path("/org/freedesktop/UDisks2/drives/drive1");
+            if let Some(ifaces) = objects.get_mut(&drive_path) {
+                if let Some(drive) = ifaces.get_mut(&iface(IFACE_DRIVE)) {
+                    drive.insert("Optical".to_string(), ov_bool(true));
+                    drive.insert("MediaAvailable".to_string(), ov_bool(false));
+                }
+            }
+            let block_path = mo_path("/org/freedesktop/UDisks2/block_devices/sdb1");
+            if let Some(ifaces) = objects.get_mut(&block_path) {
+                ifaces.remove(&iface(IFACE_FS));
+                if let Some(block) = ifaces.get_mut(&iface(IFACE_BLOCK)) {
+                    block.insert("IdLabel".to_string(), ov_str(""));
+                }
+            }
+            let result = parse_managed_objects(&objects);
+            assert_eq!(result.len(), 0, "empty optical should be excluded: {:?}", result);
+        }
+
+        #[test]
+        fn udisks2_empty_optical_reports_optical_false() {
+            let mut objects = make_mounted_usb();
+            let drive_path = mo_path("/org/freedesktop/UDisks2/drives/drive1");
+            if let Some(ifaces) = objects.get_mut(&drive_path) {
+                if let Some(drive) = ifaces.get_mut(&iface(IFACE_DRIVE)) {
+                    drive.insert("Optical".to_string(), ov_bool(false));
+                    drive.insert("MediaRemovable".to_string(), ov_bool(true));
+                    drive.insert("Removable".to_string(), ov_bool(true));
+                    drive.insert("MediaAvailable".to_string(), ov_bool(false));
+                }
+            }
+            let block_path = mo_path("/org/freedesktop/UDisks2/block_devices/sdb1");
+            if let Some(ifaces) = objects.get_mut(&block_path) {
+                ifaces.remove(&iface(IFACE_FS));
+                if let Some(block) = ifaces.get_mut(&iface(IFACE_BLOCK)) {
+                    block.insert("IdLabel".to_string(), ov_str(""));
+                }
+            }
+            let result = parse_managed_objects(&objects);
+            assert_eq!(
+                result.len(),
+                0,
+                "empty optical (Optical=false) should be excluded: {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn udisks2_optical_unmounted_with_media_still_shown() {
+            let mut objects = make_mounted_usb();
+            let drive_path = mo_path("/org/freedesktop/UDisks2/drives/drive1");
+            if let Some(ifaces) = objects.get_mut(&drive_path) {
+                if let Some(drive) = ifaces.get_mut(&iface(IFACE_DRIVE)) {
+                    drive.insert("Optical".to_string(), ov_bool(true));
+                }
+            }
+            let block_path = mo_path("/org/freedesktop/UDisks2/block_devices/sdb1");
+            if let Some(ifaces) = objects.get_mut(&block_path) {
+                if let Some(fs) = ifaces.get_mut(&iface(IFACE_FS)) {
+                    fs.insert("MountPoints".to_string(), ov_bytes_vec(vec![]));
+                }
+            }
+            let result = parse_managed_objects(&objects);
+            assert_eq!(result.len(), 1, "optical with media should still be shown: {:?}", result);
+            assert_eq!(result[0].mount_point, None, "expected unmounted: {:?}", result[0]);
+            assert!(result[0].is_optical, "expected optical true: {:?}", result[0]);
+            assert_eq!(result[0].label, "USB", "expected label USB: {:?}", result[0]);
+        }
+
     }
 }
