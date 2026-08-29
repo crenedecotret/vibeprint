@@ -337,12 +337,6 @@ fn parse_managed_objects(objects: &zbus::fdo::ManagedObjects) -> Vec<RemovableDe
             .get("IdLabel")
             .and_then(|v| String::try_from(v.clone()).ok());
         let id_label = id_label_owned.as_deref().unwrap_or("");
-        let id_type: Option<String> = block_props
-            .get("IdType")
-            .and_then(|v| String::try_from(v.clone()).ok());
-        let id_usage: Option<String> = block_props
-            .get("IdUsage")
-            .and_then(|v| String::try_from(v.clone()).ok());
 
         // Drive (o -> OwnedObjectPath string; may be absent or "/")
         let drive_path_str: Option<String> = block_props
@@ -363,7 +357,7 @@ fn parse_managed_objects(objects: &zbus::fdo::ManagedObjects) -> Vec<RemovableDe
                 }
             });
 
-        let (removable, media_removable, optical, drive_id, drive_model, media_available) =
+        let (removable, media_removable, optical, drive_id, drive_model) =
             if let Some(dp) = drive_props_opt {
                 let rem = dp
                     .get("Removable")
@@ -385,13 +379,9 @@ fn parse_managed_objects(objects: &zbus::fdo::ManagedObjects) -> Vec<RemovableDe
                     .get("Model")
                     .and_then(|v| String::try_from(v.clone()).ok())
                     .unwrap_or_default();
-                let media_available = dp
-                    .get("MediaAvailable")
-                    .and_then(|v| bool::try_from(v.clone()).ok())
-                    .unwrap_or(true);
-                (rem, med, opt, id, model, media_available)
+                (rem, med, opt, id, model)
             } else {
-                (false, false, false, String::new(), String::new(), true)
+                (false, false, false, String::new(), String::new())
             };
 
         // Include filter
@@ -404,17 +394,11 @@ fn parse_managed_objects(objects: &zbus::fdo::ManagedObjects) -> Vec<RemovableDe
             continue;
         }
 
-        // Hide removable-media drives with nothing in them (empty optical trays,
-        // empty card readers): udisks2 sets Drive.MediaAvailable=false and the
-        // block has no filesystem identity (no Filesystem interface, empty
-        // IdLabel/IdType/IdUsage). Any device with recognized media or a
-        // filesystem is never hidden. Mirrors how GVFS/Thunar treat empty trays.
-        let media_available_or_identity = media_available
-            || ifaces.contains_key(&fs_iface)
-            || !id_label.is_empty()
-            || !id_type.as_deref().unwrap_or("").is_empty()
-            || !id_usage.as_deref().unwrap_or("").is_empty();
-        if drive_props_opt.is_some() && !media_available_or_identity {
+        // Only mountable filesystems are shown. Raw whole-disk devices (e.g. a USB
+        // stick's /dev/sdb with a PartitionTable but no Filesystem interface),
+        // empty optical trays, and empty card readers all lack the Filesystem
+        // interface — hide them, mirroring how GVFS/Thunar list devices.
+        if !ifaces.contains_key(&fs_iface) {
             continue;
         }
 
@@ -991,6 +975,67 @@ tmpfs /run/user/1000 tmpfs rw,nosuid,nodev 0 0
             assert_eq!(result[0].mount_point, None, "expected unmounted: {:?}", result[0]);
             assert!(result[0].is_optical, "expected optical true: {:?}", result[0]);
             assert_eq!(result[0].label, "USB", "expected label USB: {:?}", result[0]);
+        }
+
+        #[test]
+        fn udisks2_whole_disk_hidden_partitions_shown() {
+            // A removable stick: raw /dev/sdb (PartitionTable, no Filesystem)
+            // must be hidden; only its mountable partitions sdb1/sdb2 show.
+            let mut objects: zbus::fdo::ManagedObjects = HashMap::new();
+
+            // Drive (removable)
+            let mut d_props: HashMap<String, OwnedValue> = HashMap::new();
+            d_props.insert("Removable".to_string(), ov_bool(true));
+            d_props.insert("MediaRemovable".to_string(), ov_bool(true));
+            d_props.insert("Optical".to_string(), ov_bool(false));
+            d_props.insert("Id".to_string(), ov_str("Kingston_DataTraveler"));
+            d_props.insert("Model".to_string(), ov_str("DataTraveler"));
+            let mut d_ifaces: HashMap<OwnedInterfaceName, HashMap<String, OwnedValue>> = HashMap::new();
+            d_ifaces.insert(iface(IFACE_DRIVE), d_props);
+            objects.insert(mo_path("/org/freedesktop/UDisks2/drives/drive1"), d_ifaces);
+
+            // Whole disk: Block + PartitionTable, NO Filesystem -> hidden
+            let mut disk: HashMap<String, OwnedValue> = HashMap::new();
+            disk.insert("Device".to_string(), ov_bytes(b"/dev/sdb".to_vec()));
+            disk.insert("Drive".to_string(), ov_oop("/org/freedesktop/UDisks2/drives/drive1"));
+            disk.insert("HintSystem".to_string(), ov_bool(false));
+            disk.insert("IdLabel".to_string(), ov_str(""));
+            let mut disk_ifaces: HashMap<OwnedInterfaceName, HashMap<String, OwnedValue>> = HashMap::new();
+            disk_ifaces.insert(iface(IFACE_BLOCK), disk);
+            objects.insert(mo_path("/org/freedesktop/UDisks2/block_devices/sdb"), disk_ifaces);
+
+            // Partition 1: unmounted NTFS
+            let mut p1: HashMap<String, OwnedValue> = HashMap::new();
+            p1.insert("Device".to_string(), ov_bytes(b"/dev/sdb1".to_vec()));
+            p1.insert("Drive".to_string(), ov_oop("/org/freedesktop/UDisks2/drives/drive1"));
+            p1.insert("HintSystem".to_string(), ov_bool(false));
+            p1.insert("IdLabel".to_string(), ov_str("CCCOMA_X64FRE_EN-US_DV9"));
+            let mut fs1: HashMap<String, OwnedValue> = HashMap::new();
+            fs1.insert("MountPoints".to_string(), ov_bytes_vec(vec![]));
+            let mut if1: HashMap<OwnedInterfaceName, HashMap<String, OwnedValue>> = HashMap::new();
+            if1.insert(iface(IFACE_BLOCK), p1);
+            if1.insert(iface(IFACE_FS), fs1);
+            objects.insert(mo_path("/org/freedesktop/UDisks2/block_devices/sdb1"), if1);
+
+            // Partition 2: mounted vfat
+            let mut p2: HashMap<String, OwnedValue> = HashMap::new();
+            p2.insert("Device".to_string(), ov_bytes(b"/dev/sdb2".to_vec()));
+            p2.insert("Drive".to_string(), ov_oop("/org/freedesktop/UDisks2/drives/drive1"));
+            p2.insert("HintSystem".to_string(), ov_bool(false));
+            p2.insert("IdLabel".to_string(), ov_str("UEFI_NTFS"));
+            let mut fs2: HashMap<String, OwnedValue> = HashMap::new();
+            fs2.insert("MountPoints".to_string(), ov_bytes_vec(vec![b"/run/media/user/UEFI_NTFS".to_vec()]));
+            let mut if2: HashMap<OwnedInterfaceName, HashMap<String, OwnedValue>> = HashMap::new();
+            if2.insert(iface(IFACE_BLOCK), p2);
+            if2.insert(iface(IFACE_FS), fs2);
+            objects.insert(mo_path("/org/freedesktop/UDisks2/block_devices/sdb2"), if2);
+
+            let result = parse_managed_objects(&objects);
+            assert_eq!(result.len(), 2, "whole disk hidden, partitions shown: {:?}", result);
+            // Mounted first, then unmounted by label
+            assert_eq!(result[0].label, "UEFI_NTFS", "{:?}", result);
+            assert_eq!(result[1].label, "CCCOMA_X64FRE_EN-US_DV9", "{:?}", result);
+            assert!(result.iter().all(|d| d.object_path.is_some()));
         }
 
     }
