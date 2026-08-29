@@ -392,6 +392,7 @@ pub(crate) struct AppState {
     pub devices: Vec<crate::devices::RemovableDevice>,
     pub device_rx: Option<std::sync::mpsc::Receiver<crate::devices::DeviceEvent>>,
     pub device_action_tx: std::sync::mpsc::Sender<crate::devices::DeviceAction>,
+    pub pending_mount_nav: Option<String>, // object_path of a device we clicked-to-mount; navigate to it once mounted
 
     // ── Printer props modal ──
     pub show_props: bool,
@@ -622,6 +623,7 @@ impl AppState {
             devices,
             device_rx: Some(device_rx),
             device_action_tx,
+            pending_mount_nav: None,
             show_props: false,
             props_media_idx: 0,
             props_slot_idx: 0,

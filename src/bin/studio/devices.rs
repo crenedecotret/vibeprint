@@ -33,6 +33,7 @@ pub struct RemovableDevice {
 #[cfg_attr(not(feature = "udisks2"), allow(dead_code))]
 pub enum DeviceAction {
     Mount { object_path: String },
+    Unmount { object_path: String },
 }
 
 pub enum DeviceEvent {
@@ -249,7 +250,10 @@ fn udisks2_monitor_loop(
             let dirty = dirty.clone();
             let ctx = ctx.clone();
             std::thread::spawn(move || {
-                handle_mount(&conn, &action);
+                match &action {
+                    DeviceAction::Mount { .. } => handle_mount(&conn, &action),
+                    DeviceAction::Unmount { .. } => handle_unmount(&conn, &action),
+                }
                 dirty.store(true, std::sync::atomic::Ordering::Relaxed);
                 ctx.request_repaint();
             });
@@ -463,13 +467,24 @@ fn parse_managed_objects(objects: &zbus::fdo::ManagedObjects) -> Vec<RemovableDe
 
 #[cfg(feature = "udisks2")]
 fn handle_mount(conn: &zbus::blocking::Connection, action: &DeviceAction) {
-    let DeviceAction::Mount { object_path } = action;
+    let DeviceAction::Mount { object_path } = action else { return };
     let proxy = match zbus::blocking::Proxy::new(conn, UDISKS2_DEST, object_path.as_str(), IFACE_FS) {
         Ok(p) => p,
         Err(_) => return,
     };
     let opts: std::collections::HashMap<String, zbus::zvariant::Value> = Default::default();
     let _ = proxy.call::<_, _, String>("Mount", &opts);
+}
+
+#[cfg(feature = "udisks2")]
+fn handle_unmount(conn: &zbus::blocking::Connection, action: &DeviceAction) {
+    let DeviceAction::Unmount { object_path } = action else { return };
+    let proxy = match zbus::blocking::Proxy::new(conn, UDISKS2_DEST, object_path.as_str(), IFACE_FS) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let opts: std::collections::HashMap<String, zbus::zvariant::Value> = Default::default();
+    let _ = proxy.call_method::<_, _>("Unmount", &opts);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

@@ -1557,6 +1557,20 @@ impl App {
                             self.escape_dead_dir();
                         }
                     }
+                    if let Some(op) = self.state.pending_mount_nav.clone() {
+                        match self.state.devices.iter().find(|d| d.object_path.as_deref() == Some(op.as_str())) {
+                            Some(dev) => {
+                                if let Some(mp) = &dev.mount_point {
+                                    self.navigate(mp.clone());
+                                    self.state.pending_mount_nav = None;
+                                }
+                            }
+                            None => {
+                                // device vanished (unplugged/failed); stop waiting
+                                self.state.pending_mount_nav = None;
+                            }
+                        }
+                    }
                 }
             }
         }
