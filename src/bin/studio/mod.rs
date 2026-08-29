@@ -1,4 +1,5 @@
 pub mod app;
+pub mod devices;
 pub mod icc;
 pub mod processing;
 pub mod types;

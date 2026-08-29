@@ -388,6 +388,10 @@ pub(crate) struct AppState {
     pub printer_idx: usize,
     pub discovery_rx: Option<Receiver<DiscoveryEvent>>,
 
+    // ── Removable devices ──
+    pub devices: Vec<crate::devices::RemovableDevice>,
+    pub device_rx: Option<std::sync::mpsc::Receiver<crate::devices::DeviceEvent>>,
+
     // ── Printer props modal ──
     pub show_props: bool,
     pub props_media_idx: usize,
@@ -559,6 +563,8 @@ impl AppState {
         saved_use_metric: bool,
         saved_safe_8bit: bool,
         curated_icc_profiles: Vec<IccProfileEntry>,
+        devices: Vec<crate::devices::RemovableDevice>,
+        device_rx: std::sync::mpsc::Receiver<crate::devices::DeviceEvent>,
     ) -> Self {
         Self {
             current_dir: home.clone(),
@@ -611,6 +617,8 @@ impl AppState {
             caps: None,
             printer_idx: 0,
             discovery_rx: Some(discovery_rx),
+            devices,
+            device_rx: Some(device_rx),
             show_props: false,
             props_media_idx: 0,
             props_slot_idx: 0,

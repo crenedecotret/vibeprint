@@ -223,6 +223,8 @@ impl App {
             }
         };
 
+        let device_rx = crate::devices::spawn_device_monitor(cc.egui_ctx.clone());
+        let initial_devices = crate::devices::enumerate_removable_mounts();
         let mut state = AppState::new(
             thumb_tx,
             thumb_rx,
@@ -245,6 +247,8 @@ impl App {
             s.use_metric.unwrap_or(false),
             s.safe_8bit_tiff_print_path.unwrap_or(false),
             curated_profiles, // NEW - last argument
+            initial_devices,
+            device_rx,
         );
         state.stager_tx = Some(stager_tx);
         state.debouncer = debouncer;
@@ -416,6 +420,18 @@ impl App {
             self.scan_dir();
             self.rewatch_current_dir();
         }
+    }
+
+    pub(crate) fn escape_dead_dir(&mut self) {
+        if self.state.current_dir.is_dir() {
+            return;
+        }
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        if self.state.current_dir != home {
+            self.navigate(home);
+        }
+        self.state.nav_history.retain(|p| p.is_dir());
+        self.state.nav_forward.retain(|p| p.is_dir());
     }
 
     pub(crate) fn stage_image(&mut self, path: PathBuf) {
@@ -1506,6 +1522,43 @@ impl App {
     }
 
     pub(crate) fn pump(&mut self, ctx: &Context) {
+        if !self.state.current_dir.is_dir() {
+            self.escape_dead_dir();
+        }
+        let device_events: Vec<crate::devices::DeviceEvent> = {
+            let mut v = Vec::new();
+            if let Some(rx) = &self.state.device_rx {
+                while let Ok(ev) = rx.try_recv() {
+                    v.push(ev);
+                }
+            }
+            v
+        };
+        for ev in device_events {
+            match ev {
+                crate::devices::DeviceEvent::Snapshot(list) => {
+                    let prev: std::collections::HashSet<std::path::PathBuf> = self
+                        .state
+                        .devices
+                        .iter()
+                        .map(|d| d.mount_point.clone())
+                        .collect();
+                    let new_mounts: std::collections::HashSet<std::path::PathBuf> =
+                        list.iter().map(|d| d.mount_point.clone()).collect();
+                    let removed: Vec<std::path::PathBuf> = prev
+                        .into_iter()
+                        .filter(|m| !new_mounts.contains(m))
+                        .collect();
+                    self.state.devices = list;
+                    for m in removed {
+                        if self.state.current_dir == m || self.state.current_dir.starts_with(&m) {
+                            self.escape_dead_dir();
+                        }
+                    }
+                }
+            }
+        }
+
         // Drain file-watcher events for targeted auto-refresh
         let changed: Vec<PathBuf> = match &self.state.refresh_rx {
             Some(rx) => {

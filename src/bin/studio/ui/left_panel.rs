@@ -120,6 +120,44 @@ impl App {
             }
         }
 
+        // ── Devices ───────────────────────────────────────────────────────
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("  DEVICES")
+                .size(9.5)
+                .color(Color32::from_gray(130)),
+        );
+        if self.state.devices.is_empty() {
+            ui.label(RichText::new("  (no removable devices)").size(10.5).weak());
+        } else {
+            // Clone to avoid borrow conflict with self.navigate
+            let devices = self.state.devices.clone();
+            let current = self.state.current_dir.clone();
+            let mut nav: Option<PathBuf> = None;
+            for dev in &devices {
+                let active = current == dev.mount_point
+                    || current.starts_with(&dev.mount_point);
+                let icon = if dev.is_optical { "💿  " } else { "💾  " };
+                let text = RichText::new(format!("{icon}{}", dev.label)).size(12.0);
+                let hover = format!(
+                    "{} ({})",
+                    dev.mount_point.display(),
+                    dev.devnode.as_deref().unwrap_or("?")
+                );
+                if ui
+                    .selectable_label(active, text)
+                    .on_hover_text(hover)
+                    .clicked()
+                    && !active
+                {
+                    nav = Some(dev.mount_point.clone());
+                }
+            }
+            if let Some(p) = nav {
+                self.navigate(p);
+            }
+        }
+
         ui.add_space(4.0);
         ui.label(
             RichText::new("  FOLDERS")
