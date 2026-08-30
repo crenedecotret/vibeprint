@@ -390,6 +390,8 @@ impl App {
         self.state.current_dir = path.clone();
         self.state.addr_bar = path.to_string_lossy().into_owned();
         self.state.selected_paths.clear();
+        // Bring the new current folder into view in the FOLDERS tree.
+        self.state.tree_focus_pending = true;
         let sel = self.state.selected.clone();
         self.state.thumbs.retain(|p, _| sel.as_ref() == Some(p));
         self.scan_dir();
@@ -403,6 +405,7 @@ impl App {
             self.state.current_dir = prev.clone();
             self.state.addr_bar = prev.to_string_lossy().into_owned();
             self.state.selected_paths.clear();
+            self.state.tree_focus_pending = true;
             let sel = self.state.selected.clone();
             self.state.thumbs.retain(|p, _| sel.as_ref() == Some(p));
             self.scan_dir();
@@ -417,6 +420,7 @@ impl App {
             self.state.current_dir = next.clone();
             self.state.addr_bar = next.to_string_lossy().into_owned();
             self.state.selected_paths.clear();
+            self.state.tree_focus_pending = true;
             let sel = self.state.selected.clone();
             self.state.thumbs.retain(|p, _| sel.as_ref() == Some(p));
             self.scan_dir();

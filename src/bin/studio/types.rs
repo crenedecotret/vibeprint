@@ -366,6 +366,11 @@ pub(crate) struct AppState {
     pub nav_forward: Vec<PathBuf>,
     pub tree_expanded: HashMap<PathBuf, bool>,
     pub tree_children_cache: HashMap<PathBuf, Vec<PathBuf>>,
+    /// When true, the FOLDERS tree scrolls the next frame so the current
+    /// directory is brought into view. Set by navigate/nav_back/nav_fwd
+    /// (e.g. when clicking a Places shortcut for a folder that is currently
+    /// below the fold in the tree).
+    pub tree_focus_pending: bool,
     pub addr_bar: String,
     pub thumb_zoom: f32,
     pub thumb_pool: rayon::ThreadPool,
@@ -605,6 +610,9 @@ impl AppState {
             nav_forward: Vec::new(),
             tree_expanded: HashMap::new(),
             tree_children_cache: HashMap::new(),
+            // Initial true: on startup (restored deep dir), reveal the current
+            // directory in the tree as well.
+            tree_focus_pending: true,
             addr_bar: String::new(),
             thumb_zoom: 1.0,
             thumb_pool: rayon::ThreadPoolBuilder::new()

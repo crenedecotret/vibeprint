@@ -211,6 +211,8 @@ impl App {
         let tree_h = (avail * 0.42).max(80.0);
         let mut tree_nav: Option<PathBuf> = None;
         let mut tree_toggle: Option<(PathBuf, bool)> = None;
+        let mut current_rect: Option<Rect> = None;
+        let focus_tree = self.state.tree_focus_pending;
         egui::ScrollArea::vertical()
             .id_salt("tree_scroll")
             .max_height(tree_h)
@@ -225,7 +227,17 @@ impl App {
                     &mut self.state.tree_children_cache,
                     &mut tree_nav,
                     &mut tree_toggle,
+                    &mut current_rect,
                 );
+                // After a navigation (e.g. Places click), bring the current
+                // folder into view. align = None scrolls the minimum amount
+                // needed, so it never fights the user's manual scrolling.
+                if focus_tree {
+                    if let Some(rect) = current_rect {
+                        ui.scroll_to_rect(rect, None);
+                    }
+                    self.state.tree_focus_pending = false;
+                }
             });
         if let Some((p, exp)) = tree_toggle {
             self.state.tree_expanded.insert(p, exp);

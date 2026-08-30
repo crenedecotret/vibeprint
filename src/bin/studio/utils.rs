@@ -601,6 +601,7 @@ pub(crate) fn draw_tree_node(
     tree_cache: &mut HashMap<PathBuf, Vec<PathBuf>>,
     nav: &mut Option<PathBuf>,
     toggle: &mut Option<(PathBuf, bool)>,
+    current_rect: &mut Option<Rect>,
 ) {
     if depth > 8 {
         return;
@@ -698,6 +699,9 @@ pub(crate) fn draw_tree_node(
             *nav = Some(path.clone());
         }
         if is_current {
+            // Record where the active row is so the enclosing ScrollArea can
+            // bring it into view after navigation (e.g. from a Places click).
+            *current_rect = Some(resp.rect);
             // Subtle highlight behind the active row
             ui.painter().rect_filled(
                 resp.rect.expand2(Vec2::new(4.0, 1.0)),
@@ -718,6 +722,7 @@ pub(crate) fn draw_tree_node(
                 tree_cache,
                 nav,
                 toggle,
+                current_rect,
             );
         }
     }
