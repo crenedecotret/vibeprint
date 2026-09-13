@@ -13,11 +13,11 @@ use vibeprint::{
 };
 
 use crate::icc::{
-    apply_preview_transform, extract_file_date, extract_file_size, transform_preview_border_color,
+    apply_preview_transform, icc_entry_for_path, transform_preview_border_color,
 };
 use crate::types::{
     print_sizes, AppState, Borders, CutMarks, Engine, IccProfileEntry, IccProfileFilter,
-    IccProfileSource, Intent, LoadKind, ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX,
+    Intent, LoadKind, ProcState, ProcessTarget, RightTab, Settings, FIT_PAGE_IDX,
     MAX_PREVIEW_PX, QUEUE_SPACING_IN, THUMB_PX,
 };
 use crate::utils::{extract_embedded_icc_from_bytes, is_image, load_full_image_on_demand, load_thumb};
@@ -110,49 +110,7 @@ impl App {
             .output_icc
             .as_deref()
             .map(PathBuf::from)
-            .filter(|p| p.is_file())
-            .map(|path| {
-                let (description, date, file_size) = if let Ok(bytes) = std::fs::read(&path) {
-                    if let Ok(profile) = lcms2::Profile::new_icc(&bytes) {
-                        let desc = profile
-                            .info(lcms2::InfoType::Description, lcms2::Locale::none())
-                            .unwrap_or_else(|| {
-                                path.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("Unknown")
-                                    .to_string()
-                            });
-                        let d = extract_file_date(&path);
-                        let s = extract_file_size(&path);
-                        (desc, d, s)
-                    } else {
-                        (
-                            path.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("Unknown")
-                                .to_string(),
-                            extract_file_date(&path),
-                            extract_file_size(&path),
-                        )
-                    }
-                } else {
-                    (
-                        path.file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("Unknown")
-                            .to_string(),
-                        extract_file_date(&path),
-                        extract_file_size(&path),
-                    )
-                };
-                IccProfileEntry {
-                    path,
-                    description,
-                    date,
-                    file_size,
-                    source: IccProfileSource::User,
-                }
-            });
+            .and_then(|p| icc_entry_for_path(&p));
 
         let saved_engine = match s.engine.as_deref() {
             Some("lanczos3") => Engine::Lanczos3,
@@ -265,6 +223,9 @@ impl App {
             .as_deref()
             .map(CutMarks::from_label)
             .unwrap_or(CutMarks::None);
+        let (presets, preset_warnings) = crate::templates::list_templates();
+        state.saved_presets = presets;
+        deferred_logs.extend(preset_warnings);
         state.log.extend(deferred_logs);
 
         if state.monitor_icc_profile.is_none() {
@@ -1524,6 +1485,357 @@ impl App {
             self.state.border_edit_t = format_border_edit(0.25, self.state.use_metric);
             self.state.border_edit_b = format_border_edit(0.25, self.state.use_metric);
             self.relayout_queue();
+        }
+    }
+
+    pub(crate) fn set_page_size_idx(&mut self, idx: usize) {
+        self.state.selected_page_size_idx = idx;
+        let new_reported = self.calc_reported_border();
+        self.state.reported_border = new_reported;
+        self.state.user_border.left =
+            self.state.user_border.left.max(new_reported.left);
+        self.state.user_border.right =
+            self.state.user_border.right.max(new_reported.right);
+        self.state.user_border.top = self.state.user_border.top.max(new_reported.top);
+        self.state.user_border.bottom =
+            self.state.user_border.bottom.max(new_reported.bottom);
+        // Re-clamp sum caps for new paper dimensions
+        let (pw, ph) = self
+            .state
+            .caps
+            .as_ref()
+            .and_then(|c| c.page_sizes.get(self.state.selected_page_size_idx))
+            .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
+            .unwrap_or((8.5, 11.0));
+        if self.state.user_border.left + self.state.user_border.right
+            > pw - crate::ui::right_panel::MIN_IMAGEABLE_IN
+        {
+            self.state.user_border.right =
+                (pw - self.state.user_border.left - crate::ui::right_panel::MIN_IMAGEABLE_IN)
+                    .max(self.state.reported_border.right);
+        }
+        if self.state.user_border.top + self.state.user_border.bottom
+            > ph - crate::ui::right_panel::MIN_IMAGEABLE_IN
+        {
+            self.state.user_border.bottom =
+                (ph - self.state.user_border.top - crate::ui::right_panel::MIN_IMAGEABLE_IN)
+                    .max(self.state.reported_border.bottom);
+        }
+        self.state.border_edit_l = format_border_edit(
+            self.state.user_border.left,
+            self.state.use_metric,
+        );
+        self.state.border_edit_r = format_border_edit(
+            self.state.user_border.right,
+            self.state.use_metric,
+        );
+        self.state.border_edit_t = format_border_edit(
+            self.state.user_border.top,
+            self.state.use_metric,
+        );
+        self.state.border_edit_b = format_border_edit(
+            self.state.user_border.bottom,
+            self.state.use_metric,
+        );
+        self.relayout_queue();
+    }
+
+    pub(crate) fn apply_preset(&mut self, t: &crate::templates::PresetTemplate) {
+        let mut notes: Vec<String> = Vec::new();
+        let mut applied: Vec<String> = Vec::new();
+
+        // 1. Printer
+        let mut printer_matched = false;
+        let cur = self.state.printers.get(self.state.printer_idx).map(|p| p.name.clone());
+        if let Some(ref name) = t.printer_name {
+            if let Some(i) = self.state.printers.iter().position(|p| p.name == *name) {
+                if i != self.state.printer_idx {
+                    self.state.printer_idx = i;
+                    self.sync_caps_to_selection();
+                }
+                applied.push(format!("Printer: {}", name));
+                printer_matched = true;
+            } else {
+                match cur {
+                    Some(c) => notes.push(format!(
+                        "Template printer '{}' not connected - applied to '{}'", name, c
+                    )),
+                    None => notes.push(format!(
+                        "Template printer '{}' not connected - no printer connected", name
+                    )),
+                }
+            }
+        } else {
+            printer_matched = true; // no printer in preset — using current printer
+            notes.push("Template has no printer setting - kept current".to_string());
+        }
+
+        // 2. Page size
+        let caps = self.state.caps.clone();
+        if let Some(ref caps) = caps {
+            match crate::templates::match_page_size_idx(
+                caps,
+                t.page_size_name.as_deref(),
+                t.page_size_label.as_deref(),
+                t.page_size_dims_pt,
+            ) {
+                Some(i) => {
+                    self.set_page_size_idx(i);
+                    let label = t.page_size_label.as_deref()
+                        .or(t.page_size_name.as_deref())
+                        .unwrap_or("paper");
+                    applied.push(format!("Paper: {}", label));
+                }
+                None => {
+                    let label = t.page_size_label.as_deref()
+                        .or(t.page_size_name.as_deref())
+                        .unwrap_or("unnamed");
+                    notes.push(format!(
+                        "Paper size '{}' not available on the current printer - kept current", label
+                    ));
+                }
+            }
+        } else {
+            notes.push(
+                "No printer connected - paper and media settings from the template were skipped"
+                    .to_string(),
+            );
+        }
+
+        // 3. Media type / input slot / extra options (only when caps present)
+        if let Some(ref caps) = caps {
+            // Media type
+            if let Some(ref k) = t.media_type_key {
+                match caps.media_types.iter().position(|(key, _)| key == k) {
+                    Some(i) => {
+                        self.state.props_media_idx = i;
+                        if printer_matched {
+                            let label = t.media_type_label.as_deref().unwrap_or(k);
+                            applied.push(format!("Media: {}", label));
+                        }
+                    }
+                    None => {
+                        let label = t.media_type_label.as_deref().unwrap_or(k);
+                        notes.push(format!(
+                            "Media type '{}' not available - kept current", label
+                        ));
+                    }
+                }
+            }
+
+            // Input slot
+            if let Some(ref k) = t.input_slot_key {
+                match caps.input_slots.iter().position(|(key, _)| key == k) {
+                    Some(i) => {
+                        self.state.props_slot_idx = i;
+                        if printer_matched {
+                            let label = t.input_slot_label.as_deref().unwrap_or(k);
+                            applied.push(format!("Slot: {}", label));
+                        }
+                    }
+                    None => {
+                        let label = t.input_slot_label.as_deref().unwrap_or(k);
+                        notes.push(format!(
+                            "Input slot '{}' not available - kept current", label
+                        ));
+                    }
+                }
+            }
+
+            // Extra options
+            let mut skipped = 0usize;
+            let mut extra_applied = 0usize;
+            for (key, idx) in &t.extra_option_indices {
+                if let Some(opt) = caps.extra_options.iter().find(|o| o.key == *key) {
+                    let max = opt.choices.len().saturating_sub(1);
+                    self.state
+                        .extra_option_indices
+                        .insert(key.clone(), (*idx).min(max));
+                    extra_applied += 1;
+                } else {
+                    skipped += 1;
+                }
+            }
+            if extra_applied > 0 && printer_matched {
+                applied.push(format!("{} extra option(s)", extra_applied));
+            }
+            if skipped > 0 {
+                notes.push(format!(
+                    "{} template option(s) not available on the current printer - kept current",
+                    skipped
+                ));
+            }
+        }
+
+        // 4. Borders
+        let rb = self.state.reported_border;
+        let mut b = t.borders;
+        b.left = b.left.max(rb.left);
+        b.right = b.right.max(rb.right);
+        b.top = b.top.max(rb.top);
+        b.bottom = b.bottom.max(rb.bottom);
+        let (pw, ph) = self
+            .state
+            .caps
+            .as_ref()
+            .and_then(|c| c.page_sizes.get(self.state.selected_page_size_idx))
+            .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
+            .unwrap_or((8.5, 11.0));
+        if b.left + b.right > pw - crate::ui::right_panel::MIN_IMAGEABLE_IN {
+            b.right = (pw - b.left - crate::ui::right_panel::MIN_IMAGEABLE_IN).max(rb.right);
+        }
+        if b.top + b.bottom > ph - crate::ui::right_panel::MIN_IMAGEABLE_IN {
+            b.bottom = (ph - b.top - crate::ui::right_panel::MIN_IMAGEABLE_IN).max(rb.bottom);
+        }
+        let mut borders_adjusted = false;
+        for (side, old_val, new_val) in [
+            ("Left", t.borders.left, b.left),
+            ("Right", t.borders.right, b.right),
+            ("Top", t.borders.top, b.top),
+            ("Bottom", t.borders.bottom, b.bottom),
+        ] {
+            if (old_val - new_val).abs() > 0.005 {
+                notes.push(format!(
+                    "{} margin {:.3}in -> {:.3}in (printer limits)",
+                    side, old_val, new_val
+                ));
+                borders_adjusted = true;
+            }
+        }
+        if !borders_adjusted {
+            applied.push("Borders".to_string());
+        }
+        self.state.user_border = b;
+        self.state.border_edit_l = format_border_edit(b.left, self.state.use_metric);
+        self.state.border_edit_r = format_border_edit(b.right, self.state.use_metric);
+        self.state.border_edit_t = format_border_edit(b.top, self.state.use_metric);
+        self.state.border_edit_b = format_border_edit(b.bottom, self.state.use_metric);
+
+        // 5. Engine / intent / bpc / sharpen / depth16 / target_dpi / cut_marks
+        self.state.engine = match t.engine.as_str() {
+            "lanczos3" => Engine::Lanczos3,
+            "iterative" => Engine::Iterative,
+            "mitchell" => Engine::MitchellEwa,
+            "mitchell-sharp" | "mitchell-ewa-sharp" => Engine::MitchellEwaSharp,
+            "catmullrom" | "mks" => Engine::Mks,
+            _ => Engine::MitchellEwaSharp,
+        };
+        self.state.intent = match t.intent.as_str() {
+            "perceptual" => Intent::Perceptual,
+            "saturation" => Intent::Saturation,
+            _ => Intent::Relative,
+        };
+        self.state.bpc = t.bpc;
+        self.state.sharpen = t.sharpen;
+        self.state.depth16 = t.depth16;
+        self.state.target_dpi = if t.target_dpi > 0 { t.target_dpi } else { 720 };
+        self.state.cut_marks = CutMarks::from_label(&t.cut_marks);
+        applied.push(format!(
+            "Engine: {} | Intent: {} | BPC: {} | Sharpen: {} | Depth: {} | DPI: {}",
+            t.engine,
+            t.intent,
+            if t.bpc { "Yes" } else { "No" },
+            t.sharpen,
+            if t.depth16 { "16-bit" } else { "8-bit" },
+            t.target_dpi,
+        ));
+
+        // 6. Output ICC
+        if let Some(p) = t.output_icc_path.as_deref() {
+            match icc_entry_for_path(std::path::Path::new(p)) {
+                Some(entry) => {
+                    self.state.output_icc = Some(entry);
+                    let desc = t.output_icc_description.as_deref().unwrap_or(p);
+                    applied.push(format!("ICC: {}", desc));
+                }
+                None => notes.push(format!(
+                    "Output ICC profile not found ('{}') - kept current", p
+                )),
+            }
+        } else {
+            self.state.output_icc = None;
+        }
+
+        // 7. Relayout
+        self.relayout_queue();
+
+        // 8. Log or notice
+        self.state.selected_preset_name = Some(t.name.clone());
+        if notes.is_empty() {
+            self.state
+                .log
+                .push(format!("OK: Preset '{}' applied", t.name));
+        } else {
+            self.state.preset_applied_lines = applied;
+            self.state.preset_notice_lines = notes;
+            self.state.show_preset_notice = true;
+        }
+    }
+
+    pub(crate) fn snapshot_preset(&self, name: &str) -> crate::templates::PresetTemplate {
+        let engine_str = match self.state.engine {
+            Engine::Lanczos3 => "lanczos3",
+            Engine::Iterative => "iterative",
+            Engine::MitchellEwa => "mitchell",
+            Engine::MitchellEwaSharp => "mitchell-sharp",
+            Engine::Mks => "catmullrom",
+        };
+        let intent_str = match self.state.intent {
+            Intent::Perceptual => "perceptual",
+            Intent::Saturation => "saturation",
+            Intent::Relative => "relative",
+        };
+        let ps = self
+            .state
+            .caps
+            .as_ref()
+            .and_then(|c| c.page_sizes.get(self.state.selected_page_size_idx));
+        let media = self
+            .state
+            .caps
+            .as_ref()
+            .and_then(|c| c.media_types.get(self.state.props_media_idx));
+        let slot = self
+            .state
+            .caps
+            .as_ref()
+            .and_then(|c| c.input_slots.get(self.state.props_slot_idx));
+
+        crate::templates::PresetTemplate {
+            schema_version: crate::templates::SCHEMA_VERSION,
+            name: name.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            printer_name: self
+                .state
+                .printers
+                .get(self.state.printer_idx)
+                .map(|p| p.name.clone()),
+            page_size_name: ps.map(|ps| ps.name.clone()),
+            page_size_label: ps.map(|ps| ps.label.clone()),
+            page_size_dims_pt: ps.map(|ps| ps.paper_size),
+            media_type_key: media.map(|(k, _)| k.clone()),
+            media_type_label: media.map(|(_, l)| l.clone()),
+            input_slot_key: slot.map(|(k, _)| k.clone()),
+            input_slot_label: slot.map(|(_, l)| l.clone()),
+            extra_option_indices: self.state.extra_option_indices.clone(),
+            borders: self.state.user_border,
+            output_icc_path: self
+                .state
+                .output_icc
+                .as_ref()
+                .map(|e| e.path.to_string_lossy().into_owned()),
+            output_icc_description: self
+                .state
+                .output_icc
+                .as_ref()
+                .map(|e| e.description.clone()),
+            intent: intent_str.to_string(),
+            bpc: self.state.bpc,
+            engine: engine_str.to_string(),
+            sharpen: self.state.sharpen,
+            depth16: self.state.depth16,
+            target_dpi: self.state.target_dpi,
+            cut_marks: self.state.cut_marks.label().to_string(),
         }
     }
 

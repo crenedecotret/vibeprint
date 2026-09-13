@@ -59,13 +59,91 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.menu_button("☰", |ui| {
                     ui.set_min_width(140.0);
-                    if ui.button("About VibePrint Studio…").clicked() {
-                        self.state.show_about = true;
+
+                    // -- Saved presets group --
+                    if ui.button("Load preset\u{2026}").clicked() {
+                        let mut dlg = rfd::FileDialog::new()
+                            .add_filter("Preset Template", &["vsp"]);
+                        if let Some(dir) = crate::templates::templates_dir() {
+                            dlg = dlg.set_directory(dir);
+                        }
+                        if let Some(path) = dlg.pick_file() {
+                            match crate::templates::import_template_file(&path) {
+                                Ok(t) => {
+                                    self.apply_preset(&t);
+                                }
+                                Err(e) => {
+                                    self.state.log.push(format!("Failed to load preset: {}", e));
+                                }
+                            }
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Save preset\u{2026}").clicked() {
+                        let initial_name = self.state.selected_preset_name.clone()
+                            .unwrap_or_else(|| "preset".to_string());
+                        let mut dlg = rfd::FileDialog::new()
+                            .add_filter("Preset Template", &["vsp"])
+                            .set_file_name(format!(
+                                "{}.vsp",
+                                crate::templates::sanitize_name(&initial_name)
+                            ));
+                        if let Some(dir) = crate::templates::templates_dir() {
+                            dlg = dlg.set_directory(dir);
+                        }
+                        if let Some(path) = dlg.save_file() {
+                            let path = if path.extension().is_none() {
+                                path.with_extension("vsp")
+                            } else {
+                                path
+                            };
+                            let stem = path.file_stem()
+                                .and_then(|s| s.to_str())
+                                .map(crate::templates::sanitize_name)
+                                .unwrap_or_else(|| "preset".to_string());
+                            let t = self.snapshot_preset(&stem);
+                            match crate::templates::save_template_at(&t, &path) {
+                                Ok(()) => {
+                                    let in_templates = crate::templates::templates_dir()
+                                        .as_deref()
+                                        .map(|d| path.starts_with(d))
+                                        .unwrap_or(false);
+                                    if in_templates {
+                                        let (presets, warns) = crate::templates::list_templates();
+                                        self.state.saved_presets = presets;
+                                        for w in warns { self.state.log.push(w); }
+                                        self.state.log.push(format!("OK: Preset '{}' saved", stem));
+                                    } else {
+                                        self.state.log.push(format!(
+                                            "Preset saved to {} (not in the templates folder - it will not appear in Manage Presets)",
+                                            path.display()
+                                        ));
+                                    }
+                                    self.state.selected_preset_name = Some(stem);
+                                }
+                                Err(e) => {
+                                    self.state.log.push(format!("Failed to save preset: {}", e));
+                                }
+                            }
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Manage presets\u{2026}").clicked() {
+                        self.state.show_manage_presets = true;
+                        self.state.preset_picker_highlighted = None;
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+
+                    // -- Existing items --
+                    if ui.button("Preferences…").clicked() {
+                        self.state.show_preferences = true;
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Preferences…").clicked() {
-                        self.state.show_preferences = true;
+                    if ui.button("About VibePrint Studio…").clicked() {
+                        self.state.show_about = true;
                         ui.close_menu();
                     };
                 });

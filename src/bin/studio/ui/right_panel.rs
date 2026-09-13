@@ -9,7 +9,7 @@ use crate::App;
 
 /// Minimum imageable width/height the user is allowed to reserve when adjusting
 /// borders. Prevents collapsing the printable area to nothing.
-const MIN_IMAGEABLE_IN: f32 = 0.5;
+pub(crate) const MIN_IMAGEABLE_IN: f32 = 0.5;
 
 // ── RGB ↔ HSL helpers ───────────────────────────────────────────────────────
 
@@ -678,54 +678,7 @@ impl App {
                 });
 
                 if self.state.selected_page_size_idx != prev_page_size_idx {
-                    let new_reported = self.calc_reported_border();
-                    self.state.reported_border = new_reported;
-                    self.state.user_border.left =
-                        self.state.user_border.left.max(new_reported.left);
-                    self.state.user_border.right =
-                        self.state.user_border.right.max(new_reported.right);
-                    self.state.user_border.top = self.state.user_border.top.max(new_reported.top);
-                    self.state.user_border.bottom =
-                        self.state.user_border.bottom.max(new_reported.bottom);
-                    // Re-clamp sum caps for new paper dimensions
-                    let (pw, ph) = self
-                        .state
-                        .caps
-                        .as_ref()
-                        .and_then(|c| c.page_sizes.get(self.state.selected_page_size_idx))
-                        .map(|ps| (ps.paper_size.0 / 72.0, ps.paper_size.1 / 72.0))
-                        .unwrap_or((8.5, 11.0));
-                    if self.state.user_border.left + self.state.user_border.right
-                        > pw - MIN_IMAGEABLE_IN
-                    {
-                        self.state.user_border.right =
-                            (pw - self.state.user_border.left - MIN_IMAGEABLE_IN)
-                                .max(self.state.reported_border.right);
-                    }
-                    if self.state.user_border.top + self.state.user_border.bottom
-                        > ph - MIN_IMAGEABLE_IN
-                    {
-                        self.state.user_border.bottom =
-                            (ph - self.state.user_border.top - MIN_IMAGEABLE_IN)
-                                .max(self.state.reported_border.bottom);
-                    }
-                    self.state.border_edit_l = crate::app::format_border_edit(
-                        self.state.user_border.left,
-                        self.state.use_metric,
-                    );
-                    self.state.border_edit_r = crate::app::format_border_edit(
-                        self.state.user_border.right,
-                        self.state.use_metric,
-                    );
-                    self.state.border_edit_t = crate::app::format_border_edit(
-                        self.state.user_border.top,
-                        self.state.use_metric,
-                    );
-                    self.state.border_edit_b = crate::app::format_border_edit(
-                        self.state.user_border.bottom,
-                        self.state.use_metric,
-                    );
-                    self.relayout_queue();
+                    self.set_page_size_idx(self.state.selected_page_size_idx);
                 }
 
                 // Sharpen

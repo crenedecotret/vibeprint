@@ -4,6 +4,7 @@ mod app;
 mod devices;
 mod icc;
 mod processing;
+mod templates;
 mod types;
 mod ui;
 mod utils;
@@ -236,6 +237,15 @@ impl eframe::App for App {
         }
         if self.state.show_preferences {
             self.show_preferences(ctx);
+        }
+        if self.state.show_manage_presets {
+            self.show_manage_presets(ctx);
+        }
+        if self.state.show_preset_details {
+            self.show_preset_details(ctx);
+        }
+        if self.state.show_preset_notice {
+            self.show_preset_notice(ctx);
         }
 
         // Show splash screen during printer discovery

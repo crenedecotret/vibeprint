@@ -2116,7 +2116,7 @@ if apply_btn.clicked() {
 
                 // Version
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("Version 1.4").weak());
+                    ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).weak());
                 });
 
                 ui.add_space(16.0);
@@ -2126,7 +2126,7 @@ if apply_btn.clicked() {
                 // Description
                 ui.label(
                     RichText::new("ICC-aware print layout engine built entirely in Rust.")
-                        .size(12.0)
+                    .size(14.0)
                         .color(egui::Color32::from_gray(200)),
                 );
                 ui.add_space(12.0);
@@ -2170,4 +2170,485 @@ if apply_btn.clicked() {
                 ui.add_space(8.0);
             });
     }
+
+    pub(crate) fn show_manage_presets(&mut self, ctx: &Context) {
+        let screen = ctx.screen_rect();
+        let width = (screen.width() * 0.85).clamp(720.0, 1400.0);
+        let height = (screen.height() * 0.60).clamp(420.0, 680.0);
+        let scale = (screen.height() / 1080.0).clamp(1.0, 1.5);
+        let btn_size = [90.0 * scale, 30.0 * scale];
+
+        egui::Window::new("Manage Presets")
+            .collapsible(false)
+            .resizable(false)
+            .min_size([width, height])
+            .max_size([width, height])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+
+                // Preset list
+                let saved_presets_clone = self.state.saved_presets.clone();
+                let highlighted = self.state.preset_picker_highlighted.clone();
+
+                if saved_presets_clone.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("No saved presets yet.");
+                    });
+                } else {
+                    use egui_extras::{Column, TableBuilder};
+
+                    egui::ScrollArea::vertical()
+                        .max_height(height - 190.0)
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            let table_width = ui.available_width();
+                            TableBuilder::new(ui)
+                                .id_salt("manage_presets_table")
+                                .striped(true)
+                                .resizable(true)
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .column(Column::initial(table_width * 0.14).at_least(table_width * 0.10))
+                                .column(Column::initial(table_width * 0.13).at_least(70.0))
+                                .column(Column::initial(table_width * 0.18).at_least(90.0))
+                                .column(Column::initial(table_width * 0.10).at_least(60.0))
+                                .column(Column::initial(table_width * 0.09).at_least(60.0))
+                                .column(Column::initial(table_width * 0.16).at_least(100.0))
+                                .column(Column::remainder().at_least(100.0))
+                                .header(22.0, |mut header| {
+                                    header.col(|ui| { ui.strong("Name"); });
+                                    header.col(|ui| { ui.strong("Printer"); });
+                                    header.col(|ui| { ui.strong("Paper"); });
+                                    header.col(|ui| { ui.strong("Media"); });
+                                    header.col(|ui| { ui.strong("Slot"); });
+                                    header.col(|ui| { ui.strong("Borders (in)"); });
+                                    header.col(|ui| { ui.strong("ICC"); });
+                                })
+                                .body(|body| {
+                                    body.rows(24.0, saved_presets_clone.len(), |mut row| {
+                                        let idx = row.index();
+                                        let (path, t) = &saved_presets_clone[idx];
+                                        let is_hl = highlighted.as_ref() == Some(path);
+
+                                        row.col(|ui| {
+                                            ui.add_space(8.0);
+                                            let resp = ui
+                                                .selectable_label(is_hl, RichText::new(&t.name).strong());
+                                            if resp.clicked() {
+                                                self.state.preset_picker_highlighted = Some(path.clone());
+                                            }
+                                            if resp.double_clicked() {
+                                                let t = t.clone();
+                                                self.apply_preset(&t);
+                                                self.state.show_manage_presets = false;
+                                                self.state.show_preset_details = false;
+                                            }
+                                        });
+                                        row.col(|ui| {
+                                            let printer = t.printer_name.as_deref().unwrap_or("none");
+                                            ui.add(egui::Label::new(RichText::new(printer).weak()).truncate());
+                                        });
+                                        row.col(|ui| {
+                                            let paper = match (t.page_size_label.as_deref(), t.page_size_dims_pt) {
+                                                (Some(label), Some((w, h))) => format!("{} ({:.1} x {:.1} pt)", label, w, h),
+                                                (Some(label), None) => label.to_string(),
+                                                (None, Some((w, h))) => format!("{:.1} x {:.1} pt", w, h),
+                                                (None, None) => "None".to_string(),
+                                            };
+                                            ui.add(egui::Label::new(RichText::new(paper).weak()).truncate());
+                                        });
+                                        row.col(|ui| {
+                                            let media = t.media_type_label.as_deref().unwrap_or("None");
+                                            ui.add(egui::Label::new(RichText::new(media).weak()).truncate());
+                                        });
+                                        row.col(|ui| {
+                                            let slot = t.input_slot_label.as_deref().unwrap_or("None");
+                                            ui.add(egui::Label::new(RichText::new(slot).weak()).truncate());
+                                        });
+                                        row.col(|ui| {
+                                            let borders = format!(
+                                                "{:.3} / {:.3} / {:.3} / {:.3}",
+                                                t.borders.left, t.borders.right, t.borders.top, t.borders.bottom
+                                            );
+                                            ui.add(egui::Label::new(RichText::new(borders).monospace().weak()).truncate())
+                                                .on_hover_text("Left / Right / Top / Bottom");
+                                        });
+                                        row.col(|ui| {
+                                            let icc_full = match (&t.output_icc_path, &t.output_icc_description) {
+                                                (Some(p), Some(d)) => format!("{} ({})", p, d),
+                                                (Some(p), None) => p.clone(),
+                                                (None, Some(d)) => format!("None ({})", d),
+                                                (None, None) => "None (sRGB default)".to_string(),
+                                            };
+                                            let icc_short = t
+                                                .output_icc_description
+                                                .clone()
+                                                .unwrap_or_else(|| {
+                                                    t.output_icc_path
+                                                        .as_deref()
+                                                        .and_then(|p| std::path::Path::new(p).file_name())
+                                                        .and_then(|n| n.to_str())
+                                                        .map(|s| s.to_string())
+                                                        .unwrap_or_else(|| "sRGB default".to_string())
+                                                });
+                                            ui.add(egui::Label::new(RichText::new(icc_short).weak()).truncate())
+                                                .on_hover_text(icc_full);
+                                        });
+                                    });
+                                });
+                        });
+                }
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    // Load
+                    if ui.add_sized(btn_size, egui::Button::new("Load")).clicked() {
+                        let mut dlg = rfd::FileDialog::new()
+                            .add_filter("Preset Template", &["vsp"]);
+                        if let Some(dir) = crate::templates::templates_dir() {
+                            dlg = dlg.set_directory(dir);
+                        }
+                        if let Some(path) = dlg.pick_file() {
+                            match crate::templates::import_template_file(&path) {
+                                Ok(t) => {
+                                    match crate::templates::save_template_unique(&t) {
+                                        Ok(_new_path) => {
+                                            let (presets, warns) =
+                                                crate::templates::list_templates();
+                                            self.state.saved_presets = presets;
+                                            for w in warns {
+                                                self.state.log.push(w);
+                                            }
+                                            self.state.log.push(format!(
+                                                "Imported preset '{}'",
+                                                t.name
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            self.state.log.push(format!(
+                                                "Failed to import preset: {}",
+                                                e
+                                            ));
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    self.state.log.push(format!(
+                                        "Failed to import preset: {}",
+                                        e
+                                    ));
+                                }
+                            }
+                        }
+                    }
+
+                    // Details
+                    let can_details = self.state.preset_picker_highlighted.is_some();
+                    let det_btn = egui::Button::new("Details").min_size(btn_size.into());
+                    if ui.add_enabled(can_details, det_btn).clicked() {
+                        self.state.show_preset_details = true;
+                    }
+
+                    // Delete
+                    let can_delete = self.state.preset_picker_highlighted.is_some();
+                    let del_btn = egui::Button::new("Delete").min_size(btn_size.into());
+                    if ui
+                        .add_enabled(can_delete, del_btn)
+                        .clicked()
+                    {
+                        if let Some(ref highlighted_path) = self.state.preset_picker_highlighted {
+                            let highlighted_path = highlighted_path.clone();
+                            let name = self.state.saved_presets.iter()
+                                .find(|(p, _)| *p == highlighted_path)
+                                .map(|(_, t)| t.name.clone())
+                                .unwrap_or_default();
+                            match crate::templates::delete_template_at(&highlighted_path) {
+                                Ok(()) => {
+                                    self.state.log.push(format!("Deleted preset '{}'", name));
+                                }
+                                Err(e) => {
+                                    self.state.log.push(format!("Failed to delete preset: {}", e));
+                                }
+                            }
+                            let (presets, warns) = crate::templates::list_templates();
+                            self.state.saved_presets = presets;
+                            for w in warns {
+                                self.state.log.push(w);
+                            }
+                            self.state.preset_picker_highlighted = None;
+                        }
+                    }
+
+                    // right-aligned: Cancel + OK
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let can_apply = self.state.preset_picker_highlighted.is_some();
+                        let ok_btn = egui::Button::new("OK").min_size(btn_size.into());
+                        if ui
+                            .add_enabled(can_apply, ok_btn)
+                            .clicked()
+                        {
+                            if let Some(ref highlighted_path) = self.state.preset_picker_highlighted {
+                                if let Some((_, t)) = self.state.saved_presets.iter()
+                                    .find(|(p, _)| p == highlighted_path)
+                                {
+                                    let t = t.clone();
+                                    self.apply_preset(&t);
+                                }
+                            }
+                            self.state.show_manage_presets = false;
+                            self.state.preset_picker_highlighted = None;
+                            self.state.show_preset_details = false;
+                        }
+                        if ui.add_sized(btn_size, egui::Button::new("Cancel")).clicked() {
+                            self.state.show_manage_presets = false;
+                            self.state.preset_picker_highlighted = None;
+                            self.state.show_preset_details = false;
+                        }
+                    });
+                });
+            });
+    }
+
+    pub(crate) fn show_preset_notice(&mut self, ctx: &Context) {
+        let screen = ctx.screen_rect();
+        let width = (screen.width() * 0.35).clamp(340.0, 520.0);
+
+        egui::Window::new("Preset applied - adjustments")
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_width(width);
+                ui.add_space(12.0);
+
+                let name_label = self
+                    .state
+                    .selected_preset_name
+                    .as_deref()
+                    .unwrap_or("The preset");
+                ui.label(
+                    RichText::new(format!(
+                        "Some settings in the preset '{}' are not available",
+                        name_label
+                    ))
+                    .strong()
+                    .size(14.0)
+                    .color(egui::Color32::WHITE),
+                );
+                ui.add_space(12.0);
+
+                egui::ScrollArea::vertical()
+                    .max_height(screen.height() * 0.40)
+                    .show(ui, |ui| {
+                        if !self.state.preset_applied_lines.is_empty() {
+                            ui.label(
+                                RichText::new("Applied:")
+                                    .strong()
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(120, 200, 120)),
+                            );
+                            ui.add_space(2.0);
+                            for line in &self.state.preset_applied_lines {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("  \u{2713} ").size(14.0));
+                                    ui.label(
+                                        RichText::new(line).size(14.0),
+                                    );
+                                });
+                            }
+                            ui.add_space(6.0);
+                        }
+                        if !self.state.preset_notice_lines.is_empty() {
+                            ui.label(
+                                RichText::new("Adjusted / skipped:")
+                                    .strong()
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(220, 180, 80)),
+                            );
+                            ui.add_space(2.0);
+                            for line in &self.state.preset_notice_lines {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("  \u{2022} ").size(14.0));
+                                    ui.label(
+                                        RichText::new(line).size(14.0),
+                                    );
+                                });
+                            }
+                        }
+                    });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.vertical_centered(|ui| {
+                    let ok_btn = egui::Button::new(RichText::new("OK").size(13.0))
+                        .min_size(Vec2::new(120.0, 32.0));
+                    if ui.add(ok_btn).clicked() {
+                        self.state.show_preset_notice = false;
+                        self.state.preset_notice_lines.clear();
+                        self.state.preset_applied_lines.clear();
+                    }
+                });
+                ui.add_space(8.0);
+            });
+    }
+
+    pub(crate) fn show_preset_details(&mut self, ctx: &Context) {
+        // Resolve the currently highlighted preset (the one whose Details were requested).
+        let preset = self
+            .state
+            .preset_picker_highlighted
+            .as_ref()
+            .and_then(|p| {
+                self.state
+                    .saved_presets
+                    .iter()
+                    .find(|(path, _)| path == p)
+                    .map(|(path, t)| (path.clone(), t.clone()))
+            });
+
+        let Some((path, t)) = preset else {
+            // Nothing to show anymore (e.g. preset was deleted) - close the popup.
+            self.state.show_preset_details = false;
+            return;
+        };
+
+        let screen = ctx.screen_rect();
+        let width = (screen.width() * 0.40).clamp(420.0, 640.0);
+        let height = (screen.height() * 0.65).clamp(380.0, 640.0);
+        let scale = (screen.height() / 1080.0).clamp(1.0, 1.5);
+        let btn_size = [90.0 * scale, 30.0 * scale];
+
+        egui::Window::new("Preset Details")
+            .collapsible(false)
+            .resizable(false)
+            .min_size([width, height])
+            .max_size([width, height])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                ui.label(RichText::new(&t.name).strong().size(15.0));
+                ui.add_space(6.0);
+
+                egui::ScrollArea::vertical()
+                    .max_height(height - 110.0)
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        let paper = match (t.page_size_label.as_deref(), t.page_size_dims_pt) {
+                            (Some(label), Some((w, h))) => {
+                                format!("{} ({:.1} x {:.1} pt)", label, w, h)
+                            }
+                            (Some(label), None) => label.to_string(),
+                            (None, Some((w, h))) => format!("{:.1} x {:.1} pt", w, h),
+                            (None, None) => "None".to_string(),
+                        };
+                        let extra = if t.extra_option_indices.is_empty() {
+                            "\u{2014}".to_string()
+                        } else {
+                            let mut parts: Vec<String> = t
+                                .extra_option_indices
+                                .iter()
+                                .map(|(k, v)| format!("{}: {}", k, v))
+                                .collect();
+                            parts.sort();
+                            parts.join(", ")
+                        };
+                        let intent = match t.intent.as_str() {
+                            "perceptual" => "Perceptual",
+                            "saturation" => "Saturation",
+                            "relative" => "Relative",
+                            other => other,
+                        };
+                        let date = t.created_at.split('T').next().unwrap_or(&t.created_at);
+
+                        let rows: Vec<(&str, String)> = vec![
+                            ("Saved", date.to_string()),
+                            (
+                                "Printer",
+                                t.printer_name
+                                    .clone()
+                                    .unwrap_or_else(|| "none".to_string()),
+                            ),
+                            ("Paper", paper),
+                            (
+                                "Media",
+                                t.media_type_label
+                                    .clone()
+                                    .unwrap_or_else(|| "None".to_string()),
+                            ),
+                            (
+                                "Slot",
+                                t.input_slot_label
+                                    .clone()
+                                    .unwrap_or_else(|| "None".to_string()),
+                            ),
+                            ("Extra options", extra),
+                            (
+                                "Borders (in)",
+                                format!(
+                                    "L: {:.3}  R: {:.3}  T: {:.3}  B: {:.3}",
+                                    t.borders.left,
+                                    t.borders.right,
+                                    t.borders.top,
+                                    t.borders.bottom
+                                ),
+                            ),
+                            (
+                                "ICC path",
+                                t.output_icc_path
+                                    .clone()
+                                    .unwrap_or_else(|| "None (sRGB default)".to_string()),
+                            ),
+                            (
+                                "ICC description",
+                                t.output_icc_description
+                                    .clone()
+                                    .unwrap_or_else(|| "\u{2014}".to_string()),
+                            ),
+                            ("Intent", intent.to_string()),
+                            ("BPC", if t.bpc { "Yes" } else { "No" }.to_string()),
+                            ("Engine", t.engine.clone()),
+                            ("Sharpen", t.sharpen.to_string()),
+                            (
+                                "Depth",
+                                if t.depth16 { "16-bit" } else { "8-bit" }.to_string(),
+                            ),
+                            ("Target DPI", t.target_dpi.to_string()),
+                            ("Cut marks", t.cut_marks.clone()),
+                            ("Template file", path.display().to_string()),
+                        ];
+                        for (label, value) in rows {
+                            preset_detail_row(ui, label, value);
+                        }
+                    });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.vertical_centered(|ui| {
+                    if ui.add_sized(btn_size, egui::Button::new("Close")).clicked() {
+                        self.state.show_preset_details = false;
+                    }
+                });
+                ui.add_space(8.0);
+            });
+    }
+}
+
+/// One label/value row in the preset details popup.
+fn preset_detail_row(ui: &mut egui::Ui, label: &str, value: String) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [110.0, 18.0],
+            egui::Label::new(RichText::new(label).weak()).truncate(),
+        );
+        ui.add(egui::Label::new(RichText::new(value)).wrap());
+    });
+    ui.add_space(2.0);
 }

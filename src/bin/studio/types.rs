@@ -545,6 +545,16 @@ pub(crate) struct AppState {
     pub batch_add_mode: bool,
     /// Size index chosen for the current batch (None = Fit to Page).
     pub batch_target_size_idx: Option<usize>,
+
+    // ── Saved presets ──
+    pub saved_presets: Vec<(std::path::PathBuf, crate::templates::PresetTemplate)>,
+    pub show_manage_presets: bool,
+    pub show_preset_details: bool,
+    pub show_preset_notice: bool,
+    pub preset_notice_lines: Vec<String>,
+    pub preset_applied_lines: Vec<String>,
+    pub selected_preset_name: Option<String>,
+    pub preset_picker_highlighted: Option<std::path::PathBuf>,
 }
 
 impl AppState {
@@ -725,6 +735,14 @@ impl AppState {
             drag_active: false,
             batch_add_mode: false,
             batch_target_size_idx: None,
+            saved_presets: Vec::new(),
+            show_manage_presets: false,
+            show_preset_details: false,
+            show_preset_notice: false,
+            preset_notice_lines: Vec::new(),
+            preset_applied_lines: Vec::new(),
+            selected_preset_name: None,
+            preset_picker_highlighted: None,
         }
     }
 }

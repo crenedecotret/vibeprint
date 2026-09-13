@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
 use crate::types::{IccProfileEntry, IccProfileSource};
@@ -220,6 +220,55 @@ pub(crate) fn is_valid_icc_profile(path: &PathBuf) -> bool {
         Ok(bytes) => lcms2::Profile::new_icc(&bytes).is_ok(),
         Err(_) => false,
     }
+}
+
+/// Build an IccProfileEntry (source: User) from an ICC file path.
+/// Returns None if the path does not exist / is not a regular file.
+pub(crate) fn icc_entry_for_path(path: &Path) -> Option<IccProfileEntry> {
+    if !path.is_file() {
+        return None;
+    }
+    let path = path.to_path_buf();
+    let (description, date, file_size) = if let Ok(bytes) = std::fs::read(&path) {
+        if let Ok(profile) = lcms2::Profile::new_icc(&bytes) {
+            let desc = profile
+                .info(lcms2::InfoType::Description, lcms2::Locale::none())
+                .unwrap_or_else(|| {
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Unknown")
+                        .to_string()
+                });
+            let d = extract_file_date(&path);
+            let s = extract_file_size(&path);
+            (desc, d, s)
+        } else {
+            (
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Unknown")
+                    .to_string(),
+                extract_file_date(&path),
+                extract_file_size(&path),
+            )
+        }
+    } else {
+        (
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Unknown")
+                .to_string(),
+            extract_file_date(&path),
+            extract_file_size(&path),
+        )
+    };
+    Some(IccProfileEntry {
+        path,
+        description,
+        date,
+        file_size,
+        source: IccProfileSource::User,
+    })
 }
 
 /// Convert a path to an IccProfileEntry with UserCurated source.
